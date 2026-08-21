@@ -1,6 +1,8 @@
 # paddock — Specification
 
-Status: **pre-alpha.** Nothing in section 7 is implemented.
+Status: **pre-alpha.** Section 7 is being built. Profiles, the agent registry, the
+herdr client and the srt backend exist; sessions, the synthesized config dir, the
+TUI and the CLI do not.
 
 paddock takes over new-window creation in [herdr](https://herdr.dev) (a terminal
 multiplexer for AI coding agents, **v0.8.0**) and replaces it with a popup
@@ -161,6 +163,12 @@ Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expa
 `~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
 `config_write_paths`, `shared_dir`, `extra_allow_write`) when it generates the
 settings file, so profiles stay portable between machines.
+
+Each launch gets its own timestamped directory under
+`~/.local/state/paddock/runs/`, holding the settings file, the PATH shim dir, and
+the scratch workdir when the profile shares no host directory.
+`PADDOCK_STATE_DIR` overrides the state directory; tests point it at a temporary
+one. Nothing collects old run directories yet.
 
 **Invocation:**
 
