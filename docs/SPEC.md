@@ -17,7 +17,8 @@ see [CONTRIBUTING.md § Design principles](../CONTRIBUTING.md#design-principles)
 
 Diagrams: [`architecture.puml`](diagrams/architecture.puml),
 [`launch_sequence.puml`](diagrams/launch_sequence.puml),
-[`scoping_model.puml`](diagrams/scoping_model.puml).
+[`scoping_model.puml`](diagrams/scoping_model.puml),
+[`profiles_and_agents.puml`](diagrams/profiles_and_agents.puml).
 
 ---
 
@@ -415,6 +416,11 @@ Notes:
   credential directory readable has to say so.
 - The effective allowlist is `network_presets` expanded, plus `extra_domains`,
   plus the agent's `api_domains`, deduplicated.
+- The filename is the profile name, so a saved profile writes back to the file it
+  came from. A profile file that will not parse, or that has a field of the wrong
+  type, is skipped whole — never half-applied.
+- `PADDOCK_CONFIG_DIR` overrides `~/.config/paddock`, for both `profiles/` and
+  `agents/`. Tests point it at a temporary directory.
 
 ---
 

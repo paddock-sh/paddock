@@ -1,0 +1,85 @@
+@startuml profiles_and_agents
+title paddock — profiles and the agent registry
+
+allowmixing
+set separator none
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+
+package "profiles.py" {
+  class Profile <<dataclass>> {
+    name = "custom"
+    agent = "claude"
+    tools = [git, rg, curl]
+    include_system_path = true
+    network_presets = [anthropic, github]
+    extra_domains = []
+    shared_dir = "" (isolated scratch workdir)
+    skills = []
+    mcp = []
+    deny_read = [$HOME/.ssh, $HOME/.aws, $HOME/.gnupg, $HOME/.config/gh]
+    extra_allow_write = []
+    ..
+    allowed_domains() : list[str]
+  }
+  class "functions" as ProfileFns {
+    NETWORK_PRESETS
+    TOOL_CANDIDATES
+    builtin_profiles()
+    load_profiles()
+    save_profile(profile)
+  }
+}
+
+package "agents.py" {
+  class AgentSpec <<dataclass>> {
+    name
+    command
+    api_domains
+    auth_read_paths
+    config_write_paths
+    image (v1.1 microsandbox; unused by srt)
+  }
+  class "functions" as AgentFns {
+    builtin_agents()
+    load_agents()
+  }
+}
+
+database "$PADDOCK_CONFIG_DIR\n(default $HOME/.config/paddock)" as ConfigDir {
+  file "profiles/<name>.json" as ProfileFiles
+  file "agents/<key>.json" as AgentFiles
+}
+
+ProfileFns --> Profile : builds
+AgentFns --> AgentSpec : builds
+ProfileFiles --> ProfileFns : load_profiles(): built-ins first,\nthen user files keyed by filename stem\n(a file that will not parse is skipped, never merged)
+ProfileFns --> ProfileFiles : save_profile()
+AgentFiles --> AgentFns : load_agents(): a user key\noverrides the built-in of that key
+Profile --> AgentFns : looks up profile.agent
+
+note right of ProfileFns
+  NETWORK_PRESETS keys: anthropic, github,
+  npm, pypi/uv, go, crates.io, homebrew.
+end note
+
+note right of AgentFns
+  Built-in keys: claude, codex, opencode,
+  aider, gemini, shell.
+end note
+
+note bottom of Profile
+  allowed_domains() = presets expanded
+  + extra_domains + the selected agent's
+  api_domains, deduplicated and sorted.
+  Nothing else reaches the sandbox allowlist.
+end note
+
+note bottom of AgentSpec
+  auth_read_paths holds only that agent's own
+  credentials. $HOME/.ssh, .aws, .gnupg and
+  .config/gh stay in deny_read unless the user
+  takes them out (SPEC section 5).
+end note
+
+@enduml

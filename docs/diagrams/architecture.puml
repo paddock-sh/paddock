@@ -27,7 +27,7 @@ package "paddock" {
 }
 
 package "Host configuration" {
-  database "~/.config/paddock/\nprofiles/*.json\nagents/*.json" as ConfigFiles
+  database "~/.config/paddock/\n(override: $PADDOCK_CONFIG_DIR)\nprofiles/*.json\nagents/*.json" as ConfigFiles
   database "~/.local/state/paddock/\nruns/<id>/ bin/ + srt-settings.json\nsessions.json (registry)\nworkspace default bindings" as RunDir
 }
 
