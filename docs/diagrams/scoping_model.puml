@@ -1,0 +1,87 @@
+@startuml scoping_model
+title paddock — sandbox sessions: what tabs attach to
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultTextAlignment center
+
+legend top
+  Every tab attaches to exactly **one session**, or to **none** (local).
+  Sessions — not tabs and not workspaces — are the sandbox.
+  One workspace can hold local tabs and several sessions at once.
+endlegend
+
+node "HOST" as Host {
+
+  component "Herdr workspace  wA" as Ws {
+    component "tab 1\n(local)\nno label" as T1
+    component "tab 2\n(local orchestrator)\nno label" as T2
+    component "tab 3\nlabel: sbx:build" as T3
+    component "tab 4\nlabel: sbx:build" as T4
+    component "tab 5\nlabel: sbx:review" as T5
+  }
+
+  database "session registry\n(plugin state dir)\nsession_id, name, backend,\nprofile, attached_panes,\nvm_handle, created_at" as Registry
+
+  database "workspace default binding\nwA -> session 'build'\n(new tabs auto-attach)" as Binding
+
+  folder "host filesystem\n(full access from local tabs only)" as HostFs
+
+  folder "srt shared workdir\nruns/<session>/work" as SrtWork
+  artifact "srt settings file\nruns/<session>/srt-settings.json" as SrtSettings
+}
+
+frame "Session A — 'build'   backend: microsandbox (v1.1)\nSHARED RUNTIME: one persistent microVM" as SessionA {
+  component "shell / agent\n(tab 3)" as G3
+  component "shell / agent\n(tab 4)" as G4
+  database "guest filesystem" as GuestFs
+  component "shared process namespace\n(tabs see each other's processes)" as GuestProcs
+  component "build.localhost\n(portless)" as Portless
+}
+
+frame "Session B — 'review'   backend: srt (v1)\nSHARED POLICY + FILES, separate process trees" as SessionB {
+  component "srt-wrapped process tree\n(tab 5)" as P5
+  component "(a second attached tab would get\nits own process tree here —\nsame settings file, same workdir)" as P6
+}
+
+T1 --> HostFs : unsandboxed
+T2 --> HostFs : unsandboxed
+T2 ..> T3 : drives sandboxed tabs\nvia the herdr CLI
+T2 ..> T5
+
+T3 --> G3 : attach = exec into the guest
+T4 --> G4 : attach = exec into the guest
+G3 --> GuestFs
+G4 --> GuestFs
+G3 --> GuestProcs
+G4 --> GuestProcs
+Portless ..> Host : reachable from the host browser
+
+T5 --> P5 : attach = new process under\nthe same settings + workdir
+P5 --> SrtSettings : enforced by
+P6 ..> SrtSettings
+P5 --> SrtWork : reads / writes
+P6 ..> SrtWork
+SrtWork -[hidden]- HostFs
+
+Registry ..> SessionA : tracks
+Registry ..> SessionB : tracks
+Binding ..> Ws : applies to new tabs
+
+note bottom of SessionA
+  Sessions survive Herdr detach and restart:
+  the VM keeps running with no tab attached.
+  When the last tab closes the user is prompted,
+  with a keep-alive option — never silently
+  destroyed, never silently leaked.
+end note
+
+note bottom of SessionB
+  srt has no persistent guest for a second
+  process to join, so attached tabs share
+  **policy and files**, never a **runtime**.
+  Tab groups are useful in v1 anyway;
+  true shared runtime arrives with msb.
+end note
+
+@enduml

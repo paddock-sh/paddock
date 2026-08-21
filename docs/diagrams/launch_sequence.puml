@@ -1,0 +1,108 @@
+@startuml launch_sequence
+title paddock — sandboxed launch sequence (srt backend, v1)
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+
+actor User
+participant "Herdr" as Herdr
+participant "cli.py" as CLI
+participant "tui.py\n(chooser)" as TUI
+participant "sessions.py\n(registry)" as Sessions
+participant "profiles.py" as Profiles
+participant "agents.py" as Agents
+participant "backends/srt.py" as Backend
+participant "synth_config.py" as Synth
+participant "herdr_client.py" as Client
+participant "srt\n(Seatbelt / bubblewrap)" as Srt
+
+User -> Herdr : press prefix+c
+activate Herdr
+Herdr -> CLI : run `paddock` in a popup\nenv: HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID
+activate CLI
+CLI -> TUI : run_chooser(cwd)
+activate TUI
+
+TUI -> Sessions : list live sessions
+activate Sessions
+Sessions --> TUI : name, backend, profile, attached tabs
+deactivate Sessions
+TUI -> User : Local / New sandbox session / Attach to existing?
+User --> TUI : New sandbox session
+
+alt Local namespace chosen
+  TUI -> Client : tab create --cwd <cwd> --focus
+  note right : plain tab, no session, no sandbox — flow ends here
+else Attach to an existing session chosen
+  TUI -> Sessions : look up chosen session
+  note right
+    msb: exec a shell into the running guest.
+    srt: new process under the SAME settings
+    file and workdir — shared policy and files,
+    separate process tree.
+  end note
+end
+
+TUI -> Profiles : load_profiles()
+activate Profiles
+Profiles --> TUI : built-ins + ~/.config/paddock/profiles/*.json
+deactivate Profiles
+TUI -> User : pick a profile (or build a custom one)
+User --> TUI : profile
+
+group Questionnaire (skipped when a saved profile is reused)
+  TUI -> Agents : list registered agents
+  TUI -> User : agent? tools? network? shared dir? skills? MCP servers?
+  User --> TUI : answers
+  TUI -> User : name this session?
+  User --> TUI : session name
+  opt user names the profile too
+    TUI -> Profiles : save_profile(profile)
+  end
+end
+
+TUI -> Sessions : register session\n(session_id, name, backend, profile,\nvm_handle, created_at)
+
+TUI -> Backend : launch(profile, workdir)
+deactivate TUI
+activate Backend
+
+Backend -> Backend : resolve workdir\n(shared_dir, or isolated scratch\nunder runs/<id>/work)
+Backend -> Backend : build PATH shim dir runs/<id>/bin\n(symlink one binary per selected tool)
+Backend -> Agents : layer-2 config for this agent\n(--settings JSON, .mcp.json + --strict-mcp-config, ...)
+activate Agents
+Agents --> Backend : agent flags + api_domains
+deactivate Agents
+Backend -> Synth : build synthetic config dir
+activate Synth
+Synth -> Synth : credentials for this agent only\n+ symlink whitelisted skills
+Synth --> Backend : config dir path (-> CLAUDE_CONFIG_DIR)
+deactivate Synth
+Backend -> Backend : write runs/<id>/srt-settings.json\nnetwork.allowedDomains (allowlist-only)\nfilesystem.allowWrite (workdir, run dir, /tmp)\nfilesystem.denyRead (~/.ssh, ~/.aws, ...)
+Backend --> Client : pane command\n`srt --settings <file> "env PATH=<shim> <agent>"`
+deactivate Backend
+
+activate Client
+Client -> Herdr : herdr tab create --workspace <id> --cwd <workdir>\n--label sbx:<session> --env CLAUDE_CONFIG_DIR=... --focus
+Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:p2"}}}
+Client -> Herdr : herdr pane run wA:p2 <command>
+deactivate Client
+CLI -> Sessions : record pane wA:p2 as attached
+CLI --> Herdr : exit (popup closes)
+deactivate CLI
+
+Herdr -> Srt : start sandboxed process tree in pane wA:p2
+deactivate Herdr
+activate Srt
+Srt -> Srt : enforce write paths, read denials,\ndomain allowlist (kernel-level)
+Srt --> User : agent running in the sandboxed pane
+deactivate Srt
+
+note over Backend, Srt
+  Tab creation and command execution are separate calls:
+  the pane exists with the right cwd and label before any
+  sandboxed process starts, so a launch failure leaves a
+  visible, usable pane rather than a vanished window.
+end note
+
+@enduml

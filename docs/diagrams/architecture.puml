@@ -1,0 +1,79 @@
+@startuml architecture
+title paddock — component architecture
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultTextAlignment center
+
+actor User
+
+package "Herdr 0.8.0" {
+  [Keybinding\nprefix+c -> popup] as Keybinding
+  [herdr CLI\ntab create / pane run] as HerdrCLI
+  [Workspace / tabs / panes] as HerdrUI
+}
+
+package "paddock" {
+  [cli.py\nchoose | launch | profiles] as CLI
+  [tui.py\nquestionary chooser] as TUI
+  [sessions.py\nsession registry\ncreate | attach | GC] as Sessions
+  [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
+  [agents.py\nagent registry\n+ layer-2 adapters] as Agents
+  [synth_config.py\nsynthetic config dir\n(credentials + skills)] as SynthConfig
+  interface "Backend\nlaunch(profile, workdir)\n-> pane command" as BackendAPI
+  [backends/srt.py\nv1] as SrtBackend
+  [backends/microsandbox.py\nv1.1 — planned] as MsbBackend
+  [herdr_client.py\nsubprocess wrapper\n(mockable seam)] as HerdrClient
+}
+
+package "Host configuration" {
+  database "~/.config/paddock/\nprofiles/*.json\nagents/*.json" as ConfigFiles
+  database "~/.local/state/paddock/\nruns/<id>/ bin/ + srt-settings.json\nsessions.json (registry)\nworkspace default bindings" as RunDir
+}
+
+package "Sandbox runtimes" {
+  [srt\nSeatbelt (macOS)\nbubblewrap (Linux)] as Srt
+  [msb\nlibkrun microVM\nOCI images] as Msb
+}
+
+User --> Keybinding : presses prefix+c
+Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
+CLI --> TUI : choose (default)
+TUI --> Profiles : load / save profile
+TUI --> Agents : list agents
+TUI --> Sessions : list live sessions /\ncreate / attach
+Sessions ..> RunDir : registry survives\nHerdr restart
+Profiles ..> ConfigFiles : reads / writes
+Agents ..> ConfigFiles : reads user agents/*.json
+
+TUI --> BackendAPI : selected Profile
+CLI --> BackendAPI : launch <profile>
+BackendAPI <|.. SrtBackend
+BackendAPI <|.. MsbBackend
+
+SrtBackend --> RunDir : writes PATH shim dir\n+ srt-settings.json
+Sessions --> BackendAPI : new session -> launch;\nattach -> reuse settings + workdir (srt)\nor exec into guest (msb)
+SrtBackend --> SynthConfig : build config dir
+MsbBackend ..> SynthConfig : build config dir (copied,\nno symlinks in a microVM)
+Agents --> SynthConfig : credentials + whitelisted skills
+
+SrtBackend --> HerdrClient : pane command
+MsbBackend ..> HerdrClient : pane command
+HerdrClient --> HerdrCLI : herdr tab create --workspace --cwd --label --env --focus\nherdr pane run <pane_id> <command>
+HerdrCLI --> HerdrUI : creates tab, returns\nresult.root_pane.pane_id
+HerdrUI --> Srt : sandboxed pane process (v1)
+HerdrUI ..> Msb : sandboxed pane process (v1.1)
+
+note right of BackendAPI
+  Backends return a command string.
+  They never create panes themselves —
+  that keeps them testable without a
+  running herdr server.
+end note
+
+note bottom of HerdrClient
+  The only module that shells out to `herdr`.
+  Mocked in every test; CI has no herdr server.
+end note
+
+@enduml
