@@ -3,10 +3,12 @@
 import shutil
 import subprocess
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from paddock import herdr_client
+from tests import fake_sessions as fake_sessions_module
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +29,21 @@ def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def no_herdr_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test must not inherit the herdr session the developer happens to be sitting in."""
     monkeypatch.delenv("HERDR_ACTIVE_WORKSPACE_ID", raising=False)
+
+
+@pytest.fixture
+def fake_sessions(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Stands in for sessions: records what the chooser and the CLI asked of it.
+
+    They are tested on which call they make with what, not on what a session does
+    about it, which `tests/test_sessions.py` covers.
+    """
+    from paddock import cli, tui
+
+    fake_sessions_module.reset()
+    monkeypatch.setattr(cli, "sessions", fake_sessions_module)
+    monkeypatch.setattr(tui, "sessions", fake_sessions_module)
+    return fake_sessions_module
 
 
 @pytest.fixture
