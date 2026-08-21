@@ -82,6 +82,11 @@ def build_settings(profile: Profile, agent: AgentSpec, workdir: Path) -> dict:
     # /tmp and /private/tmp are one directory under two names on macOS; srt matches the
     # path as written. /dev/null is here so discarded output works.
     allow_write = [workdir, Path("/tmp"), Path("/private/tmp"), Path("/dev/null")]
+    tmpdir = os.environ.get("TMPDIR")
+    if tmpdir:
+        # The sandbox keeps TMPDIR (see KEEP_ENV), so what it points at has to be writable.
+        # Resolved, because on macOS it runs through the /var -> /private/var symlink.
+        allow_write.append(Path(os.path.realpath(tmpdir)))
     if profile.shared_dir:
         allow_write.append(_expand(profile.shared_dir))
     # Known gap: this is the agent's real config dir. Blocking it breaks the agent; the

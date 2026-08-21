@@ -163,7 +163,9 @@ Three defaults shape everything else:
 - **Writes are denied by default.** `allowWrite` gets the workdir, the shared
   directory if there is one, `/tmp` and `/private/tmp` — one directory under two
   names on macOS, and srt matches the path as written — and `/dev/null`, so
-  discarded output works. The run directory itself is **not** writable: it holds
+  discarded output works. `$TMPDIR` joins them when the host sets one, resolved
+  through its symlinks, because the sandbox keeps that variable and tools write
+  where it points. The run directory itself is **not** writable: it holds
   the settings file and the shim dir, which the sandbox only reads. `denyWrite`
   mirrors `denyRead`, so a denied path is off limits both ways.
 - **Network is allowlist-only.** Anything not listed is refused. `deniedDomains`

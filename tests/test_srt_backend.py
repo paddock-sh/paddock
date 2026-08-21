@@ -87,6 +87,42 @@ def test_writes_are_allowed_for_the_workdir_and_temp(tmp_path: Path) -> None:
     assert "/dev/null" in allow_write
 
 
+def test_the_temp_dir_from_the_environment_is_writable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """TMPDIR is kept in the sandbox environment, so what it points at has to be writable."""
+    real = tmp_path / "real-tmp"
+    real.mkdir()
+    link = tmp_path / "link-tmp"
+    link.symlink_to(real)
+    monkeypatch.setenv("TMPDIR", f"{link}/")
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work")
+
+    assert str(real.resolve()) in settings["filesystem"]["allowWrite"]
+    assert str(link) not in settings["filesystem"]["allowWrite"]
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_without_a_temp_dir_nothing_extra_is_writable(
+    value: str | None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    if value is None:
+        monkeypatch.delenv("TMPDIR", raising=False)
+    else:
+        monkeypatch.setenv("TMPDIR", value)
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work")
+
+    assert settings["filesystem"]["allowWrite"] == [
+        str(tmp_path / "work"),
+        "/tmp",
+        "/private/tmp",
+        "/dev/null",
+        str(HOME / ".claude"),
+    ]
+
+
 def test_the_run_dir_is_not_writable(tmp_path: Path) -> None:
     """It holds the settings file and the shim dir. The sandbox only reads those."""
     run_dir = tmp_path / "run"
