@@ -46,7 +46,14 @@ def builtin_agents() -> dict[str, AgentSpec]:
         "opencode": AgentSpec(
             name="OpenCode",
             command="opencode",
-            api_domains=["opencode.ai", "*.opencode.ai", "api.anthropic.com", "api.openai.com"],
+            # models.dev serves the provider catalogue it fetches at startup.
+            api_domains=[
+                "opencode.ai",
+                "*.opencode.ai",
+                "models.dev",
+                "api.anthropic.com",
+                "api.openai.com",
+            ],
             auth_read_paths=["~/.local/share/opencode/auth.json"],
             config_write_paths=["~/.config/opencode", "~/.local/share/opencode"],
         ),
@@ -60,7 +67,12 @@ def builtin_agents() -> dict[str, AgentSpec]:
         "gemini": AgentSpec(
             name="Gemini CLI",
             command="gemini",
-            api_domains=["generativelanguage.googleapis.com", "oauth2.googleapis.com"],
+            # Login with Google routes model calls through Code Assist, not the direct API.
+            api_domains=[
+                "generativelanguage.googleapis.com",
+                "cloudcode-pa.googleapis.com",
+                "oauth2.googleapis.com",
+            ],
             auth_read_paths=["~/.gemini/oauth_creds.json"],
             config_write_paths=["~/.gemini"],
         ),
@@ -94,7 +106,10 @@ def _read(path: Path) -> AgentSpec | None:
     values = {key: value for key, value in data.items() if key in defaults}
     # A wrong-shaped field rejects the whole file. Half-applying it would give the
     # sandbox a policy nobody wrote.
-    if any(not isinstance(value, type(defaults[key])) for key, value in values.items()):
-        return None
+    for key, value in values.items():
+        if not isinstance(value, type(defaults[key])):
+            return None
+        if isinstance(value, list) and not all(isinstance(item, str) for item in value):
+            return None
     agent = AgentSpec(**values)
     return agent if agent.command else None

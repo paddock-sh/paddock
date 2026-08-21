@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from paddock.profiles import (
     DEFAULT_DENY_READ,
     NETWORK_PRESETS,
@@ -32,14 +34,14 @@ def test_defaults_match_the_spec() -> None:
     assert profile.shared_dir == ""
     assert profile.skills == []
     assert profile.mcp == []
-    assert profile.deny_read == DEFAULT_DENY_READ
+    assert profile.deny_read == ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh"]
     assert profile.extra_allow_write == []
 
 
 def test_defaults_are_not_shared_between_instances() -> None:
-    first = Profile()
-    first.deny_read.append("~/.kube")
-    assert Profile().deny_read == DEFAULT_DENY_READ
+    Profile().deny_read.append("~/.kube")
+    assert "~/.kube" not in Profile().deny_read
+    assert "~/.kube" not in DEFAULT_DENY_READ
 
 
 def test_network_presets_cover_the_spec_keys() -> None:
@@ -80,7 +82,8 @@ def test_load_returns_builtins_when_no_user_files_exist() -> None:
     assert loaded["claude-default"].agent == "claude"
 
 
-def test_user_file_overrides_a_builtin_of_the_same_name(config_dir: Path) -> None:
+def test_user_file_replaces_a_builtin_wholesale(config_dir: Path) -> None:
+    """A user file is the whole profile: unset fields fall back to dataclass defaults."""
     write_profile(config_dir, "claude-default", {"agent": "aider", "tools": ["git"]})
 
     profile = load_profiles()["claude-default"]
@@ -88,6 +91,8 @@ def test_user_file_overrides_a_builtin_of_the_same_name(config_dir: Path) -> Non
     assert profile.agent == "aider"
     assert profile.tools == ["git"]
     assert profile.name == "claude-default"
+    assert profile.network_presets == Profile().network_presets
+    assert profile.network_presets != builtin_profiles()["claude-default"].network_presets
 
 
 def test_the_filename_is_the_profile_name(config_dir: Path) -> None:
@@ -119,6 +124,18 @@ def test_malformed_and_unusable_files_are_skipped(config_dir: Path) -> None:
     assert loaded["good"].agent == "gemini"
 
 
+def test_a_list_of_non_strings_is_skipped(config_dir: Path) -> None:
+    """Numbers in extra_domains would blow up allowed_domains(); numbers in deny_read
+    would reach the backend as a policy nobody wrote."""
+    write_profile(config_dir, "numeric-domains", {"extra_domains": [1, 2, 3]})
+    write_profile(config_dir, "numeric-denies", {"deny_read": [123]})
+
+    loaded = load_profiles()
+
+    assert "numeric-domains" not in loaded
+    assert "numeric-denies" not in loaded
+
+
 def test_unknown_fields_are_ignored(config_dir: Path) -> None:
     write_profile(config_dir, "future", {"agent": "shell", "teleport": True})
 
@@ -136,7 +153,12 @@ def test_allowed_domains_merges_presets_extras_and_agent_domains() -> None:
     assert "example.com" in domains
     assert set(NETWORK_PRESETS["github"]) <= set(domains)
     assert "api.anthropic.com" in domains  # from the claude agent entry
-    assert domains == sorted(set(domains))
+
+
+def test_allowed_domains_dedupes_preset_and_agent_overlap() -> None:
+    profile = Profile(agent="claude", network_presets=["anthropic"])
+
+    assert profile.allowed_domains().count("api.anthropic.com") == 1
 
 
 def test_allowed_domains_ignores_unknown_presets_and_agents() -> None:
@@ -147,3 +169,9 @@ def test_allowed_domains_ignores_unknown_presets_and_agents() -> None:
 
 def test_profile_dir_follows_the_config_dir_override(config_dir: Path) -> None:
     assert profile_dir() == config_dir / "profiles"
+
+
+@pytest.mark.parametrize("name", ["", "sub/dir", "../escape", ".hidden"])
+def test_save_rejects_a_name_that_is_not_a_plain_filename(name: str) -> None:
+    with pytest.raises(ValueError):
+        save_profile(Profile(name=name))

@@ -53,9 +53,9 @@ database "$PADDOCK_CONFIG_DIR\n(default $HOME/.config/paddock)" as ConfigDir {
 
 ProfileFns --> Profile : builds
 AgentFns --> AgentSpec : builds
-ProfileFiles --> ProfileFns : load_profiles(): built-ins first,\nthen user files keyed by filename stem\n(a file that will not parse is skipped, never merged)
+ProfileFiles --> ProfileFns : load_profiles(): built-ins first,\nthen user files keyed by filename stem\n(a file that will not parse, or holds a\nwrong-typed field, is skipped whole)
 ProfileFns --> ProfileFiles : save_profile()
-AgentFiles --> AgentFns : load_agents(): a user key\noverrides the built-in of that key
+AgentFiles --> AgentFns : load_agents(): a user key replaces\nthe built-in of that key, wholesale\n(no command: skipped)
 Profile --> AgentFns : looks up profile.agent
 
 note right of ProfileFns

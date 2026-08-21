@@ -97,6 +97,26 @@ def test_malformed_and_unusable_files_are_skipped(config_dir: Path) -> None:
     assert loaded["good"].command == "good"
 
 
+def test_a_list_of_non_strings_is_skipped(config_dir: Path) -> None:
+    write_agent(config_dir, "numeric-domains", {"command": "x", "api_domains": [1, 2]})
+    write_agent(config_dir, "numeric-auth", {"command": "x", "auth_read_paths": [123]})
+
+    loaded = load_agents()
+
+    assert "numeric-domains" not in loaded
+    assert "numeric-auth" not in loaded
+
+
+def test_an_entry_without_a_command_is_skipped(config_dir: Path) -> None:
+    write_agent(config_dir, "no-command", {"name": "No Command", "api_domains": ["x.dev"]})
+    write_agent(config_dir, "empty-command", {"name": "Empty", "command": ""})
+
+    loaded = load_agents()
+
+    assert "no-command" not in loaded
+    assert "empty-command" not in loaded
+
+
 def test_unknown_fields_are_ignored(config_dir: Path) -> None:
     write_agent(config_dir, "future", {"command": "future", "warp_drive": True})
 

@@ -8,4 +8,5 @@ __version__ = "0.1.0"
 
 def config_dir() -> Path:
     """Where profiles and agent entries live. `PADDOCK_CONFIG_DIR` overrides it."""
-    return Path(os.environ.get("PADDOCK_CONFIG_DIR", "~/.config/paddock")).expanduser()
+    # `or`, not a get() default: an empty value must not resolve to the current directory.
+    return Path(os.environ.get("PADDOCK_CONFIG_DIR") or "~/.config/paddock").expanduser()

@@ -17,13 +17,20 @@ TOOL_CANDIDATES = [
 
 # Named domain groups for the network checklist.
 NETWORK_PRESETS: dict[str, list[str]] = {
-    "anthropic": ["api.anthropic.com", "*.anthropic.com", "sentry.io"],
+    "anthropic": ["api.anthropic.com", "*.anthropic.com"],
     "github": ["github.com", "*.github.com", "*.githubusercontent.com"],
     "npm": ["registry.npmjs.org", "*.npmjs.org", "*.npmjs.com"],
     "pypi/uv": ["pypi.org", "files.pythonhosted.org", "*.pythonhosted.org", "astral.sh"],
-    "go": ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com"],
+    # The module proxy serves the zips too, so no general storage host is needed.
+    "go": ["proxy.golang.org", "sum.golang.org"],
     "crates.io": ["crates.io", "*.crates.io", "static.crates.io"],
-    "homebrew": ["formulae.brew.sh", "*.brew.sh", "ghcr.io"],
+    # ghcr.io redirects bottle downloads to pkg-containers.
+    "homebrew": [
+        "formulae.brew.sh",
+        "*.brew.sh",
+        "ghcr.io",
+        "pkg-containers.githubusercontent.com",
+    ],
 }
 
 # Credential directories no agent gets unless the profile says so.
@@ -50,7 +57,7 @@ class Profile:
     extra_allow_write: list[str] = field(default_factory=list)
 
     def allowed_domains(self) -> list[str]:
-        """Presets expanded, plus extra domains, plus the chosen agent's, deduplicated."""
+        """Presets expanded, plus extra domains, plus the chosen agent's, deduped and sorted."""
         domains: list[str] = []
         for preset in self.network_presets:
             domains += NETWORK_PRESETS.get(preset, [])
@@ -93,8 +100,11 @@ def load_profiles() -> dict[str, Profile]:
 
 def save_profile(profile: Profile) -> Path:
     """Write the profile to `<config>/profiles/<name>.json` and return the path."""
+    name = profile.name
+    if not name or "/" in name or name.startswith("."):
+        raise ValueError(f"profile name must be a plain filename, got {name!r}")
     profile_dir().mkdir(parents=True, exist_ok=True)
-    path = profile_dir() / f"{profile.name}.json"
+    path = profile_dir() / f"{name}.json"
     path.write_text(json.dumps(asdict(profile), indent=2) + "\n")
     return path
 
@@ -112,6 +122,9 @@ def _read(path: Path) -> Profile | None:
     values = {key: value for key, value in data.items() if key in defaults}
     # A wrong-shaped field rejects the whole file. Half-applying it would give the
     # sandbox a policy nobody wrote.
-    if any(not isinstance(value, type(defaults[key])) for key, value in values.items()):
-        return None
+    for key, value in values.items():
+        if not isinstance(value, type(defaults[key])):
+            return None
+        if isinstance(value, list) and not all(isinstance(item, str) for item in value):
+            return None
     return Profile(**values)
