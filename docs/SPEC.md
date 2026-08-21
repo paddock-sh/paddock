@@ -157,6 +157,11 @@ Three defaults shape everything else:
   `/tmp`, and the shared directory if there is one.
 - **Network is allowlist-only.** Anything not listed is refused.
 
+Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expands
+`~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
+`config_write_paths`, `shared_dir`, `extra_allow_write`) when it generates the
+settings file, so profiles stay portable between machines.
+
 **Invocation:**
 
 ```sh
@@ -416,9 +421,14 @@ Notes:
   credential directory readable has to say so.
 - The effective allowlist is `network_presets` expanded, plus `extra_domains`,
   plus the agent's `api_domains`, deduplicated.
+- Two profiles ship built in: `claude-default` (Claude Code with the usual dev
+  tools and registries) and `offline-shell` (a plain shell, no network). A user
+  file of the same name **replaces** the built-in whole: fields the file leaves
+  out fall back to the defaults in the table above, not to the built-in's values.
 - The filename is the profile name, so a saved profile writes back to the file it
   came from. A profile file that will not parse, or that has a field of the wrong
-  type, is skipped whole — never half-applied.
+  type — including a list holding anything but strings — is skipped whole, never
+  half-applied.
 - `PADDOCK_CONFIG_DIR` overrides `~/.config/paddock`, for both `profiles/` and
   `agents/`. Tests point it at a temporary directory.
 
