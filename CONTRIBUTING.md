@@ -27,12 +27,16 @@ It merges back into `develop` by PR, after review.
 
 ### Feature branches
 
-Work inside an epic happens on `<slug>/<feature>`:
+Work inside an epic happens on `<slug>-<feature>`:
 
 ```sh
 git checkout sandbox_core_launcher && git pull
-git checkout -b sandbox_core_launcher/profiles-dataclass
+git checkout -b sandbox_core_launcher-profiles_and_registry
 ```
+
+The separator is a dash, not a slash: git will not hold both a ref and a directory
+at the same path, so `sandbox_core_launcher/<feature>` cannot exist while the epic
+branch `sandbox_core_launcher` does.
 
 Feature PRs target the epic branch, never `develop` or `main`. Title them with
 the slug in brackets:
@@ -44,7 +48,7 @@ the slug in brackets:
 ### Promotion path
 
 ```
-<slug>/<feature>  --PR-->  <slug>  --PR-->  develop  --PR-->  main
+<slug>-<feature>  --PR-->  <slug>  --PR-->  develop  --PR-->  main
 ```
 
 `develop` is promoted to `main` by PR when it is stable — not on a schedule.
@@ -138,7 +142,11 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
 - **v1.1 stays out of v1 code.** microsandbox, portless URLs and shared-runtime
   sessions are in [docs/SPEC.md](docs/SPEC.md) and the diagrams. They are not
   stubbed, not `NotImplementedError`-ed, and not allowed for by spare
-  parameters. A spec holds a future design; dead code does not.
+  parameters. A spec holds a future design; dead code does not. One carve-out: a
+  **data-schema field** the SPEC already fixes may ship early — the agent
+  registry's `image` ([§2.2](docs/SPEC.md#22-v11--microsandbox-design-record-not-stubbed-in-v1))
+  means user files survive the second backend without a migration. Spare *code*
+  paths stay banned.
 - **Small modules, plain functions.** Prefer a function to a class and a class to
   a hierarchy. Most of this code should take a `Profile` and return a string or a
   dict, which is also what makes it testable without a sandbox.
