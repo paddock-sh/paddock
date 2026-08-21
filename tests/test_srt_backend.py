@@ -3,6 +3,7 @@
 import json
 import shlex
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -14,6 +15,18 @@ from paddock.profiles import Profile
 
 HOME = Path.home()
 CLAUDE = builtin_agents()["claude"]
+
+# What `env -i` keeps, in the order the backend writes it.
+KEEP_ENV = {
+    "HOME": "/home/x",
+    "USER": "x",
+    "LOGNAME": "x",
+    "SHELL": "/bin/zsh",
+    "TERM": "xterm",
+    "LANG": "en_US.UTF-8",
+    "LC_ALL": "en_US.UTF-8",
+    "TMPDIR": "/tmp/x",
+}
 
 
 class FakeClient:
@@ -47,18 +60,40 @@ def client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
     return fake
 
 
+def inner_command(command: str) -> list[str]:
+    """The command srt runs, split back into words."""
+    return shlex.split(shlex.split(command)[4])
+
+
 # --- settings JSON ---------------------------------------------------------
 
 
-def test_writes_are_allowed_for_the_workdir_the_run_dir_and_temp(tmp_path: Path) -> None:
-    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "run", tmp_path / "work")
+def test_the_settings_hold_every_key_srt_requires() -> None:
+    """srt validates the file against a schema: a missing key is a hard startup failure."""
+    settings = srt.build_settings(Profile(), CLAUDE, Path("/work"))
+
+    assert set(settings) == {"network", "filesystem"}
+    assert set(settings["network"]) == {"allowedDomains", "deniedDomains"}
+    assert set(settings["filesystem"]) == {"denyRead", "allowRead", "allowWrite", "denyWrite"}
+
+
+def test_writes_are_allowed_for_the_workdir_and_temp(tmp_path: Path) -> None:
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work")
 
     allow_write = settings["filesystem"]["allowWrite"]
     assert str(tmp_path / "work") in allow_write
-    assert str(tmp_path / "run") in allow_write
     assert "/tmp" in allow_write
     assert "/private/tmp" in allow_write
     assert "/dev/null" in allow_write
+
+
+def test_the_run_dir_is_not_writable(tmp_path: Path) -> None:
+    """It holds the settings file and the shim dir. The sandbox only reads those."""
+    run_dir = tmp_path / "run"
+
+    settings = srt.build_settings(Profile(), CLAUDE, run_dir / "work")
+
+    assert str(run_dir) not in settings["filesystem"]["allowWrite"]
 
 
 def test_every_configured_path_is_expanded(tmp_path: Path) -> None:
@@ -68,12 +103,17 @@ def test_every_configured_path_is_expanded(tmp_path: Path) -> None:
         shared_dir="~/shared",
         extra_allow_write=["~/scratch"],
     )
-    agent = AgentSpec(command="claude", config_write_paths=["~/.claude"])
+    agent = AgentSpec(
+        command="claude",
+        auth_read_paths=["~/.claude/.credentials.json"],
+        config_write_paths=["~/.claude"],
+    )
 
-    settings = srt.build_settings(profile, agent, tmp_path / "run", tmp_path / "work")
+    settings = srt.build_settings(profile, agent, tmp_path / "work")
 
     assert "~" not in json.dumps(settings)
     assert settings["filesystem"]["denyRead"] == [str(HOME / ".ssh")]
+    assert settings["filesystem"]["allowRead"] == [str(HOME / ".claude/.credentials.json")]
     assert str(HOME / "shared") in settings["filesystem"]["allowWrite"]
     assert str(HOME / "scratch") in settings["filesystem"]["allowWrite"]
     assert str(HOME / ".claude") in settings["filesystem"]["allowWrite"]
@@ -82,10 +122,30 @@ def test_every_configured_path_is_expanded(tmp_path: Path) -> None:
 def test_the_domain_allowlist_comes_from_the_profile(tmp_path: Path) -> None:
     profile = Profile(network_presets=["github"], extra_domains=["example.com"])
 
-    settings = srt.build_settings(profile, CLAUDE, tmp_path / "run", tmp_path / "work")
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work")
 
     assert settings["network"]["allowedDomains"] == profile.allowed_domains()
     assert "example.com" in settings["network"]["allowedDomains"]
+
+
+def test_the_agents_own_credentials_stay_readable(tmp_path: Path) -> None:
+    """Otherwise a profile that denies a whole config dir locks the agent out of itself."""
+    profile = Profile(deny_read=["~/.claude"])
+    agent = AgentSpec(command="claude", auth_read_paths=["~/.claude/.credentials.json"] * 2)
+
+    settings = srt.build_settings(profile, agent, tmp_path / "work")
+
+    assert settings["filesystem"]["allowRead"] == [str(HOME / ".claude/.credentials.json")]
+
+
+def test_a_denied_read_is_a_denied_write_too(tmp_path: Path) -> None:
+    """Sharing the home directory must not make ~/.ssh writable."""
+    profile = Profile(shared_dir="~")
+
+    settings = srt.build_settings(profile, CLAUDE, HOME)
+
+    assert str(HOME / ".ssh") in settings["filesystem"]["denyWrite"]
+    assert settings["filesystem"]["denyWrite"] == settings["filesystem"]["denyRead"]
 
 
 def test_a_path_is_not_listed_twice(tmp_path: Path) -> None:
@@ -93,17 +153,16 @@ def test_a_path_is_not_listed_twice(tmp_path: Path) -> None:
     shared = tmp_path / "repo"
     profile = Profile(shared_dir=str(shared), extra_allow_write=[str(shared)])
 
-    settings = srt.build_settings(profile, CLAUDE, tmp_path / "run", shared)
+    settings = srt.build_settings(profile, CLAUDE, shared)
 
     assert settings["filesystem"]["allowWrite"].count(str(shared)) == 1
 
 
-def test_reads_are_allowed_and_writes_denied_by_default(tmp_path: Path) -> None:
-    """srt's own defaults do the work: nothing to list on either side."""
-    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "run", tmp_path / "work")
+def test_no_domain_is_denied_by_name(tmp_path: Path) -> None:
+    """The allowlist refuses everything else already; the key is written because srt wants it."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work")
 
-    assert settings["filesystem"]["allowRead"] == []
-    assert settings["filesystem"]["denyWrite"] == []
+    assert settings["network"]["deniedDomains"] == []
 
 
 # --- PATH shim dir ---------------------------------------------------------
@@ -112,31 +171,57 @@ def test_reads_are_allowed_and_writes_denied_by_default(tmp_path: Path) -> None:
 def test_the_shim_dir_holds_one_symlink_per_selected_tool(
     which: dict[str, str], tmp_path: Path
 ) -> None:
-    shim = srt.build_shim_dir(tmp_path, ["git"])
+    shim, skipped = srt.build_shim_dir(tmp_path, ["git"])
 
     assert shim == tmp_path / "bin"
     assert sorted(path.name for path in shim.iterdir()) == ["git"]
     assert (shim / "git").readlink() == Path("/usr/bin/git")
+    assert skipped == []
 
 
-def test_a_tool_missing_from_the_host_is_skipped_with_a_warning(
-    which: dict[str, str], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_a_tool_missing_from_the_host_is_reported_and_skipped(
+    which: dict[str, str], tmp_path: Path
 ) -> None:
-    shim = srt.build_shim_dir(tmp_path, ["git", "kubectl"])
+    shim, skipped = srt.build_shim_dir(tmp_path, ["git", "kubectl"])
 
     assert sorted(path.name for path in shim.iterdir()) == ["git"]
-    assert "kubectl" in capsys.readouterr().err
+    assert skipped == ["kubectl"]
+
+
+def test_the_same_tool_twice_makes_one_symlink(which: dict[str, str], tmp_path: Path) -> None:
+    shim, skipped = srt.build_shim_dir(tmp_path, ["git", "git"])
+
+    assert sorted(path.name for path in shim.iterdir()) == ["git"]
+    assert skipped == []
+
+
+def test_a_tool_name_that_is_a_path_is_refused(tmp_path: Path) -> None:
+    """`../escape` would put a symlink outside the shim dir, or blow up with an OSError."""
+    run_dir = tmp_path / "run"
+
+    shim, skipped = srt.build_shim_dir(run_dir, ["../escape", "/bin/sh", "..", ""])
+
+    assert list(shim.iterdir()) == []
+    assert skipped == ["../escape", "/bin/sh", "..", ""]
+    assert not (run_dir / "escape").exists()
+    assert not (tmp_path / "escape").exists()
 
 
 # --- the pane command ------------------------------------------------------
 
 
+def test_the_pane_command_uses_srts_string_mode(which: dict[str, str]) -> None:
+    """srt parses bare arguments as its own flags, so the command goes through -c."""
+    command = srt.pane_command(Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"))
+
+    assert shlex.split(command)[:4] == ["srt", "--settings", "/run/s.json", "-c"]
+
+
 def test_the_shim_dir_comes_first_on_the_sandbox_path(which: dict[str, str]) -> None:
     command = srt.pane_command(Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"))
 
-    outer = shlex.split(command)
-    assert outer[:3] == ["srt", "--settings", "/run/s.json"]
-    assert shlex.split(outer[3]) == ["env", "PATH=/run/bin:/usr/bin:/bin", "claude"]
+    assert "PATH=/run/bin:/usr/bin:/bin" in inner_command(command)
+    assert inner_command(command)[-1] == "claude"
 
 
 def test_without_the_system_path_only_the_shim_dir_is_on_path(which: dict[str, str]) -> None:
@@ -144,16 +229,67 @@ def test_without_the_system_path_only_the_shim_dir_is_on_path(which: dict[str, s
 
     command = srt.pane_command(profile, CLAUDE, Path("/run/s.json"), Path("/run/bin"))
 
-    assert shlex.split(shlex.split(command)[3]) == ["env", "PATH=/run/bin", "claude"]
+    assert "PATH=/run/bin" in inner_command(command)
+
+
+def test_the_sandbox_starts_from_an_empty_environment(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whatever tokens the popup inherited stay outside the sandbox."""
+    for name, value in KEEP_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret-token")
+
+    command = srt.pane_command(Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"))
+
+    assert inner_command(command) == [
+        "env", "-i",
+        *(f"{name}={value}" for name, value in KEEP_ENV.items()),
+        "PATH=/run/bin:/usr/bin:/bin",
+        "claude",
+    ]
+    assert "secret-token" not in command
+
+
+def test_an_unset_variable_is_left_out(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name, value in KEEP_ENV.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("TMPDIR")
+
+    command = srt.pane_command(Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"))
+
+    assert not any(word.startswith("TMPDIR=") for word in inner_command(command))
 
 
 def test_a_path_with_a_space_survives_both_layers_of_quoting(which: dict[str, str]) -> None:
     """The command is a string herdr hands to a shell, and the inner command is one too."""
     command = srt.pane_command(Profile(), CLAUDE, Path("/run dir/s.json"), Path("/run dir/bin"))
 
-    outer = shlex.split(command)
-    assert outer[:3] == ["srt", "--settings", "/run dir/s.json"]
-    assert shlex.split(outer[3]) == ["env", "PATH=/run dir/bin:/usr/bin:/bin", "claude"]
+    assert shlex.split(command)[2] == "/run dir/s.json"
+    assert "PATH=/run dir/bin:/usr/bin:/bin" in inner_command(command)
+
+
+def test_the_composed_command_survives_a_real_shell(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """srt is handed the command by a shell, so run it past one — a stub srt, never the real one."""
+    stub_dir = tmp_path / "stub bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "srt"
+    stub.write_text('#!/bin/sh\nfor arg in "$@"; do echo "$arg"; done\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub_dir))
+
+    command = srt.pane_command(Profile(), CLAUDE, tmp_path / "s.json", tmp_path / "shim dir")
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+
+    assert result.returncode == 0
+    argv = result.stdout.splitlines()
+    assert argv[:3] == ["--settings", str(tmp_path / "s.json"), "-c"]
+    assert shlex.split(argv[3])[:2] == ["env", "-i"]
+    assert f"PATH={tmp_path / 'shim dir'}:/usr/bin:/bin" in shlex.split(argv[3])
 
 
 # --- finding srt -----------------------------------------------------------
@@ -237,10 +373,9 @@ def test_launch_puts_the_run_dir_shim_on_the_sandbox_path(
     srt.launch(Profile(tools=["git"]))
 
     _, command = client.commands[0]
-    settings_path = Path(shlex.split(command)[2])
-    shim = settings_path.parent / "bin"
+    shim = Path(shlex.split(command)[2]).parent / "bin"
     assert (shim / "git").is_symlink()
-    assert f"PATH={shim}:/usr/bin:/bin" in shlex.split(shlex.split(command)[3])
+    assert f"PATH={shim}:/usr/bin:/bin" in inner_command(command)
 
 
 def test_launch_shims_the_agent_binary_too(which: dict[str, str], client: FakeClient) -> None:
@@ -265,6 +400,29 @@ def test_an_agent_named_by_absolute_path_is_not_shimmed(
     _, command = client.commands[0]
     shim = Path(shlex.split(command)[2]).parent / "bin"
     assert sorted(path.name for path in shim.iterdir()) == ["git"]
+    assert inner_command(command)[-1] == "/bin/zsh"
+
+
+def test_a_multi_word_agent_command_is_shimmed_by_its_first_word(
+    which: dict[str, str], client: FakeClient, config_dir: Path
+) -> None:
+    (config_dir / "agents").mkdir(parents=True)
+    (config_dir / "agents" / "wrapped.json").write_text(json.dumps({"command": "npx claude-code"}))
+
+    srt.launch(Profile(agent="wrapped", tools=[]))
+
+    _, command = client.commands[0]
+    shim = Path(shlex.split(command)[2]).parent / "bin"
+    assert (shim / "npx").is_symlink()
+    assert inner_command(command)[-2:] == ["npx", "claude-code"]
+
+
+def test_launch_reports_the_tools_it_could_not_shim(
+    which: dict[str, str], client: FakeClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    srt.launch(Profile(tools=["kubectl"]))
+
+    assert "kubectl" in capsys.readouterr().err
 
 
 def test_launch_does_not_create_a_tab_when_srt_is_missing(

@@ -17,13 +17,19 @@ class FakeHerdr:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
         self.stdout = PANE_JSON
+        self.stderr = ""
+        self.returncode = 0
         self.error: Exception | None = None
 
-    def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+    def __call__(
+        self, argv: list[str], check: bool = False, **kwargs: object
+    ) -> subprocess.CompletedProcess:
         self.calls.append(argv)
         if self.error is not None:
             raise self.error
-        return subprocess.CompletedProcess(argv, 0, stdout=self.stdout, stderr="")
+        if check and self.returncode:
+            raise subprocess.CalledProcessError(self.returncode, argv, self.stdout, self.stderr)
+        return subprocess.CompletedProcess(argv, self.returncode, self.stdout, self.stderr)
 
     @property
     def argv(self) -> list[str]:
@@ -91,9 +97,19 @@ def test_a_missing_herdr_binary_is_a_clear_error(herdr: FakeHerdr, tmp_path: Pat
 
 
 def test_a_failing_herdr_command_reports_its_stderr(herdr: FakeHerdr, tmp_path: Path) -> None:
-    herdr.error = subprocess.CalledProcessError(1, "herdr", stderr="no such workspace\n")
+    herdr.returncode = 1
+    herdr.stderr = "no such workspace\n"
 
     with pytest.raises(HerdrError, match="no such workspace"):
+        create_tab(tmp_path)
+
+
+def test_a_pane_id_that_is_not_a_string_is_a_clear_error(
+    herdr: FakeHerdr, tmp_path: Path
+) -> None:
+    herdr.stdout = json.dumps({"result": {"root_pane": None}})
+
+    with pytest.raises(HerdrError, match="pane id"):
         create_tab(tmp_path)
 
 

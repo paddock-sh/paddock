@@ -9,6 +9,7 @@ binary on the host (SPEC §4.1).
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import sys
@@ -21,6 +22,9 @@ from paddock.agents import AgentSpec, load_agents
 from paddock.profiles import Profile
 
 INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
+
+# All the sandbox inherits from the popup. Anything else — API tokens above all — stays out.
+KEEP_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
 
 class SrtNotFound(RuntimeError):
@@ -50,39 +54,53 @@ def workdir_for(profile: Profile, run_dir: Path) -> Path:
     return workdir
 
 
-def build_shim_dir(run_dir: Path, tools: list[str]) -> Path:
-    """Symlink the selected tools into a directory that becomes the sandbox PATH."""
+def build_shim_dir(run_dir: Path, tools: list[str]) -> tuple[Path, list[str]]:
+    """Symlink the selected tools into a directory that becomes the sandbox PATH.
+
+    Returns the directory and the tools it could not shim, for the caller to report.
+    """
     shim = run_dir / "bin"
     shim.mkdir(parents=True, exist_ok=True)
-    missing = []
+    skipped = []
     for tool in tools:
-        target = shutil.which(tool)
+        target = shutil.which(tool) if _is_plain_name(tool) else None
         if target is None:
-            missing.append(tool)
+            skipped.append(tool)
             continue
         link = shim / tool
         if not link.is_symlink():
             link.symlink_to(target)
-    if missing:
-        print(f"paddock: not on the host PATH, skipped: {', '.join(missing)}", file=sys.stderr)
-    return shim
+    return shim, skipped
 
 
-def build_settings(profile: Profile, agent: AgentSpec, run_dir: Path, workdir: Path) -> dict:
-    """The srt policy for one run. Every configured path is expanded here (SPEC §2.1)."""
-    allow_write = [workdir, run_dir, Path("/tmp"), Path("/private/tmp"), Path("/dev/null")]
+def build_settings(profile: Profile, agent: AgentSpec, workdir: Path) -> dict:
+    """The srt policy for one run. Every configured path is expanded here (SPEC §2.1).
+
+    srt validates this against a schema and refuses to start if a key is missing, so
+    every key is written even when its list is empty.
+    """
+    # /tmp and /private/tmp are one directory under two names on macOS; srt matches the
+    # path as written. /dev/null is here so discarded output works.
+    allow_write = [workdir, Path("/tmp"), Path("/private/tmp"), Path("/dev/null")]
     if profile.shared_dir:
         allow_write.append(_expand(profile.shared_dir))
+    # Known gap: this is the agent's real config dir. Blocking it breaks the agent; the
+    # synthesized config dir (SPEC §4.3) closes it by pointing the agent somewhere else.
     allow_write += [_expand(path) for path in agent.config_write_paths]
     allow_write += [_expand(path) for path in profile.extra_allow_write]
+    deny_read = [_expand(path) for path in profile.deny_read]
     return {
-        "network": {"allowedDomains": profile.allowed_domains()},
+        "network": {
+            "allowedDomains": profile.allowed_domains(),
+            "deniedDomains": [],
+        },
         "filesystem": {
-            "denyRead": [str(_expand(path)) for path in profile.deny_read],
-            # srt allows reads and denies writes by default, so both lists stay empty.
-            "allowRead": [],
-            "allowWrite": list(dict.fromkeys(str(path) for path in allow_write)),
-            "denyWrite": [],
+            "denyRead": _as_strings(deny_read),
+            # The selected agent's own credentials, so a broad deny_read cannot lock it out.
+            "allowRead": _as_strings(_expand(path) for path in agent.auth_read_paths),
+            "allowWrite": _as_strings(allow_write),
+            # What the agent may not read, it may not write either.
+            "denyWrite": _as_strings(deny_read),
         },
     }
 
@@ -92,8 +110,12 @@ def pane_command(profile: Profile, agent: AgentSpec, settings: Path, shim: Path)
     entries = [str(shim)]
     if profile.include_system_path:
         entries += ["/usr/bin", "/bin"]
-    inner = f"env PATH={shlex.quote(':'.join(entries))} {agent.command}"
-    return shlex.join([*find_srt(), "--settings", str(settings), inner])
+    keep = [f"{name}={os.environ[name]}" for name in KEEP_ENV if os.environ.get(name)]
+    path = "PATH=" + ":".join(entries)
+    inner = shlex.join(["env", "-i", *keep, path, *shlex.split(agent.command)])
+    # -c takes the whole command as one string. Passed as bare words, srt's own parser
+    # reads the agent's flags as its own.
+    return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
 
 
 def launch(profile: Profile) -> str:
@@ -106,13 +128,12 @@ def launch(profile: Profile) -> str:
     workdir = workdir_for(profile, run_dir)
     # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
     # An agent named by absolute path — the shell, say — is found without one.
-    tools = list(profile.tools)
-    if "/" not in agent.command:
-        tools.append(agent.command)
-    shim = build_shim_dir(run_dir, tools)
+    tools = list(profile.tools) + shlex.split(agent.command)[:1]
+    shim, skipped = build_shim_dir(run_dir, tools)
+    if skipped:
+        print(f"paddock: left off the sandbox PATH: {', '.join(skipped)}", file=sys.stderr)
     settings = run_dir / "srt-settings.json"
-    body = json.dumps(build_settings(profile, agent, run_dir, workdir), indent=2)
-    settings.write_text(body + "\n")
+    settings.write_text(json.dumps(build_settings(profile, agent, workdir), indent=2) + "\n")
     # Composed before the tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim)
 
@@ -129,3 +150,13 @@ def launch_local(cwd: Path) -> str:
 
 def _expand(path: str) -> Path:
     return Path(path).expanduser()
+
+
+def _as_strings(paths) -> list[str]:
+    """Paths as strings, in order, without repeats."""
+    return list(dict.fromkeys(str(path) for path in paths))
+
+
+def _is_plain_name(tool: str) -> bool:
+    """A tool is a bare filename: `../escape` would put a symlink outside the shim dir."""
+    return bool(tool) and "/" not in tool and not tool.startswith(".")
