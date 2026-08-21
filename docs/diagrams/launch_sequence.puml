@@ -74,8 +74,8 @@ Agents --> Backend : AgentSpec (command, api_domains,\nconfig_write_paths)
 deactivate Agents
 Backend -> Backend : new_run_dir()\n$PADDOCK_STATE_DIR/runs/<timestamp>-<rand>/
 Backend -> Backend : workdir_for(profile, run_dir)\nshared_dir, else run_dir/work (isolated)
-Backend -> Backend : build_shim_dir(run_dir, profile.tools)\nsymlink one binary per tool via shutil.which;\nmissing tools warned about and skipped
-Backend -> Backend : build_settings(profile, agent, run_dir, workdir)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only)\nfilesystem.allowWrite (workdir, run dir, /tmp,\n/private/tmp, /dev/null, config_write_paths)\nfilesystem.denyRead (~/.ssh, ~/.aws, ...)\nevery configured path expanded here
+Backend -> Backend : build_shim_dir(run_dir, tools)\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
+Backend -> Backend : build_settings(profile, agent, workdir)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp,\n/dev/null, config_write_paths) — not the run dir\nfilesystem.allowRead (the agent's own credentials)\nfilesystem.denyRead = denyWrite (~/.ssh, ~/.aws, ...)\nevery configured path expanded here
 Backend -> Agents : layer-2 agent config (planned)
 Backend -> Synth : build synthetic config dir (planned)\n-> CLAUDE_CONFIG_DIR via `tab create --env`
 Backend -> Backend : pane_command(...)\nfind_srt(): `srt`, else `npx -y @anthropic-ai/sandbox-runtime`\n(composed before any tab exists, so a missing srt\nfails with no empty pane left behind)
@@ -86,7 +86,7 @@ Client -> Herdr : herdr tab create [--workspace <id>]\n--cwd <workdir> --label s
 Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:p2"}}}
 Client --> Backend : "wA:p2"
 Backend -> Client : run_in_pane("wA:p2", command)
-Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> 'env PATH=<shim>:/usr/bin:/bin <agent>'`
+Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars>`\n`PATH=<shim>:/usr/bin:/bin <agent>'`
 deactivate Client
 Backend --> CLI : pane_id
 deactivate Backend

@@ -51,7 +51,7 @@ CLI --> BackendAPI : launch <profile>
 BackendAPI <|.. SrtBackend
 BackendAPI <|.. MsbBackend
 
-SrtBackend --> RunDir : writes PATH shim dir\n+ srt-settings.json
+SrtBackend --> RunDir : writes PATH shim dir,\nsrt-settings.json + scratch workdir
 Sessions --> BackendAPI : new session -> launch;\nattach -> reuse settings + workdir (srt)\nor exec into guest (msb)
 SrtBackend ..> SynthConfig : build config dir
 MsbBackend ..> SynthConfig : build config dir (copied,\nno symlinks in a microVM)
@@ -65,10 +65,10 @@ HerdrUI --> Srt : sandboxed pane process (v1)
 HerdrUI ..> Msb : sandboxed pane process (v1.1)
 
 note right of BackendAPI
-  Backends return a command string.
-  They never create panes themselves —
-  that keeps them testable without a
-  running herdr server.
+  A backend works the whole launch out as
+  plain functions, then opens the pane through
+  herdr_client. That client is the seam every
+  test mocks, so CI needs no herdr and no srt.
 end note
 
 note bottom of HerdrClient
