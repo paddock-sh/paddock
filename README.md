@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.jpeg" alt="paddock — four horses at a fence" width="360"></p>
+
 # paddock
 
 A paddock for your herd — sandboxed agent environments for
