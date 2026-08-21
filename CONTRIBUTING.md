@@ -27,12 +27,16 @@ It merges back into `develop` by PR, after review.
 
 ### Feature branches
 
-Work inside an epic happens on `<slug>/<feature>`:
+Work inside an epic happens on `<slug>-<feature>`:
 
 ```sh
 git checkout sandbox_core_launcher && git pull
-git checkout -b sandbox_core_launcher/profiles-dataclass
+git checkout -b sandbox_core_launcher-profiles_and_registry
 ```
+
+The separator is a dash, not a slash: git stores `refs/heads/sandbox_core_launcher`
+as a file, so it cannot also hold `refs/heads/sandbox_core_launcher/<feature>` as a
+directory. A slash makes the branch uncreatable while the epic branch exists.
 
 Feature PRs target the epic branch, never `develop` or `main`. Title them with
 the slug in brackets:
@@ -44,7 +48,7 @@ the slug in brackets:
 ### Promotion path
 
 ```
-<slug>/<feature>  --PR-->  <slug>  --PR-->  develop  --PR-->  main
+<slug>-<feature>  --PR-->  <slug>  --PR-->  develop  --PR-->  main
 ```
 
 `develop` is promoted to `main` by PR when it is stable — not on a schedule.
