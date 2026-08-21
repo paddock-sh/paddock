@@ -1,6 +1,8 @@
 # paddock — Specification
 
-Status: **pre-alpha.** Nothing in section 7 is implemented.
+Status: **pre-alpha.** Section 7 is being built. Profiles, the agent registry, the
+herdr client and the srt backend exist; sessions, the synthesized config dir, the
+TUI and the CLI do not.
 
 paddock takes over new-window creation in [herdr](https://herdr.dev) (a terminal
 multiplexer for AI coding agents, **v0.8.0**) and replaces it with a popup
@@ -109,12 +111,13 @@ keybinding. The keybinding keeps working; the manifest is sugar over it.
 One interface:
 
 ```
-Backend.launch(profile, workdir) -> pane command
+Backend.launch(profile) -> pane id
 ```
 
-It returns the command string that `herdr pane run` executes. Backends never
-create panes. That keeps them testable with no herdr server and keeps the herdr
-client mockable (§7).
+A backend works out the whole launch — settings file, shim dir, pane command —
+as plain functions, then opens the tab and starts the command through
+`herdr_client` (§7). `herdr_client` is the seam every test mocks, so a backend is
+still testable with no herdr server and no sandbox.
 
 The interface exists because v1 needs it, to keep srt's settings and invocation
 out of the chooser — not in anticipation of a second backend.
@@ -141,34 +144,68 @@ milliseconds, which is what makes a per-window chooser workable.
   },
   "filesystem": {
     "denyRead":   ["/Users/me/.ssh", "/Users/me/.aws"],
-    "allowRead":  [],
-    "allowWrite": ["/path/to/workdir", "/tmp"],
-    "denyWrite":  []
+    "allowRead":  ["/Users/me/.claude/.credentials.json"],
+    "allowWrite": ["/path/to/workdir", "/tmp", "/private/tmp", "/dev/null"],
+    "denyWrite":  ["/Users/me/.ssh", "/Users/me/.aws"]
   }
 }
 ```
+
+srt validates the file against a schema and refuses to start when a key is
+missing, so every key is written even when its list is empty.
 
 Three defaults shape everything else:
 
 - **Reads are allowed by default.** `denyRead` is a blocklist, which is why every
   profile ships a deny list for credential directories (§6). Leave it out and the
-  agent can read them.
-- **Writes are denied by default.** `allowWrite` gets the workdir, the run dir,
-  `/tmp`, and the shared directory if there is one.
-- **Network is allowlist-only.** Anything not listed is refused.
+  agent can read them. `allowRead` holds the selected agent's own credentials, so
+  a broad `deny_read` cannot lock the agent out of itself.
+- **Writes are denied by default.** `allowWrite` gets the workdir, the shared
+  directory if there is one, `/tmp` and `/private/tmp` — one directory under two
+  names on macOS, and srt matches the path as written — and `/dev/null`, so
+  discarded output works. `$TMPDIR` joins them when the host sets one, resolved
+  through its symlinks, because the sandbox keeps that variable and tools write
+  where it points. The run directory itself is **not** writable: it holds
+  the settings file and the shim dir, which the sandbox only reads. `denyWrite`
+  mirrors `denyRead`, so a denied path is off limits both ways.
+- **Network is allowlist-only.** Anything not listed is refused. `deniedDomains`
+  stays empty; it is written because the schema wants the key.
+
+**Known gap:** `allowWrite` also gets the agent's `config_write_paths`, which is
+its real config directory. Blocking it breaks the agent. Layer 3 (§4.3) closes
+this by pointing the agent at a synthesized config dir instead; until that ships,
+a sandboxed agent can write to its own config.
 
 Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expands
 `~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
 `config_write_paths`, `shared_dir`, `extra_allow_write`) when it generates the
 settings file, so profiles stay portable between machines.
 
+Each launch gets its own timestamped directory under
+`~/.local/state/paddock/runs/`, holding the settings file, the PATH shim dir, and
+the scratch workdir when the profile shares no host directory.
+`PADDOCK_STATE_DIR` overrides the state directory; tests point it at a temporary
+one. Nothing collects old run directories yet.
+
 **Invocation:**
 
 ```sh
-srt --settings <settings-file> "<command>"
+srt --settings <settings-file> -c "<command>"
 ```
 
-The inner command is the agent, wrapped so `PATH` points at the shim dir (§4.1).
+`-c` matters. srt shell-quotes each argument and runs the result under bash, so
+the command has to arrive as one string; passed as bare words, srt's own flag
+parser reads the agent's flags as its own.
+
+The inner command is the agent, wrapped so it starts from an empty environment:
+
+```sh
+env -i HOME=... USER=... LOGNAME=... SHELL=... TERM=... LANG=... LC_ALL=... \
+       TMPDIR=... PATH=<shim dir>:/usr/bin:/bin <agent>
+```
+
+The keep list is deliberately short. Everything the popup inherited — API tokens
+above all — stays outside the sandbox. `PATH` points at the shim dir (§4.1).
 
 ### 2.2 v1.1 — `microsandbox` (design record, not stubbed in v1)
 

@@ -166,6 +166,16 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
 Removing an abstraction or cutting a paragraph is as legitimate a change as
 adding a feature.
 
+## PR descriptions and comments
+
+Three headings, a few lines each:
+
+**What** — what changed. **Why** — why it needed changing. **Tests** — what
+proves it works.
+
+Plain English, no jargon, readable at a glance. `.github/pull_request_template.md`
+holds the skeleton. The same standard applies to comments on a PR.
+
 ## Commit messages
 
 Conventional prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `test:`,

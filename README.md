@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.jpeg" alt="paddock — four horses at a fence" width="360"></p>
+
 # paddock
 
 A paddock for your herd — sandboxed agent environments for
@@ -7,7 +9,7 @@ Herdr is a terminal multiplexer for AI coding agents. paddock takes over
 new-window creation and asks what you want: a plain local tab, or an agent in a
 sandbox whose permissions you pick on the spot. Targets **herdr 0.8.0**.
 
-> **Status: pre-alpha.** The spec is written; the modules are not built. Nothing
+> **Status: pre-alpha.** The spec is written; the modules are being built. Nothing
 > here is a security boundary yet. See [docs/SPEC.md](docs/SPEC.md) for the
 > design and [CONTRIBUTING.md](CONTRIBUTING.md) for how work lands.
 
