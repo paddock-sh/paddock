@@ -1,0 +1,57 @@
+@startuml chooser_flow
+title paddock — the chooser: questions in, one plan out
+
+skinparam shadowing false
+skinparam defaultTextAlignment center
+
+start
+:herdr popup runs `paddock`\n(no subcommand means `choose`);
+
+if (subcommand) then (profiles)
+  :print one line per profile:\nagent, workdir, network;
+  stop
+elseif (launch <profile>) then
+  :load the saved profile\n(--cwd shares that directory instead);
+  :plan = NewSession(profile);
+elseif (attach <session>) then
+  :plan = Attach(session ref, cwd);
+else (choose)
+  :sessions.list_sessions();
+  if (what kind of window?) then (Local)
+    :plan = Local(cwd);
+  elseif (Attach\n— offered only when a session is live) then
+    :pick a session by name, agent, tab count;
+    :plan = Attach(session id, cwd);
+  else (New sandbox session)
+    partition "permissions questionnaire" {
+      :start from a saved profile, or Custom;
+      :agent from the registry,\nor a command typed in;
+      :tools — candidates found on PATH,\nticked as the profile has them;
+      :network presets, plus typed domains;
+      :skills under the agent's config dir\n(skipped when it has none);
+      :share a host directory?\n(default: the popup's cwd);
+      :session name, and whether to\nsave the answers as a profile;
+    }
+    :plan = NewSession(profile, name, save as);
+  endif
+endif
+
+if (--dry-run) then (yes)
+  :print what would happen;
+  stop
+else (no)
+endif
+
+:save the profile and remember a typed-in\nagent, if the answers asked for it;
+:sessions.launch_local / attach / launch;
+:print the pane id;
+stop
+
+note right
+  Ctrl-C or escape answers None at any question.
+  The chooser then returns no plan at all, and
+  cli.py stops. Only cli.py calls sessions, so
+  backing out cannot leave a pane or a file behind.
+end note
+
+@enduml
