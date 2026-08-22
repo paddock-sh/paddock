@@ -1,0 +1,94 @@
+@startuml init_flow
+title paddock init: splicing the keybinding into herdr's config (SPEC §1.1)
+
+skinparam shadowing false
+skinparam defaultTextAlignment center
+
+start
+:`paddock init`\n(cli.py -> init.run);
+:config = $HOME/.config/herdr/config.toml;
+
+if (~--undo) then (yes)
+  if (a config.toml.paddock-backup-* next to it?) then (no)
+    :error: nothing to restore from;
+    stop
+  else (yes)
+  endif
+  if (~--dry-run) then (yes)
+    :name the backup, print the diff,\ntouch nothing;
+    stop
+  else (no)
+  endif
+  :copy the current config aside as\nconfig.toml.paddock-undone-<timestamp>,\nso edits made since init are not lost;
+  :copy the newest backup over the config,\nthen delete that backup;
+  :herdr_client.reload_config()\n(a failure is a message, not an error:\nherdr may not be running);
+  stop
+else (no)
+endif
+
+partition "splice: text, not parsed TOML\n(a round trip would drop the user's comments)" {
+  :read the config, or start from\nempty when herdr has written none;
+  :give the last line an ending, so an\ninserted line cannot glue onto it;
+  :drop any old block between the\npaddock (managed) marker comments\n(a later marker wins, so a stray one\ncannot swallow the lines below it);
+  if (keys set outside a table?\n(dotted key or inline table)) then (yes)
+    :refuse: say to move them into a\n[keys] table by hand;
+    stop
+  else (no)
+  endif
+  if (a [keys] table in what is left?) then (yes)
+    if (new_tab bound in it?) then (to herdr's default "prefix+c")
+      :rewrite that line to "prefix+shift+c",\nkeeping any comment after it;
+    elseif (not bound at all) then
+      :insert new_tab = "prefix+shift+c"\nunder herdr's commented default,\nor under [keys] when there is none;
+    elseif (to something of the user's own) then
+      :leave it alone, and say so;
+    else (already moved)
+    endif
+    :block = one ~[~[keys.command~]~] entry;
+  else (no)
+    :block = [keys] + new_tab + ~[~[keys.command~]~];
+  endif
+  :append the block between the markers,\nin the file's own line ending;
+}
+
+if (same text as before?) then (yes)
+  :say it is already wired up;
+  stop
+else (no)
+endif
+
+if (does the result parse as TOML?) then (no)
+  :error: say the result would not be\nvalid TOML, change nothing;
+  stop
+else (yes)
+endif
+
+if (~--dry-run) then (yes)
+  :print the unified diff;
+  stop
+else (no)
+endif
+
+:copy the config to\nconfig.toml.paddock-backup-<timestamp>\n(nothing to copy when there was no config);
+:write the spliced config;
+
+if (herdr config check) then (refused)
+  :put the old config back,\nor take the new file away;
+  :error: report what herdr said;
+  stop
+else (ok, or no herdr to ask)
+endif
+
+:herdr_client.reload_config()\n(a failure is a message, not an error:\nherdr may not be running);
+:say to press prefix+c;
+stop
+
+note right
+  Stripping the old block before looking at
+  the file is what makes a second run a no-op
+  and an older block an update, not a copy.
+  Everything outside the block and the one
+  new_tab line is byte for byte as it was.
+end note
+
+@enduml
