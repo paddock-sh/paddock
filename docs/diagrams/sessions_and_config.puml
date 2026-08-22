@@ -1,5 +1,5 @@
 @startuml sessions_and_config
-title paddock — sessions and the synthesized config dir
+title paddock: sessions and the synthesized config dir
 
 allowmixing
 set separator none
@@ -9,10 +9,10 @@ skinparam classAttributeIconSize 0
 package "sessions.py" {
   class Session <<dataclass>> {
     session_id
-    name — unique among live sessions
+    name: unique among live sessions
     profile_name
     agent
-    created_at — ISO 8601 UTC
+    created_at: ISO 8601 UTC
     run_dir
     keep_alive
     pane_ids
@@ -20,7 +20,7 @@ package "sessions.py" {
   class "functions" as SessionFns {
     list_sessions()
     get_session(name or id)
-    create_session(profile, name) — opens no pane
+    create_session(profile, name): opens no pane
     attach(session, cwd) -> pane id
     launch(profile, name) = create + attach
     remove_pane(pane_id)
@@ -48,13 +48,13 @@ database "$PADDOCK_STATE_DIR\n(default $HOME/.local/state/paddock)" as StateDir 
   folder "runs/<timestamp>-<rand>/" as RunDir {
     file "srt-settings.json" as Settings
     file "launch.json\ncommand + workdir + env" as Launch
-    folder "bin/ — one symlink per ticked tool" as Shim
-    folder "work/ — scratch workdir" as Work
+    folder "bin/: one symlink per ticked tool" as Shim
+    folder "work/: scratch workdir" as Work
     folder "config/" as Config {
       file ".credentials.json -> the real key, or the agent's\nown login exported from the Keychain at 0600" as Creds
-      file ".claude.json — a writable copy,\nminus every mcpServers key" as AgentJson
-      file ".mcp.json — ticked servers only" as Mcp
-      folder "skills/ — ticked skills only" as Skills
+      file ".claude.json: a writable copy,\nminus every mcpServers key" as AgentJson
+      file ".mcp.json: ticked servers only" as Mcp
+      folder "skills/: ticked skills only" as Skills
     }
   }
 }
@@ -75,7 +75,7 @@ RealConfig --> Skills : only the names the profile lists
 note right of Session
   One session, one settings file, one workdir.
   Every attached tab is a separate process tree
-  under the same policy — srt has no guest for a
+  under the same policy: srt has no guest for a
   second process to join (SPEC section 3.2).
 
   remove_pane drops the session when its last
@@ -91,7 +91,7 @@ note bottom of RealConfig
   the skills and MCP servers nobody ticked are not
   there to read. srt checks the path a symlink
   resolves to, so the settings allow what the
-  config dir links to back by name — the key and
+  config dir links to back by name: the key and
   the ticked skills, read-only. What it copied is
   denied on the host instead (SPEC section 4.3).
 end note

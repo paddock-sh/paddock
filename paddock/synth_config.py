@@ -111,7 +111,7 @@ def skill_dirs(agent: AgentSpec) -> list[Path]:
 def discard_credentials(run_dir: Path) -> None:
     """Delete the credential file of a run nobody is using any more (SPEC §8).
 
-    The rest of the run dir stays — deleting a workdir would lose work — but an exported
+    The rest of the run dir stays, because deleting a workdir would lose work, but an exported
     token must not outlive the session. A symlinked one loses only the link.
     """
     (run_dir / "config" / CREDENTIALS_FILE).unlink(missing_ok=True)
@@ -168,7 +168,7 @@ def _export_token(service: str, dest: Path) -> None:
     A token on disk, so it goes nowhere but the run dir, readable by its owner alone, and
     holds the agent's own login and nothing else: the same entry keeps a token per MCP
     server the user has authorised, and no whitelist loads those. An entry of an
-    unrecognised shape is left where it is — "Not logged in" is better than an unknown
+    unrecognised shape is left where it is: "Not logged in" is better than an unknown
     blob of secrets on disk. Anywhere without `security`, or without that entry, gets no
     file (SPEC §4.3).
     """

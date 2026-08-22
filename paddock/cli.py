@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import sessions, tui
+from paddock import init, sessions, tui
 from paddock.profiles import Profile, load_profiles
 
 
@@ -20,6 +20,7 @@ class Command:
     ref: str = ""
     cwd: str = ""
     dry_run: bool = False
+    undo: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,6 +46,7 @@ def parse_args(argv: list[str]) -> Command:
         ref=getattr(args, "ref", ""),
         cwd=getattr(args, "cwd", ""),
         dry_run=getattr(args, "dry_run", False),
+        undo=getattr(args, "undo", False),
     )
 
 
@@ -54,6 +56,8 @@ def run(command: Command) -> int:
         for line in profile_lines(load_profiles()):
             print(line)
         return 0
+    if command.name == "init":
+        return init.run(dry_run=command.dry_run, undo=command.undo)
 
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
@@ -164,6 +168,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
     subcommands.add_parser("profiles", help="list saved profiles")
+    setup = subcommands.add_parser(
+        "init", parents=[dry], help="bind the chooser to prefix+c in herdr's config"
+    )
+    setup.add_argument(
+        "--undo", action="store_true", help="put the newest backed-up herdr config back"
+    )
     return parser
 
 

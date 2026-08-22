@@ -1,17 +1,17 @@
-<p align="center"><img src="assets/logo.png" alt="paddock — four horses at a fence" width="360"></p>
+<p align="center"><img src="assets/logo.png" alt="paddock: four horses at a fence" width="360"></p>
 
 # paddock
 
-A paddock for your herd — sandboxed agent environments for
+A paddock for your herd: sandboxed agent environments for
 [Herdr](https://herdr.dev).
 
 Herdr is a terminal multiplexer for AI coding agents. paddock takes over
 new-window creation and asks what you want: a plain local tab, or an agent in a
 sandbox whose permissions you pick on the spot. Targets **herdr 0.8.0**.
 
-> **Status: pre-alpha.** The spec is written; the modules are being built. Nothing
-> here is a security boundary yet. See [docs/SPEC.md](docs/SPEC.md) for the
-> design and [CONTRIBUTING.md](CONTRIBUTING.md) for how work lands.
+> **Status:** the v1 launcher works end to end. It has had no outside security
+> review, so read the [trust model](#trust-model) before you point it at anything
+> valuable. Where this is going: [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## The chooser
 
@@ -30,13 +30,13 @@ New window:
 
 | Question | What it controls |
 | --- | --- |
-| Which agent? | `claude`, `codex`, `opencode`, `aider`, `gemini`, or a plain shell |
+| Which agent? | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or any command you type |
 | Which tools? | The binaries on the sandbox `PATH` |
-| Which network? | The domain allowlist — everything else is refused |
+| Which network? | The domain allowlist. Everything else is refused |
 | Share a directory? | A host directory, read-write, or an isolated scratch workdir |
 | Which skills / MCP servers? | Only the ones you tick exist inside the sandbox |
 
-**Attach to an existing session** lists live sessions with their name, backend,
+**Attach to an existing session** lists live sessions with their name, agent,
 profile and attached tabs.
 
 Save any set of answers as a **profile** and reuse it next time. Plain new-tab
@@ -45,64 +45,102 @@ moves to `prefix+shift+c`.
 ## Sessions
 
 A **session** is one running sandbox with a name. Every tab attaches to one
-session, or to none. That covers the layouts people want:
+session, or to none, and sandboxed tabs are labelled `sbx:<session>` in the tab
+bar. That one rule covers the layouts people want:
 
-- a whole workspace in one sandbox (new tabs auto-attach via a workspace default),
-- a group of tabs in one sandbox while sibling tabs stay local,
+- a whole workspace in one sandbox,
+- a group of tabs sharing one session's policy and workdir while sibling tabs
+  stay local,
 - several sandboxes side by side in one workspace,
 - a local tab running an orchestrating agent that drives the sandboxed ones
   through the herdr CLI.
 
-What attaching means depends on the backend. With `microsandbox`, tabs share one
-guest: same filesystem, same processes. With `srt`, tabs share a settings file
-and a workdir but get **separate process trees**. So tab groups are useful in v1;
-shared runtime arrives with `msb`.
-
-Sessions survive Herdr restarts and are labelled `sbx:<session>` in the tab bar.
-See [docs/SPEC.md §3](docs/SPEC.md#3-sandbox-sessions).
-
-## Backends
-
-| | `srt` (v1) | `microsandbox` (v1.1, spec only) |
-| --- | --- | --- |
-| Technology | [Anthropic sandbox-runtime](https://github.com/anthropics/sandbox-runtime) | libkrun microVMs (`msb`) |
-| Isolation | Seatbelt (macOS) / bubblewrap (Linux) | Hardware-virtualised microVM |
-| Filesystem | Host FS, write-path allowlist | OCI image plus volume mounts |
-| Network | Domain allowlist | Host/port policy, `.localhost` URLs per sandbox |
-| Startup | Milliseconds | Sub-second |
-| Status | Being built | Specified, not implemented |
-
-Both sit behind one interface, so a profile can move between them.
+Sessions outlive the popup that made them and survive Herdr restarts. With the
+v1 backend, attached tabs share a settings file and a workdir but get **separate
+process trees**: shared files, never a shared runtime. See
+[docs/SPEC.md §3](docs/SPEC.md#3-sandbox-sessions).
 
 ## Trust model
 
-Three layers. Two are hard:
+Sandboxes run under [Anthropic's sandbox-runtime](https://github.com/anthropics/sandbox-runtime)
+(`srt`): Seatbelt on macOS, bubblewrap on Linux. Three layers of permission sit
+on top of it, and two of them are hard:
 
-1. **OS-level (hard)** — write paths and network domains, enforced by the kernel
-   sandbox. The agent cannot argue its way out.
-2. **Agent config (agent-enforced)** — generated permission config the agent
-   applies to itself. Useful friction, not a boundary.
-3. **Synthesized config dir (hard)** — the agent's config directory is rebuilt
-   with only its credentials and the skills you ticked, so unselected skills and
-   MCP servers are not there to find.
+1. **OS-level (hard).** Write paths and network domains, enforced by the kernel
+   sandbox. Writes are denied by default, the network is allowlist-only, and the
+   agent cannot argue its way out.
+2. **Agent config (agent-enforced).** Generated permission config the agent
+   applies to itself, so its prompts agree with the sandbox. Useful friction, not
+   a boundary.
+3. **Synthesized config dir (hard).** The agent's config directory is rebuilt per
+   session with only its credentials and the skills you ticked, so unselected
+   skills and MCP servers are not there to find.
+
+**Credentials.** A sandbox gets the selected agent's own login and nothing else:
+its credential file, or on macOS the token exported from the login Keychain into
+that session's config dir. Files the agent writes back to are copies, so your
+real config is never touched, and no agent is given another agent's keys, your
+SSH keys or your cloud credentials. Verified live: a sandboxed Claude Code
+authenticates, answers, and cannot write outside its paddock.
 
 [docs/SPEC.md §4](docs/SPEC.md#4-three-enforcement-layers) covers what each layer
 does and does not stop, including known bypasses.
 
-## Install
+## Command line
 
-Not published yet. Once the first epic lands:
+The popup is the usual way in. The same jobs work without questions:
 
 ```sh
-uv tool install paddock   # placeholder — not yet available
+paddock launch claude-default   # start a session from a saved profile
+paddock attach review           # put a new tab on a running session
+paddock profiles                # list saved profiles
+paddock init                    # wire the chooser into herdr's config
 ```
 
-Then add the keybinding to `~/.config/herdr/config.toml`, per
-[docs/SPEC.md §1](docs/SPEC.md#1-herdr-integration).
+`launch` and `attach` take `--cwd` to say which directory to work in, and
+`--dry-run` prints what would happen instead of doing it. `paddock init` also
+takes `--undo`.
+
+## Install
+
+**1. Prerequisites**
+
+- [herdr](https://herdr.dev) 0.8.0 or newer.
+- Node.js, so `npx` can fetch the sandbox runtime on first use. To install it
+  instead: `npm i -g @anthropic-ai/sandbox-runtime`.
+- On Linux, also `bubblewrap`, `socat` and `ripgrep`. On Ubuntu 24.04 and newer,
+  AppArmor blocks the unprivileged user namespaces bubblewrap needs. Allow them
+  with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, and add
+  it to `/etc/sysctl.d/` to make it stick.
+
+**2. Install paddock**
+
+```sh
+uv tool install git+https://github.com/desquaredp/paddock
+```
+
+**3. Wire it into herdr**
+
+```sh
+paddock init
+```
+
+That backs up `~/.config/herdr/config.toml`, binds the chooser to `prefix+c`,
+moves plain new-tab to `prefix+shift+c`, and asks herdr to reload. It writes the
+file if herdr has not written one yet, and running it twice changes nothing.
+`paddock init --dry-run` shows the change first; `paddock init --undo` puts the
+old config back. Every run that changes something keeps a
+`config.toml.paddock-backup-*` copy next to the config; delete them when you no
+longer want them.
+
+**4. Press `prefix+c` inside herdr.**
+
+To check herdr is happy with the result: `herdr config check`.
 
 ## Docs
 
-- [docs/SPEC.md](docs/SPEC.md) — herdr integration, backends, sessions,
-  enforcement layers, agent registry, profiles, module plan.
-- [docs/diagrams/](docs/diagrams/) — PlantUML sources.
-- [CONTRIBUTING.md](CONTRIBUTING.md) — branching, TDD, design principles.
+- [docs/SPEC.md](docs/SPEC.md) covers herdr integration, backends, sessions,
+  enforcement layers, the agent registry and profiles.
+- [docs/ROADMAP.md](docs/ROADMAP.md) says where this is going.
+- [docs/diagrams/](docs/diagrams/) holds the PlantUML sources.
+- [CONTRIBUTING.md](CONTRIBUTING.md) covers branching, TDD and design principles.

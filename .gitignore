@@ -23,5 +23,5 @@ htmlcov/
 .idea/
 .vscode/
 
-# NOTE: uv.lock is intentionally NOT ignored — it is committed so CI and
+# NOTE: uv.lock is intentionally NOT ignored. It is committed so CI and
 # contributors resolve identical dependency versions.

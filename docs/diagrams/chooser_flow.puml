@@ -1,5 +1,5 @@
 @startuml chooser_flow
-title paddock — the chooser: questions in, one plan out
+title paddock: the chooser, questions in and one plan out
 
 skinparam shadowing false
 skinparam defaultTextAlignment center
@@ -19,14 +19,14 @@ else (choose)
   :sessions.list_sessions();
   if (what kind of window?) then (Local)
     :plan = Local(cwd);
-  elseif (Attach\n— offered only when a session is live) then
+  elseif (Attach:\noffered only when a session is live) then
     :pick a session by name, agent,\nprofile and tab count;
-    :plan = Attach(session id)\n— the session keeps its own workdir;
+    :plan = Attach(session id):\nthe session keeps its own workdir;
   else (New sandbox session)
     partition "permissions questionnaire" {
       :start from a saved profile, or Custom;
       :agent from the registry,\nor a command typed in;
-      :tools — candidates on PATH plus the\nprofile's own, marked when missing;
+      :tools: candidates on PATH plus the\nprofile's own, marked when missing;
       :network presets, plus typed domains;
       :skills under the agent's config dir\n(none, or a different agent: skipped);
       :share a host directory?\n(default: the popup's cwd);

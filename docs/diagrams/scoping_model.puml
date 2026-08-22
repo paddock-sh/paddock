@@ -1,5 +1,5 @@
 @startuml scoping_model
-title paddock — sandbox sessions: what tabs attach to
+title paddock: sandbox sessions, what tabs attach to
 
 skinparam componentStyle rectangle
 skinparam shadowing false
@@ -7,7 +7,7 @@ skinparam defaultTextAlignment center
 
 legend top
   Every tab attaches to exactly **one session**, or to **none** (local).
-  Sessions — not tabs and not workspaces — are the sandbox.
+  Sessions, not tabs and not workspaces, are the sandbox.
   One workspace can hold local tabs and several sessions at once.
 endlegend
 
@@ -31,7 +31,7 @@ node "HOST" as Host {
   artifact "srt settings file\nruns/<session>/srt-settings.json" as SrtSettings
 }
 
-frame "Session A — 'build'   backend: microsandbox (v1.1)\nSHARED RUNTIME: one persistent microVM" as SessionA {
+frame "Session A, 'build'   backend: microsandbox (v1.1)\nSHARED RUNTIME: one persistent microVM" as SessionA {
   component "shell / agent\n(tab 3)" as G3
   component "shell / agent\n(tab 4)" as G4
   database "guest filesystem" as GuestFs
@@ -39,9 +39,9 @@ frame "Session A — 'build'   backend: microsandbox (v1.1)\nSHARED RUNTIME: one
   component "build.localhost\n(portless)" as Portless
 }
 
-frame "Session B — 'review'   backend: srt (v1)\nSHARED POLICY + FILES, separate process trees" as SessionB {
+frame "Session B, 'review'   backend: srt (v1)\nSHARED POLICY + FILES, separate process trees" as SessionB {
   component "srt-wrapped process tree\n(tab 5)" as P5
-  component "(a second attached tab would get\nits own process tree here —\nsame settings file, same workdir)" as P6
+  component "(a second attached tab would get\nits own process tree here:\nsame settings file, same workdir)" as P6
 }
 
 T1 --> HostFs : unsandboxed
@@ -72,7 +72,7 @@ note bottom of SessionA
   Sessions survive Herdr detach and restart:
   the VM keeps running with no tab attached.
   When the last tab closes the user is prompted,
-  with a keep-alive option — never silently
+  with a keep-alive option, never silently
   destroyed, never silently leaked.
 end note
 

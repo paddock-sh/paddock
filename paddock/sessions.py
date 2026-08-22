@@ -1,7 +1,7 @@
 """Sandbox sessions: one settings file and workdir, with the tabs attached to it (SPEC §3).
 
 A session is registered in `<state>/sessions.json` and outlives the popup that made it,
-and herdr restarts. Attaching starts a new process under the same policy — with srt there
+and herdr restarts. Attaching starts a new process under the same policy. With srt there
 is no guest for a second process to join, so tabs share files, never a process tree.
 """
 
@@ -64,7 +64,7 @@ def list_sessions() -> list[Session]:
 
 
 def get_session(ref: str) -> Session | None:
-    """Find a session by id, else by name — the chooser shows names, scripts use ids."""
+    """Find a session by id, else by name: the chooser shows names, scripts use ids."""
     live = list_sessions()
     for session in live:
         if session.session_id == ref:
@@ -137,7 +137,7 @@ def remove_pane(pane_id: str) -> None:
             kept.append(session)
         _save(kept)
         for session in collected:
-            # The run dir stays on disk — deleting a workdir would lose work — but the
+            # The run dir stays on disk, because deleting a workdir would lose work, but the
             # token in it does not outlive the session (SPEC §8).
             synth_config.discard_credentials(Path(session.run_dir))
 
@@ -175,7 +175,7 @@ def _record(session: Session) -> None:
 
 
 def _save(sessions: list[Session]) -> None:
-    """Write the registry whole, then swap it in — a crash mid-write leaves the old one."""
+    """Write the registry whole, then swap it in: a crash mid-write leaves the old one."""
     path = registry_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     # A temp file of this writer's own: a shared name would let two of them collide.

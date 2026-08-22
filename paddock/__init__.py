@@ -1,4 +1,4 @@
-"""paddock — sandboxed agent sessions for herdr."""
+"""paddock: sandboxed agent sessions for herdr."""
 
 import os
 from pathlib import Path

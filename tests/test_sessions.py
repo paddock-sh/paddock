@@ -195,7 +195,7 @@ def test_attach_records_the_pane_on_the_session(which: dict[str, str], client: F
 def test_a_second_tab_gets_the_same_settings_file_and_workdir(
     which: dict[str, str], client: FakeClient
 ) -> None:
-    """srt attach is a new process under the same policy — never a shared process tree."""
+    """srt attach is a new process under the same policy, never a shared process tree."""
     session = sessions.create_session(Profile(tools=[]), name="demo")
 
     first = sessions.attach(session)
@@ -280,7 +280,7 @@ def test_a_keep_alive_session_survives_its_last_pane(
 def test_a_collected_session_loses_the_token_in_its_run_dir(
     which: dict[str, str], client: FakeClient, keychain: dict[str, str]
 ) -> None:
-    """The run dir stays — deleting a workdir would lose work — but the token in it goes."""
+    """The run dir stays, because deleting a workdir would lose work, but the token in it goes."""
     keychain["Claude Code-credentials"] = '{"claudeAiOauth": {}}'
     session = sessions.create_session(Profile(tools=[]), name="demo")
     pane_id = sessions.attach(session)
@@ -397,7 +397,7 @@ def _boom(*args: object, **kwargs: object) -> None:
 
 
 def test_launch_local_makes_a_plain_unlabelled_tab(client: FakeClient, tmp_path: Path) -> None:
-    """No session, no sandbox, no label — an unlabelled tab is how you tell (SPEC §3.5)."""
+    """No session, no sandbox, no label: an unlabelled tab is how you tell (SPEC §3.5)."""
     pane_id = sessions.launch_local(tmp_path)
 
     assert client.tabs == [(tmp_path, "", {})]
