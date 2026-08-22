@@ -1,0 +1,106 @@
+@startuml sessions_and_config
+title paddock: sessions and the synthesized config dir
+
+allowmixing
+set separator none
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+
+package "sessions.py" {
+  class Session <<dataclass>> {
+    session_id
+    name: unique among live sessions
+    profile_name
+    agent
+    created_at: ISO 8601 UTC
+    run_dir
+    keep_alive
+    pane_ids
+  }
+  class "functions" as SessionFns {
+    list_sessions()
+    get_session(name or id)
+    create_session(profile, name): opens no pane
+    attach(session, cwd) -> pane id
+    launch(profile, name) = create + attach
+    remove_pane(pane_id)
+    launch_local(cwd) -> pane id
+  }
+}
+
+package "backends/srt.py" {
+  class "functions" as SrtFns {
+    prepare(profile) -> Run
+    load_run(run_dir) -> Run
+    open_pane(run, label, cwd) -> pane id
+  }
+}
+
+package "synth_config.py" {
+  class "functions" as SynthFns {
+    build(profile, agent, run_dir) -> dir, env, args, skill sources, missing
+    discard_credentials(run_dir)
+  }
+}
+
+database "$PADDOCK_STATE_DIR\n(default $HOME/.local/state/paddock)" as StateDir {
+  file "sessions.json" as Registry
+  folder "runs/<timestamp>-<rand>/" as RunDir {
+    file "srt-settings.json" as Settings
+    file "launch.json\ncommand + workdir + env" as Launch
+    folder "bin/: one symlink per ticked tool" as Shim
+    folder "work/: scratch workdir" as Work
+    folder "config/" as Config {
+      file ".credentials.json -> the real key, or the agent's\nown login exported from the Keychain at 0600" as Creds
+      file ".claude.json: a writable copy,\nminus every mcpServers key" as AgentJson
+      file ".mcp.json: ticked servers only" as Mcp
+      folder "skills/: ticked skills only" as Skills
+    }
+  }
+}
+
+database "the agent's real config dirs\nconfig_write_paths, e.g. $HOME/.claude" as RealConfig
+
+SessionFns --> Session : builds
+SessionFns --> Registry : written whole under a file lock,\nthen swapped in; a file that will not parse\nis reported and treated as empty
+SessionFns --> SrtFns : create_session -> prepare\nattach -> load_run + open_pane
+SessionFns --> SynthFns : remove_pane -> discard_credentials\nwhen the session is collected
+SrtFns --> SynthFns : build the config dir
+SrtFns --> RunDir : writes
+SynthFns --> Config : writes
+RealConfig --> Creds : symlinked: the agent only reads it
+RealConfig --> AgentJson : copied: the agent writes it back
+RealConfig --> Skills : only the names the profile lists
+
+note right of Session
+  One session, one settings file, one workdir.
+  Every attached tab is a separate process tree
+  under the same policy: srt has no guest for a
+  second process to join (SPEC section 3.2).
+
+  remove_pane drops the session when its last
+  pane closes, unless keep_alive is set. The run
+  dir is left on disk either way, minus the
+  credential file: it may be an exported token,
+  and that does not outlive the session.
+end note
+
+note bottom of RealConfig
+  With a redirection (Claude Code today) these
+  directories are in denyRead and denyWrite, so
+  the skills and MCP servers nobody ticked are not
+  there to read. srt checks the path a symlink
+  resolves to, so the settings allow what the
+  config dir links to back by name: the key and
+  the ticked skills, read-only. What it copied is
+  denied on the host instead (SPEC section 4.3).
+end note
+
+note bottom of Config
+  Writable inside the sandbox; the run dir
+  around it is not. CLAUDE_CONFIG_DIR points
+  here, via `tab create --env` and the sandbox
+  command itself.
+end note
+
+@enduml
