@@ -20,6 +20,7 @@ from pathlib import Path
 from paddock import screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
+    LOCAL_SERVICES_CONSEQUENCE,
     NETWORK_PRESETS,
     TOOL_CANDIDATES,
     Profile,
@@ -648,7 +649,12 @@ def _reachable(profile: Profile) -> str:
     shown = domains[:SHOWN_DOMAINS]
     if len(domains) > SHOWN_DOMAINS:
         shown = shown + [f"+{len(domains) - SHOWN_DOMAINS}"]
-    return f"{_counted(domains)}: {', '.join(shown)}"
+    line = f"{_counted(domains)}: {', '.join(shown)}"
+    if not profile.opens_local_services():
+        return line
+    # Two names on the list understate the grant: the OS rule behind them takes no port,
+    # so the count is not what this sandbox can reach (SPEC §2.1).
+    return f"{line}. Plus {LOCAL_SERVICES_CONSEQUENCE}"
 
 
 def _runnable(profile: Profile) -> str:

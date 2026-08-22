@@ -10,7 +10,7 @@ import pytest
 
 from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
-from paddock.profiles import Profile
+from paddock.profiles import LOCAL_SERVICES, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient
 
@@ -227,6 +227,64 @@ def test_no_domain_is_denied_by_name(tmp_path: Path) -> None:
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
 
     assert settings["network"]["deniedDomains"] == []
+
+
+# --- the local-network grant -----------------------------------------------
+
+
+def test_a_profile_that_does_not_name_loopback_gets_no_local_grant(tmp_path: Path) -> None:
+    """The measured denial, pinned: without the key Seatbelt refuses the loopback connect
+    with EPERM, which is `dial tcp 127.0.0.1:11434: connect: operation not permitted`."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert "allowLocalBinding" not in settings["network"]
+
+
+def test_the_local_services_preset_grants_the_local_network(tmp_path: Path) -> None:
+    profile = Profile(network_presets=[LOCAL_SERVICES])
+
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+    assert "localhost" in settings["network"]["allowedDomains"]
+
+
+def test_a_typed_in_loopback_domain_grants_it_too(tmp_path: Path) -> None:
+    """The grant follows the resolved domains, not the preset name, so typing it counts."""
+    profile = Profile(network_presets=[], extra_domains=["127.0.0.1"])
+
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+
+
+def test_an_agent_that_names_loopback_grants_it_for_its_profile(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    """The local-model case: the agent entry declares 127.0.0.1 as the API it calls."""
+    agents = config_dir / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "ollama.json").write_text(
+        json.dumps({"command": "ollama", "api_domains": ["localhost", "127.0.0.1"]})
+    )
+    profile = Profile(agent="ollama", network_presets=[])
+
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+
+
+def test_the_local_grant_leaves_every_other_key_alone(tmp_path: Path) -> None:
+    """It widens the network only. A denied read stays denied and the allowlist still holds."""
+    profile = Profile(network_presets=[LOCAL_SERVICES])
+
+    granted = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+    plain = srt.build_settings(Profile(network_presets=[]), CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert granted["filesystem"] == plain["filesystem"]
+    assert granted["allowPty"] == plain["allowPty"]
+    assert str(HOME / ".ssh") in granted["filesystem"]["denyRead"]
+    assert granted["network"]["deniedDomains"] == []
 
 
 # --- the synthesized config dir in the settings ----------------------------

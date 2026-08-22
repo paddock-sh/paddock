@@ -163,11 +163,19 @@ def build_settings(
         # path an access resolves to. Allowing those by name re-opens exactly them.
         allow_read = [path for source in synth.linked for path in _both_names(source)]
     allow_write += [_expand(path) for path in profile.extra_allow_write]
+    network: dict = {
+        "allowedDomains": profile.allowed_domains(),
+        "deniedDomains": [],
+    }
+    if profile.opens_local_services():
+        # srt sends loopback past its proxy (its own NO_PROXY names 127.0.0.1), so the
+        # connect is direct and Seatbelt refuses it with EPERM unless this key is set. It
+        # is written only for a profile that named loopback, because the rule it compiles
+        # to takes no port: it reaches every local server, not the one that was meant
+        # (SPEC §2.1).
+        network["allowLocalBinding"] = True
     return {
-        "network": {
-            "allowedDomains": profile.allowed_domains(),
-            "deniedDomains": [],
-        },
+        "network": network,
         "filesystem": {
             "denyRead": _as_strings(deny_read),
             "allowRead": _as_strings(allow_read),

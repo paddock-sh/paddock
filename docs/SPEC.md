@@ -217,6 +217,74 @@ srt 0.0.73 has no narrower knob, so the choice is TUI agents with this grant or
 no TUI agents at all. paddock takes the grant, deliberately, and says so here
 rather than leaving it out.
 
+**Local services are a separate grant, and the domain allowlist cannot make it.**
+An agent that calls a server on this machine — a local model, a dev server, a
+database — fails without it, and the failure is a permission error, not a
+connection error:
+
+```
+Error: Head "http://127.0.0.1:11434/": dial tcp 127.0.0.1:11434: connect: operation not permitted
+```
+
+Adding `localhost` to `allowedDomains` changes nothing, because the allowlist is
+enforced by the proxy and loopback never reaches it. srt sets its own
+`NO_PROXY=localhost,127.0.0.1,::1,169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`
+in the shell it spawns, so a client aimed at loopback dials it directly, and
+Seatbelt refuses the connect with `EPERM`. The one key that changes it is
+`network.allowLocalBinding`, which compiles to three lines of the Seatbelt
+profile:
+
+```scheme
+(allow network-bind (local ip "*:*"))
+(allow network-inbound (local ip "*:*"))
+(allow network-outbound (remote ip "localhost:*"))
+```
+
+**Two things follow from those lines, and both are wider than "reach my ollama".**
+The outbound rule takes no port, so the grant is every service listening on this
+machine's loopback: a sandbox given it for a model server on 11434 reaches a
+local admin panel on 18099 just as well, and the domain allowlist is not
+consulted for either. The bind and inbound rules take no address, so the sandbox
+can also open a listening socket on `0.0.0.0` and be reached from the LAN — both
+measured against srt 0.0.73. Everything else still holds: a non-loopback host
+outside `allowedDomains` is still refused by the proxy (403), and `denyRead` /
+`denyWrite` are untouched.
+
+**Port scoping is not available for the case that needs it.** `allowedDomains`
+does take a `:port` suffix, and `127.0.0.1:11434` is enforced — but only for
+traffic that reaches the proxy, which means clearing `no_proxy` in the launch
+environment first. Go clients cannot be routed that way at all: the standard
+library's `httpproxy.useProxy` returns `false` for `localhost` and for any
+`ip.IsLoopback()` before it ever looks at `NO_PROXY`, so `ollama`, `docker` and
+every other Go CLI dials loopback direct whatever the environment says. Port
+scoping would therefore work for `curl` and fail for the tools people actually
+point at a local model, so paddock does not trim `no_proxy` and does not pretend
+to scope: it takes the whole-loopback grant and says so on the confirm screen.
+
+**It is written only when the profile asks for it.** The
+`local services (localhost)` network preset is the way to tick it, and no
+built-in profile ships with it on. `build_settings` emits the key when the
+profile's *resolved* domains name loopback under any spelling — `localhost`,
+`127.0.0.1`, `::1`, `[::1]`, with or without a `:port` suffix — which covers the
+preset, a domain typed into the extra-domains box, and a local-model agent entry
+whose `api_domains` declare it. Anything else gets no `allowLocalBinding` key at
+all, so the default is the denial above.
+
+**For `microsandbox` the answer is different, and worse.** A guest has its own
+kernel, so host loopback is not the guest's loopback: the spike measured a
+default-network guest reaching nothing on a host listener — not `127.0.0.1`, not
+the gateway `172.16.0.81`, not the host's LAN address — and `--net host` alone
+did not change it. The gateway is a router, not a proxy to host services, so
+there is no `host.docker.internal` equivalent to aim at (every such name is
+`NXDOMAIN`). What works is naming the host's real address in a rule:
+`msb run --net-rule "allow@<host LAN address>" ...`, or the blunter
+`--net private`. That is only half of it, because a host-side server bound to
+loopback is unreachable from another kernel no matter what the rule says —
+`ollama` binds `127.0.0.1:11434` by default, so it also has to be started with
+`OLLAMA_HOST=0.0.0.0`, which exposes it to the LAN. The stable answer is
+`--vsock HOST_PATH:PORT`, host IPC with no address to expose; it was not
+exercised in the spike and is the thing to build the msb side of this preset on.
+
 **srt checks the path an access resolves to**, not the path the agent typed. A
 symlink is therefore governed by its target: what the policy has to name is the
 real file, never the link. That is why the synthesized config dir (§4.3) works,
@@ -618,7 +686,7 @@ lossless.
 | `agent` | `str` | `"claude"` | Registry key |
 | `tools` | `list[str]` | `["git", "rg", "curl"]` | Binaries in the PATH shim dir |
 | `include_system_path` | `bool` | `true` | Append `/usr/bin:/bin` |
-| `network_presets` | `list[str]` | `["anthropic", "github"]` | Named domain groups (anthropic, github, npm, pypi/uv, go, crates.io, homebrew) |
+| `network_presets` | `list[str]` | `["anthropic", "github"]` | Named domain groups (anthropic, github, npm, pypi/uv, go, crates.io, homebrew), plus `local services (localhost)`, which is not a domain group but the loopback grant of §2.1 |
 | `extra_domains` | `list[str]` | `[]` | Extra allowed domains |
 | `shared_dir` | `str` | `""` | Host dir, read-write; **`""` means an isolated scratch workdir** |
 | `skills` | `list[str]` | `[]` | Skills put in the synth config dir |
@@ -633,7 +701,9 @@ Notes:
 - `deny_read` defaults apply to user-written profiles too. A profile that wants a
   credential directory readable has to say so.
 - The effective allowlist is `network_presets` expanded, plus `extra_domains`,
-  plus the agent's `api_domains`, deduplicated.
+  plus the agent's `api_domains`, deduplicated. Loopback appearing anywhere in
+  that resolved set is what writes `allowLocalBinding` into the settings (§2.1);
+  no profile ships with it.
 - Two profiles ship built in: `claude-default` (Claude Code with the usual dev
   tools and registries) and `offline-shell` (a plain shell, no network). A user
   file of the same name **replaces** the built-in whole: fields the file leaves
