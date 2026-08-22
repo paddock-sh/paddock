@@ -16,14 +16,17 @@ import os
 import shlex
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
+    LAUNCH_SCRIPT,
+    SHELL_SCRIPT,
     RunNotFound,
+    Swept,
     ensure_launch_script,
     launch_line,
     new_run_dir,
@@ -65,8 +68,57 @@ PROXY_ENV = (
 )
 
 
+# What a sandboxed shell puts in front of its prompt, so the tab does not read like an
+# ordinary one (SPEC §3.2).
+PROMPT_PREFIX = "paddock:"
+
+# The startup files a shell tab is pointed at, under the run dir.
+SHELL_RC_DIR = "shellrc"
+ZSHRC = ".zshrc"
+ENV_FILE = "env.sh"
+
+# zsh reads this instead of ~/.zshrc, because ZDOTDIR names the directory it is in. So it
+# runs the user's own files first and then takes the prompt they left, whatever it is.
+ZSHRC_TEXT = f"""\
+# Written by paddock for a sandboxed shell tab (SPEC §3.2).
+# ZDOTDIR points zsh here, so the user's own startup files are run by name from $HOME.
+ZDOTDIR=$HOME
+[ -r "$ZDOTDIR/.zshenv" ] && . "$ZDOTDIR/.zshenv"
+[ -r "$ZDOTDIR/.zshrc" ] && . "$ZDOTDIR/.zshrc"
+case "$PROMPT" in
+  {PROMPT_PREFIX}*) ;;
+  *) PROMPT="{PROMPT_PREFIX}$PROMPT" ;;
+esac
+"""
+
+# What `$ENV` names, which is how a POSIX sh gets a startup file. It has no user file to
+# run first: a sh reads $ENV and nothing else when it is interactive.
+ENV_TEXT = f"""\
+# Written by paddock for a sandboxed shell tab (SPEC §3.2).
+case "$PS1" in
+  {PROMPT_PREFIX}*) ;;
+  *) PS1="{PROMPT_PREFIX}${{PS1:-$ }}" ;;
+esac
+"""
+
+
 class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
+
+
+class UnsupportedPolicy(RuntimeError):
+    """The profile asks for something srt has no way to enforce."""
+
+
+# What `network_presets = ["everything"]` would need, and srt 0.0.73 has no form of.
+# `allowedDomains` is a required key whose every entry must be a host or a wildcard with
+# at least two labels after the `*.`; a bare `*` and even `*.com` are refused by name.
+NO_ALLOW_ALL = (
+    "srt cannot allow every domain: network.allowedDomains is a required key, and it "
+    "refuses a bare * as an overly broad pattern, so no settings file means unrestricted "
+    "egress. Name the domains this session needs, or run it on the msb backend, which "
+    "takes --net-default allow."
+)
 
 
 @dataclass
@@ -77,6 +129,9 @@ class Run:
     workdir: Path
     command: str
     env: dict[str, str]
+    # The same sandbox entered as a plain shell (SPEC §3.2). Blank on a run prepared
+    # before paddock could do that, which is a message rather than a broken tab.
+    shell_command: str = ""
 
 
 def find_srt() -> list[str]:
@@ -122,6 +177,10 @@ def build_settings(
     srt validates this against a schema and refuses to start if a key is missing, so
     every key is written even when its list is empty.
     """
+    if profile.opens_every_domain():
+        # Writing the named domains instead would enforce an allowlist nobody chose, and
+        # the sandbox would deny the traffic the profile said to allow (SPEC §2.1).
+        raise UnsupportedPolicy(NO_ALLOW_ALL)
     # /tmp and /private/tmp are one directory under two names on macOS; srt matches the
     # path as written. /dev/null is here so discarded output works.
     allow_write = [workdir, Path("/tmp"), Path("/private/tmp"), Path("/dev/null")]
@@ -131,7 +190,10 @@ def build_settings(
         allow_write += _both_names(Path(tmpdir))
     if profile.shared_dir:
         allow_write.append(_expand(profile.shared_dir))
-    deny_read = [_expand(path) for path in profile.deny_read]
+    # The profile's own denials, kept apart from the ones added below: this list is the
+    # "never readable" promise the user made, and `allowRead` is checked against it.
+    promised = [_expand(path) for path in profile.deny_read]
+    deny_read = list(promised)
     # What the agent may not read, it may not write either.
     deny_write = list(deny_read)
     auth = [_expand(path) for path in agent.auth_read_paths]
@@ -153,12 +215,29 @@ def build_settings(
         # What it symlinked is reached through the denied directory, and srt checks the
         # path an access resolves to. Allowing those by name re-opens exactly them.
         allow_read = [path for source in synth.linked for path in _both_names(source)]
+    # Belt and braces over the containment check in synth_config: `allowRead` is the one
+    # list that re-opens a path by name, so nothing in it may land inside a directory the
+    # profile said was never readable. Two things are compared and two are not. Only the
+    # profile's own denials count, not the agent config dirs added above, because the
+    # skills that were taken live inside one of those and reaching them is the whole point
+    # of the list. And the agent's own credentials are kept whatever is denied, which is a
+    # rule that predates this: choosing an agent is consenting to its login, and a profile
+    # that denies a whole config dir must not lock the agent out of itself (SPEC §4.3).
+    allow_read = _outside(allow_read, promised, keep=auth)
     allow_write += [_expand(path) for path in profile.extra_allow_write]
+    network: dict = {
+        "allowedDomains": profile.allowed_domains(),
+        "deniedDomains": [],
+    }
+    if profile.opens_local_services():
+        # srt sends loopback past its proxy (its own NO_PROXY names 127.0.0.1), so the
+        # connect is direct and Seatbelt refuses it with EPERM unless this key is set. It
+        # is written only for a profile that named loopback, because the rule it compiles
+        # to takes no port: it reaches every local server, not the one that was meant
+        # (SPEC §2.1).
+        network["allowLocalBinding"] = True
     return {
-        "network": {
-            "allowedDomains": profile.allowed_domains(),
-            "deniedDomains": [],
-        },
+        "network": network,
         "filesystem": {
             "denyRead": _as_strings(deny_read),
             "allowRead": _as_strings(allow_read),
@@ -172,17 +251,31 @@ def build_settings(
     }
 
 
-def pane_command(
-    profile: Profile, agent: AgentSpec, settings: Path, shim: Path, synth: SynthConfig
-) -> str:
-    """The command the launch script holds: srt wrapping the agent on a shimmed PATH."""
+def sandbox_path(profile: Profile, shim: Path | None) -> str:
+    """What the sandbox's PATH is: the shim dir, or this machine's own (SPEC §4.1).
+
+    `shim` is None for a profile that ticked every tool. There is no list of names to
+    write then, and building a shim dir of every binary on the host would be a slower way
+    of saying the same thing, so the sandbox is handed the PATH the launcher was started
+    with. Nothing about what it may write or reach changes: the shim dir was never the
+    boundary, since an absolute path reaches any binary whatever is in it.
+    """
+    if shim is None:
+        return os.environ.get("PATH") or "/usr/bin:/bin"
     entries = [str(shim)]
     if profile.include_system_path:
         entries += ["/usr/bin", "/bin"]
+    return ":".join(entries)
+
+
+def pane_command(
+    profile: Profile, agent: AgentSpec, settings: Path, shim: Path | None, synth: SynthConfig
+) -> str:
+    """The command the launch script holds: srt wrapping the agent on a shimmed PATH."""
     keep = [f"{name}={os.environ[name]}" for name in KEEP_ENV if os.environ.get(name)]
     # `env -i` wipes what the tab was given, so the config dir variable is set here too.
     keep += [f"{name}={value}" for name, value in synth.env.items()]
-    path = "PATH=" + ":".join(entries)
+    path = "PATH=" + sandbox_path(profile, shim)
     # Unquoted on purpose: srt's own shell is where these have values, and where they expand.
     proxied = " ".join(f'{name}="${name}"' for name in PROXY_ENV)
     rest = shlex.join([path, *shlex.split(agent.command), *synth.args])
@@ -192,26 +285,86 @@ def pane_command(
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
 
 
-def prepare(profile: Profile) -> Run:
-    """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
+def host_shell() -> str:
+    """The shell a shell tab runs. The user's, as the `shell` agent uses it."""
+    return os.environ.get("SHELL") or "/bin/sh"
 
-    Opens no pane. Sessions decide when a tab appears and how many.
+
+def write_shell_rc(run_dir: Path) -> Path:
+    """The startup files a shell tab is pointed at, in the run dir. Returns the directory.
+
+    They run the user's own files and then put `paddock:` in front of whatever prompt
+    those left. Both are written every time and both refuse to prefix twice, so a shell
+    that reads one, the other or neither ends up saying it once.
+
+    They live in the run dir, which the sandbox may read and may not write (SPEC §2.1), so
+    what starts a sandboxed shell is not the sandboxed shell's to rewrite.
     """
-    agent = load_agents().get(profile.agent)
-    if agent is None:
-        raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
+    directory = run_dir / SHELL_RC_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / ZSHRC).write_text(ZSHRC_TEXT)
+    (directory / ENV_FILE).write_text(ENV_TEXT)
+    return directory
 
-    run_dir = new_run_dir()
-    workdir = workdir_for(profile, run_dir)
-    logger.debug(
-        "prepare %s",
-        log.context(
-            profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
-        ),
+
+def prompt_env(rc_dir: Path) -> dict[str, str]:
+    """How a shell tab is told to say it is in a sandbox. All three, because shells differ.
+
+    Measured on this machine rather than assumed, because a prompt is set in a different
+    place by every shell:
+
+    - zsh runs the startup files `ZDOTDIR` names, and an inherited prompt alone is no use
+      there: any rc that writes one (oh-my-zsh does) overwrites it.
+    - a POSIX sh runs the one `$ENV` names, which is the same trick under another name.
+    - a shell with no startup file of its own takes the prompt straight out of `PS1`, and
+      that covers bash, which reads neither of the other two when it is interactive.
+
+    A bash with an rc of its own that sets `PS1` keeps its own prompt. paddock does not
+    edit anyone's `~/.bashrc` to win that, so there the tab label `sbx:<name> (shell)` is
+    what says the tab is sandboxed (SPEC §3.2).
+    """
+    return {
+        "PS1": f"{PROMPT_PREFIX}$ ",
+        "ZDOTDIR": str(rc_dir),
+        "ENV": str(rc_dir / ENV_FILE),
+    }
+
+
+def shell_command(
+    profile: Profile, settings: Path, shim: Path | None, synth: SynthConfig, rc_dir: Path
+) -> str:
+    """The same sandbox entered as a plain shell: one settings file, one workdir, no agent.
+
+    Composed the way the agent's own command is, so the policy, the PATH and the kept
+    environment cannot drift apart between the two. The config dir variable stays set, so
+    a shell that runs the agent by hand gets the same synthesized config. The agent's
+    command-line flags do not come with it: they are the agent's, not the shell's.
+
+    What it adds is the prompt: those variables go on this command and not on the agent's,
+    which draws its own interface and has no prompt for anyone to prefix.
+    """
+    shell = AgentSpec(name="shell", command=host_shell())
+    env = {**synth.env, **prompt_env(rc_dir)}
+    return pane_command(profile, shell, settings, shim, replace(synth, args=[], env=env))
+
+
+def _shim_dir(profile: Profile, agent: AgentSpec, run_dir: Path) -> Path | None:
+    """The PATH shim dir for this run, or None when the profile asked for the host's own.
+
+    The agent runs on the shimmed PATH like everything else, so it needs a shim of its own,
+    and one for whatever it cannot start without: `codex` is a script that runs `node`. An
+    agent named by absolute path (the shell, say) is found without one. Choosing the agent
+    is what put these here, and every screen that says what can run names them.
+
+    A profile that ticked every tool gets no shim dir at all (SPEC §4.1): there is no list
+    to shim, nothing can be missing from it, and so nothing is reported as left off.
+    """
+    if profile.opens_every_tool():
+        logger.debug("no shim dir %s", log.context(run_dir=run_dir, path="the host's own"))
+        return None
+    tools = list(
+        dict.fromkeys(list(profile.tools) + shlex.split(agent.command)[:1] + agent.required_tools)
     )
-    # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
-    # An agent named by absolute path (the shell, say) is found without one.
-    tools = list(profile.tools) + shlex.split(agent.command)[:1]
     shim, skipped = build_shim_dir(run_dir, tools)
     logger.debug(
         "shim dir %s",
@@ -228,6 +381,31 @@ def prepare(profile: Profile) -> Run:
             "only bare tool names go on the sandbox PATH",
             file=sys.stderr,
         )
+    return shim
+
+
+def prepare(profile: Profile) -> Run:
+    """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
+
+    Opens no pane. Sessions decide when a tab appears and how many.
+    """
+    agent = load_agents().get(profile.agent)
+    if agent is None:
+        raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
+    if profile.opens_every_domain():
+        # `build_settings` refuses this too, but that is three directories later: a policy
+        # srt cannot enforce should leave nothing on disk behind it.
+        raise UnsupportedPolicy(NO_ALLOW_ALL)
+
+    run_dir = new_run_dir()
+    workdir = workdir_for(profile, run_dir)
+    logger.debug(
+        "prepare %s",
+        log.context(
+            profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
+        ),
+    )
+    shim = _shim_dir(profile, agent, run_dir)
     synth = synth_config.build(profile, agent, run_dir)
     if synth.missing:
         left_out = ", ".join(synth.missing)
@@ -238,13 +416,26 @@ def prepare(profile: Profile) -> Run:
     logger.debug("settings written %s", log.context(path=settings, size=f"{len(text)} bytes"))
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
+    shell = shell_command(profile, settings, shim, synth, write_shell_rc(run_dir))
     script = write_launch_script(run_dir, command)
+    write_launch_script(run_dir, shell, SHELL_SCRIPT)
     # The length, never the command: it carries every environment value the sandbox keeps.
     logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
 
-    run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
+    run = Run(
+        run_dir=run_dir, workdir=workdir, command=command, env=synth.env, shell_command=shell
+    )
     (run_dir / LAUNCH_FILE).write_text(
-        json.dumps({"workdir": str(workdir), "command": command, "env": synth.env}, indent=2) + "\n"
+        json.dumps(
+            {
+                "workdir": str(workdir),
+                "command": command,
+                "env": synth.env,
+                "shell_command": shell,
+            },
+            indent=2,
+        )
+        + "\n"
     )
     return run
 
@@ -259,20 +450,46 @@ def load_run(run_dir: Path) -> Run:
     """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        run = Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
+        run = Run(
+            run_dir,
+            Path(data["workdir"]),
+            str(data["command"]),
+            dict(data["env"]),
+            # Absent on a run prepared before shell tabs existed, which open_pane reports.
+            str(data.get("shell_command", "")),
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
     ensure_launch_script(run_dir, run.command)
+    if run.shell_command:
+        ensure_launch_script(run_dir, run.shell_command, SHELL_SCRIPT)
+        # The stored command may point a shell at these, and a startup file that is not
+        # there would cost that shell the user's own. Cheap to write, so they are.
+        write_shell_rc(run_dir)
     return run
 
 
-def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
-    """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
+def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = False) -> str:
+    """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id.
+
+    `shell` runs the user's shell under the same settings file and workdir instead, so the
+    tab is inside the sandbox the agent is in without being a second agent (SPEC §3.2).
+    """
+    if shell and not run.shell_command:
+        raise ValueError(
+            f"the session in {run.run_dir} was prepared before paddock could open a shell "
+            "in it, so start a new session to get one"
+        )
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
-    line = launch_line(run.run_dir)
+    line = launch_line(run.run_dir, SHELL_SCRIPT if shell else LAUNCH_SCRIPT)
     herdr_client.run_in_pane(pane_id, line)
-    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, line=line))
+    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, shell=shell, line=line))
     return pane_id
+
+
+def sweep(known: set[str], ours: set[str]) -> Swept:
+    """Nothing outlives the process here, so a sweep finds nothing and removes nothing."""
+    return Swept()
 
 
 def collect(run_dir: Path, vm_handle: str = "") -> None:
@@ -281,6 +498,27 @@ def collect(run_dir: Path, vm_handle: str = "") -> None:
 
 def _expand(path: str) -> Path:
     return Path(path).expanduser()
+
+
+def _outside(paths: list[Path], denied: list[Path], keep: list[Path]) -> list[Path]:
+    """The paths that are neither one of the denied directories nor inside one.
+
+    `keep` is what stays whatever is denied: the agent's own credentials, which the user
+    chose by choosing the agent. Both spellings of every path are compared, the way each
+    is written twice, because srt matches the path as written and checks the one an access
+    resolves to.
+    """
+    closed = [name for path in denied for name in _both_names(path)]
+    allowed = {name for path in keep for name in _both_names(path)}
+    return [
+        path
+        for path in paths
+        if path in allowed or not any(_within(path, shut) for shut in closed)
+    ]
+
+
+def _within(path: Path, parent: Path) -> bool:
+    return path == parent or parent in path.parents
 
 
 def _both_names(path: Path) -> list[Path]:

@@ -2,9 +2,12 @@
 name = "paddock"
 version = "0.2.0"
 description = "Sandboxed agent sessions for herdr: per-pane tool, network, and filesystem permissions"
-requires-python = ">=3.10"
+# 3.11 for tomllib: `paddock init` parses the config it is about to write, and a check
+# that a 3.10 could skip is no check at all (SPEC §1.1).
+requires-python = ">=3.11"
 dependencies = [
-    "questionary>=2.0",
+    # The screens are prompt_toolkit Applications of our own, and it is the only one.
+    "prompt-toolkit>=3.0",
 ]
 readme = "README.md"
 authors = [{ name = "Deep Mistry", email = "deepmistry45@gmail.com" }]
@@ -17,7 +20,6 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS :: MacOS X",
     "Operating System :: POSIX :: Linux",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -47,7 +49,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

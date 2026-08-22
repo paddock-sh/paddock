@@ -83,10 +83,44 @@ def _run(*args: str) -> str:
         logger.debug("herdr is not on PATH")
         raise HerdrMissing("herdr not found on PATH: paddock needs herdr 0.8.0") from error
     except subprocess.CalledProcessError as error:
-        # herdr quotes back what it was given, proxy URL and all, so the reason is scrubbed
-        # before it goes anywhere: this message is logged and shown to the user both.
-        reason = log.scrub((error.stderr or "").strip())
-        logger.debug("herdr failed %s", log.context(exit=error.returncode, stderr=reason))
-        raise HerdrError(f"herdr {called} failed: {reason}") from error
+        # The whole of what herdr said goes to the log; only the readable part of it is
+        # raised. Both are scrubbed: herdr quotes back what it was given, proxy URL and all.
+        logger.debug(
+            "herdr failed %s",
+            log.context(
+                exit=error.returncode,
+                stdout=log.scrub((error.stdout or "").strip()),
+                stderr=log.scrub((error.stderr or "").strip()),
+            ),
+        )
+        raise HerdrError(f"herdr {called} failed: {reason(error.stdout, error.stderr)}") from error
     logger.debug("herdr done %s", log.context(exit=0, output=f"{len(completed.stdout)} bytes"))
     return completed.stdout
+
+
+def reason(stdout: str | None, stderr: str | None) -> str:
+    """Why herdr refused, in something a user can read.
+
+    Both streams are read, because herdr uses both: a refused command is a JSON error blob
+    on stdout, and `herdr config check` prints every diagnostic there too and says nothing
+    at all on stderr. Reading stderr alone is what made a failed check show up as an empty
+    pair of parentheses.
+    """
+    said = [_message(text) for text in (stderr, stdout)]
+    return log.scrub("; ".join(part for part in said if part)) or "herdr said nothing about why"
+
+
+def _message(text: str | None) -> str:
+    """One stream as a line: the message out of herdr's JSON error, or the text as it came.
+
+    The blob herdr answers a refused command with is no use to anyone reading a screen. The
+    whole of it is in the debug log, and the sentence inside it is what is shown.
+    """
+    text = (text or "").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+    error = data.get("error") if isinstance(data, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    return message if isinstance(message, str) and message else text

@@ -29,8 +29,11 @@ from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
+    LAUNCH_SCRIPT,
+    SHELL_SCRIPT,
     RunNotFound,
     SandboxGone,
+    Swept,
     ensure_launch_script,
     launch_line,
     new_run_dir,
@@ -58,6 +61,12 @@ GUEST_CONFIG = "/paddock-config"
 # The agent that means "the guest's own shell": there is nothing to install and nothing to
 # point at a config dir, and the image's default shell is what a tab attaches to.
 SHELL_AGENT = "shell"
+
+# What a shell tab execs in the guest. Named, not left to the image: `msb exec` with no argv
+# runs the image's own command, which for node:22-slim is the Node REPL and not a shell.
+# Every image this backend boots already has to have it: the boot script and the config copy
+# both run through `/bin/sh -c`.
+GUEST_SHELL = "/bin/sh"
 
 # What msb allows the boot-time execs, the install and the config copy. The install is the
 # one slow step: 21s for claude, on top of a first image pull. Shorter than COMMAND_TIMEOUT
@@ -89,6 +98,9 @@ class Run:
     workdir: Path
     vm_handle: str
     command: str
+    # The same guest entered as its own shell, alongside whatever the agent tab is doing:
+    # `msb exec` joins the running VM, so both are in one process namespace (SPEC §3.2).
+    shell_command: str = ""
 
 
 def find_msb() -> str:
@@ -103,6 +115,11 @@ def vm_handle(run_dir: Path) -> str:
     return f"{HANDLE_PREFIX}{run_dir.name}"
 
 
+def run_name(handle: str) -> str:
+    """The run this handle was named for: `vm_handle` read backwards, for the sweep."""
+    return handle.removeprefix(HANDLE_PREFIX)
+
+
 def workdir_for(profile: Profile, run_dir: Path) -> Path:
     """The host directory mounted into the guest: the shared one, or scratch in the run dir.
 
@@ -114,12 +131,19 @@ def workdir_for(profile: Profile, run_dir: Path) -> Path:
     return workdir.resolve()
 
 
-def net_rules(domains: list[str]) -> list[str]:
+def net_rules(domains: list[str], everything: bool = False) -> list[str]:
     """Deny everything, then allow one host per domain the profile named.
 
     A rule names a host, a protocol and a port, so this is https to those hosts and
     nothing else. No domains at all means no network, and no DNS to resolve it with.
+
+    `everything` is the profile asking for no allowlist at all (SPEC §2.1), which msb
+    expresses as a default rather than a rule: `--net-default allow` with nothing after
+    it, so every host, every port and DNS with it. srt has no form of this at all and
+    refuses the profile instead, which is the difference the chooser shows.
     """
+    if everything:
+        return ["--net-default", "allow"]
     rules = ["--net-default", "deny"]
     if not domains:
         return rules
@@ -130,7 +154,12 @@ def net_rules(domains: list[str]) -> list[str]:
 
 
 def create_argv(
-    handle: str, image: str, workdir: Path, domains: list[str], synth: SynthConfig
+    handle: str,
+    image: str,
+    workdir: Path,
+    domains: list[str],
+    synth: SynthConfig,
+    everything: bool = False,
 ) -> list[str]:
     """The command that boots the session's VM. The image is positional, so it comes last.
 
@@ -154,7 +183,7 @@ def create_argv(
         argv += ["--mount-dir", f"{synth.dir.resolve()}:{GUEST_CONFIG_SRC}:ro"]
         for name, value in synth.env.items():
             argv += ["-e", f"{name}={value}"]
-    return argv + [*net_rules(domains), image]
+    return argv + [*net_rules(domains, everything), image]
 
 
 def copy_config_argv(handle: str) -> list[str]:
@@ -224,8 +253,8 @@ def list_argv() -> list[str]:
     return [find_msb(), "ls", "--format", "json"]
 
 
-def vm_status(handle: str) -> str | None:
-    """What msb says about this sandbox: its status, or None when msb has no such name."""
+def _listed() -> list[dict]:
+    """What msb is running, as records. The one place its `ls` output is read."""
     output = _run(*list_argv())
     try:
         listed = json.loads(output or "[]")
@@ -233,8 +262,13 @@ def vm_status(handle: str) -> str | None:
         raise MsbError(f"msb ls did not answer with JSON: {output!r}") from error
     if not isinstance(listed, list):
         raise MsbError(f"msb ls did not answer with a list of sandboxes: {output!r}")
-    for entry in listed:
-        if isinstance(entry, dict) and entry.get("name") == handle:
+    return [entry for entry in listed if isinstance(entry, dict)]
+
+
+def vm_status(handle: str) -> str | None:
+    """What msb says about this sandbox: its status, or None when msb has no such name."""
+    for entry in _listed():
+        if entry.get("name") == handle:
             return str(entry.get("status", "")).lower()
     return None
 
@@ -302,7 +336,14 @@ def prepare(profile: Profile) -> Run:
     # Without the token: nothing can use it until the agent is installed, and everything
     # between here and there can fail (SPEC §4.3).
     synth = synth_config.build(
-        profile, agent, run_dir, guest_dir=GUEST_CONFIG, defer_credentials=True
+        profile,
+        agent,
+        run_dir,
+        guest_dir=GUEST_CONFIG,
+        defer_credentials=True,
+        # A guest tab starts in the mount, not in the host directory behind it, so that is
+        # the path the agent asks about trusting.
+        workdir=GUEST_WORKDIR,
     )
     if synth.missing:
         left_out = ", ".join(synth.missing)
@@ -315,7 +356,16 @@ def prepare(profile: Profile) -> Run:
         )
     image = agent.image or DEFAULT_IMAGE
     try:
-        _run(*create_argv(handle, image, workdir, profile.allowed_domains(), synth))
+        _run(
+            *create_argv(
+                handle,
+                image,
+                workdir,
+                profile.allowed_domains(),
+                synth,
+                profile.opens_every_domain(),
+            )
+        )
         if agent.install:
             _provision(handle, agent, image)
         if synth.dir is not None:
@@ -323,22 +373,41 @@ def prepare(profile: Profile) -> Run:
             synth_config.place_credentials(profile, agent, run_dir)
             _run(*copy_config_argv(handle))
         command = attach_command(handle, _agent_argv(profile, agent, synth))
+        # Named rather than left to the image, and the guest's own rather than the host's:
+        # a host `$SHELL` need not exist in there (see `_agent_argv`).
+        shell = attach_command(handle, [GUEST_SHELL])
         script = write_launch_script(run_dir, command)
+        write_launch_script(run_dir, shell, SHELL_SCRIPT)
         # The length, never the command: the same rule the srt backend writes under.
         logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
         (run_dir / LAUNCH_FILE).write_text(
             json.dumps(
-                {"vm_handle": handle, "workdir": str(workdir), "command": command}, indent=2
+                {
+                    "vm_handle": handle,
+                    "workdir": str(workdir),
+                    "command": command,
+                    "shell_command": shell,
+                },
+                indent=2,
             )
             + "\n"
         )
-    except Exception:
-        # Nothing has registered this session, so a VM or a token left here is one that
-        # nobody would ever collect. Both go, and the failure is reported as it was.
+    except BaseException:
+        # BaseException, not Exception: ctrl-c is a KeyboardInterrupt and nearly all of the
+        # 20 to 70 seconds this takes is after the VM exists, so catching only Exception
+        # left a microVM running that nothing would ever collect. Nothing has registered
+        # this session, so a VM or a token left here is orphaned. Both go, and the bare
+        # `raise` reports the failure as it was: a KeyboardInterrupt is never wrapped.
         synth_config.discard_credentials(run_dir)
         stop_vm(handle)
         raise
-    return Run(run_dir=run_dir, workdir=workdir, vm_handle=handle, command=command)
+    return Run(
+        run_dir=run_dir,
+        workdir=workdir,
+        vm_handle=handle,
+        command=command,
+        shell_command=shell,
+    )
 
 
 def load_run(run_dir: Path) -> Run:
@@ -350,33 +419,80 @@ def load_run(run_dir: Path) -> Run:
     """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        run = Run(run_dir, Path(data["workdir"]), str(data["vm_handle"]), str(data["command"]))
+        run = Run(
+            run_dir,
+            Path(data["workdir"]),
+            str(data["vm_handle"]),
+            str(data["command"]),
+            # Absent on a run prepared before shell tabs existed, which open_pane reports.
+            str(data.get("shell_command", "")),
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
     ensure_launch_script(run_dir, run.command)
+    if run.shell_command:
+        ensure_launch_script(run_dir, run.shell_command, SHELL_SCRIPT)
     return run
 
 
-def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
+def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = False) -> str:
     """Open a tab and exec a shell into the session's VM. Returns the pane id.
 
     The tab's own directory is the host side of the mount, so the pane and the guest
     shell are looking at the same files.
+
+    `shell` execs the image's own shell instead of the agent. `msb exec` joins the VM that
+    is already running, so it lands in the same guest, the same /work and the same process
+    namespace as the agent tab (SPEC §3.2).
     """
     if cwd is not None:
         raise ValueError(
             f"an msb session always opens in the guest workdir {GUEST_WORKDIR}: "
             f"{cwd} would only set the host tab's own directory, which the guest shell replaces"
         )
+    if shell and not run.shell_command:
+        raise ValueError(
+            f"the session in {run.run_dir} was prepared before paddock could open a shell "
+            "in it, so start a new session to get one"
+        )
     if not vm_is_running(run.vm_handle):
         raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
     pane_id = herdr_client.create_tab(run.workdir, label=label)
-    line = launch_line(run.run_dir)
+    line = launch_line(run.run_dir, SHELL_SCRIPT if shell else LAUNCH_SCRIPT)
     herdr_client.run_in_pane(pane_id, line)
     logger.debug(
-        "pane opened %s", log.context(pane=pane_id, label=label, vm=run.vm_handle, line=line)
+        "pane opened %s",
+        log.context(pane=pane_id, label=label, vm=run.vm_handle, shell=shell, line=line),
     )
     return pane_id
+
+
+def sweep(known: set[str], ours: set[str]) -> Swept:
+    """Destroy this state dir's own sandboxes that no session claims (SPEC §3.4, §8).
+
+    The rollback in `prepare` covers the interruptions it survives, ctrl-c included. A
+    process killed outright cannot roll anything back, and what that leaves is a microVM
+    nothing would ever collect, so `paddock gc` sweeps for them.
+
+    `known` is the handles the registry claims and `ours` the runs this state dir answers
+    for. A sandbox has to be paddock's by its name, this state dir's by the run in that
+    name, and claimed by nothing, before it is removed. msb names are unique on the host
+    and not per state dir, so a paddock-named sandbox from another run of this test suite,
+    or another context's live session, is reported and left exactly as it is.
+    """
+    if not shutil.which("msb"):
+        return Swept()  # no msb on this machine, so no microVM of its making is running
+    swept = Swept()
+    for entry in _listed():
+        name = str(entry.get("name", ""))
+        if not name.startswith(HANDLE_PREFIX) or name in known:
+            continue  # another tool's sandbox, or one a live session is using
+        if run_name(name) not in ours:
+            swept.unowned.append(name)
+            continue
+        stop_vm(name)
+        swept.removed.append(name)
+    return swept
 
 
 def collect(run_dir: Path, vm_handle: str = "") -> None:

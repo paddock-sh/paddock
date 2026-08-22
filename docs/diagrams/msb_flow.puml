@@ -42,6 +42,12 @@ note right
   and not the install. The install downloads over the same
   deny-by-default network, so the profile has to allow the
   registry, and msb cannot withdraw that rule afterwards.
+
+  A profile without the npm preset spends about 70s here
+  and then fails. The chooser says so twice before the
+  wait, on the confirm and on the progress screen, and
+  draws the failure on a screen of its own rather than
+  printing it into a popup that is already closing.
 end note
 Backend -> Synth : place_credentials(profile, agent, run_dir)
 activate Synth
@@ -58,6 +64,12 @@ note right
   Anything that fails from `msb create` on: delete the
   token, remove the VM, then raise. The session is not
   registered yet, so nothing else would collect either.
+  BaseException, not Exception: ctrl-c lands in this
+  window nearly every time, and catching only Exception
+  left a microVM running that nothing would collect.
+  A process killed outright rolls nothing back, so
+  `paddock gc` sweeps `msb ls` for paddock-<run> handles
+  the registry does not claim (SPEC section 8).
 end note
 Backend -> Backend : write run_dir/launch.sh:\n`msb exec ~--tty paddock-<run> [~-- claude <config flags>]`\nwrite run_dir/launch.json: vm_handle, workdir, command
 Backend --> Sessions : Run(run_dir, workdir, vm_handle, command)

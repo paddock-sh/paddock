@@ -81,7 +81,7 @@ Three diagrams are seeded:
 - `architecture.puml` holds the components: keybinding popup, chooser TUI, sessions,
   profiles, agent registry, `Backend` interface, `srt` / `microsandbox`, herdr
   CLI.
-- `launch_sequence.puml` is a sandboxed launch end to end, from `prefix+c` to
+- `launch_sequence.puml` is a sandboxed launch end to end, from `prefix+s` to
   `herdr pane run`.
 - `scoping_model.puml` covers sandbox sessions: one workspace with local tabs, a
   two-tab group on a microVM session, and a tab on an srt session.
@@ -156,9 +156,9 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
   ([docs/SPEC.md §10](docs/SPEC.md#10-architecture-layers-and-the-one-door-rule)).
   `tests/test_architecture.py` reads the imports and fails on any edge that
   breaks it, so this is enforced, not agreed.
-- **Few dependencies.** `questionary` is the only runtime dependency. Argue for a
-  second one in the PR. The standard library covers JSON, paths, subprocess and
-  dataclasses.
+- **Few dependencies.** `prompt_toolkit` is the only runtime dependency, and the
+  chooser's screens are written against it directly. Argue for a second one in
+  the PR. The standard library covers JSON, paths, subprocess and dataclasses.
 
 **Documentation is concise and plain English.**
 

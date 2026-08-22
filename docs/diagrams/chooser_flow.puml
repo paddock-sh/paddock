@@ -1,5 +1,5 @@
 @startuml chooser_flow
-title paddock: the chooser, questions in and one plan out
+title paddock: the chooser, one form in and one plan out
 
 skinparam shadowing false
 skinparam defaultTextAlignment center
@@ -17,21 +17,22 @@ elseif (attach <session>) then
   :plan = Attach(session ref, cwd only if --cwd was given);
 else (choose)
   :sessions.list_sessions();
-  if (what kind of window?) then (Local)
+  partition "the form: one screen, one field per decision" {
+    repeat
+      :the fields, filled in from the profile\nthis workspace launched last:\n1 Open: a new sandbox, a local tab, or a live session\n2 Profile: fills in everything below\n3 Backend: srt now, or msb when this machine has one\n4 Agent: the command, and the key it is saved under\n5 Tools: ticked binaries on the sandbox PATH\n6 Network: groups, and any extra domains\n7 Files: an isolated scratch dir, or one shared directory\n8 Skills: from the agent's own config dir\n9 Advanced: the name, saving these answers, keeping\nthe session running, MCP, writes, reads, the system PATH;
+      :enter opens an editor for that field,\nesc closes it and keeps what it holds;
+      :settle(answers, field) after a change:\nanother profile hands over every value it carries,\nanother agent drops its skills and typed command,\nsharing nothing drops the directory;
+    repeat while (another field?) is (yes: the arrows or a digit,\nevery answer kept) not (no: Launch)
+  }
+  if (what the Open field says) then (Local tab)
     :plan = Local(cwd);
-  elseif (Attach:\noffered only when a session is live) then
-    :pick a session by name, agent,\nprofile and tab count;
+  elseif (Attach: <session>) then
     :plan = Attach(session id):\nthe session keeps its own workdir;
-  else (New sandbox session)
-    partition "permissions questionnaire" {
+  else (New sandbox)
+    partition "confirm" {
       repeat
-        :ask the next question, in order:\nstart from a saved profile or Custom;\nagent from the registry, or a command typed in;\ntools: candidates on PATH plus the profile's own,\nmarked when missing; network presets and typed\ndomains; skills under the agent's config dir\n(none, or a different agent: skipped);\nshare a host directory?; session name;\nsave the answers as a profile?;
-      repeat while (← Back on a list question?) is (yes: the question before it,\nevery answer so far kept) not (no)
-    }
-    partition "summary" {
-      repeat
-        :one line per answer: start from, agent,\ntyped command, tools, network presets and\ndomains, skills, shared dir, name, save as;
-      repeat while (Launch, Edit a step, or Cancel?) is (Edit a step: ask\nthat one question again) not (Launch)
+        :the resolved policy, in full: session name, agent,\nthe profile and whether the answers still match it,\ncan write, can read, can reach (the domains the\ngroups open, not the group names), can run, can see;
+      repeat while (Launch, Back to the form, or Cancel?) is (Back to the form:\nthe same screen, every answer kept) not (Launch)
     }
     :plan = NewSession(profile, name, save as);
   endif
@@ -44,26 +45,46 @@ else (no)
 endif
 
 :save the profile and remember a typed-in\nagent, if the answers asked for it;
+:screen.progress("Starting <name>"):\nthe image it pulls, the agent it installs in the guest,\nand the warning when the profile cannot reach npm;
 :sessions.launch_local\n| get_session then attach\n| launch;
-:print the pane id;
-stop
+if (did it open a pane?) then (yes)
+  :print the pane id;
+  stop
+else (no: it raised)
+  :screen.failed(the message, the log path):\nBack to the form reopens it with answers_from(plan),\nCancel closes the popup;
+  stop
+endif
 
 note right
-  Ctrl-C or escape answers None at any question,
-  and Cancel on the summary says the same thing:
-  the chooser returns no plan and cli.py stops.
-  Only cli.py acts on a plan; the chooser reads
-  the session list and nothing else. So backing
-  out cannot leave a pane or a file behind.
+  Ctrl-C cancels at any depth, and Cancel on the
+  confirm says the same thing: the chooser returns
+  no plan and cli.py stops. Only cli.py acts on a
+  plan; the chooser reads the session list and
+  nothing else. So backing out cannot leave a pane
+  or a file behind.
 
-  Back on the first question of the questionnaire
-  goes back to "what kind of window?". Text boxes
-  carry no Back entry; the summary edits those.
-  Editing the agent asks for its skills again,
-  because they come from its own config dir.
-  Editing the base profile hands over its own
-  tools, network, domains, skills and directory:
-  another profile means starting over from it.
+  Esc backs out one level and never loses an answer.
+  It closes what is open, keeps the value it was
+  editing, and puts the cursor back on the field.
+  There is no walk to go back through, because every
+  field is on one screen.
+
+  Picking a local tab or a session greys out every
+  field below Open: no sandbox, so there is nothing
+  to permit. Nothing is hidden and nothing moves. A
+  session that ended between the list and the form
+  says so, rather than reading as a new sandbox.
+
+  Nothing the popup was asked to do dies without a
+  screen. The popup closes with the process, so a
+  message printed after the form has gone is written
+  to a terminal nobody is left looking at: a launch
+  that never opened a pane is drawn instead, and Back
+  to the form keeps every answer behind it.
+
+  tui.py holds the fields, the words and the rules;
+  screen.py draws them (chooser_keys.puml), and
+  recent.py is what the form opens on.
 end note
 
 @enduml

@@ -4,13 +4,15 @@ import fcntl
 import json
 import os
 import shlex
+import shutil
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import pytest
 
 from paddock import herdr_client, sessions
-from paddock.backends import SandboxGone, microsandbox, srt
+from paddock.backends import SandboxGone, Swept, microsandbox, srt
 from paddock.profiles import Profile
 from tests.conftest import FakeClient, launch_command
 
@@ -39,7 +41,7 @@ class FakeBackend:
         self.fails_with = fails_with
         self.prepared: list[Profile] = []
         self.loaded: list[Path] = []
-        self.opened: list[tuple[object, str, Path | None]] = []
+        self.opened: list[tuple[object, str, Path | None, bool]] = []
         self.collected: list[tuple[Path, str]] = []
 
     def prepare(self, profile: Profile) -> FakeRun:
@@ -50,11 +52,14 @@ class FakeBackend:
         self.loaded.append(run_dir)
         return self.run
 
-    def open_pane(self, run: FakeRun, label: str = "", cwd: Path | None = None) -> str:
+    def open_pane(
+        self, run: FakeRun, label: str = "", cwd: Path | None = None, shell: bool = False
+    ) -> str:
         if self.fails_with is not None:
             raise self.fails_with
-        self.opened.append((run, label, cwd))
-        return "wA:p7"
+        self.opened.append((run, label, cwd, shell))
+        # A new id per tab, as herdr gives: two tabs on one session are two panes.
+        return f"wA:p{6 + len(self.opened)}"
 
     def collect(self, run_dir: Path, vm_handle: str = "") -> None:
         self.collected.append((run_dir, vm_handle))
@@ -219,7 +224,7 @@ def test_attach_opens_a_pane_labelled_with_the_session_name(
     cwd, label, env = client.tabs[0]
     assert label == "sbx:demo"
     assert cwd == Path(session.run_dir) / "work"
-    assert env == {"CLAUDE_CONFIG_DIR": str(Path(session.run_dir) / "config")}
+    assert env["CLAUDE_CONFIG_DIR"] == str(Path(session.run_dir) / "config")
     assert [pane for pane, _ in client.commands] == [pane_id]
 
 
@@ -396,7 +401,7 @@ def test_attach_goes_through_the_backend_the_session_names(
     pane_id = sessions.attach(session)
 
     assert fake.loaded == [Path(session.run_dir)]
-    assert fake.opened == [(fake.run, "sbx:demo", None)]
+    assert fake.opened == [(fake.run, "sbx:demo", None, False)]
     assert pane_id == "wA:p7"
     assert sessions.get_session("demo").pane_ids == ["wA:p7"]
 
@@ -555,6 +560,33 @@ def test_a_keep_alive_session_survives_its_last_pane(
     sessions.remove_pane(pane_id)
 
     assert sessions.get_session("demo").pane_ids == []
+
+
+def test_keeping_a_session_running_is_written_down_where_it_is_read(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    """The chooser asks under Advanced, and the answer has to outlive the process that asked."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    sessions.attach(session)
+
+    sessions.set_keep_alive(session, True)
+
+    assert sessions.get_session("demo").keep_alive is True
+    assert sessions.get_session("demo").pane_ids == session.pane_ids
+
+
+def test_a_session_collected_while_it_was_used_is_not_brought_back(
+    which: dict[str, str], client: FakeClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Writing a dead session back would revive one whose credentials have already gone."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    pane_id = sessions.attach(session)
+    sessions.remove_pane(pane_id)  # the last tab closed, so it was collected
+
+    sessions.set_keep_alive(session, True)
+
+    assert sessions.list_sessions() == []
+    assert "collected" in capsys.readouterr().err
 
 
 def test_a_collected_session_loses_the_token_in_its_run_dir(
@@ -888,3 +920,260 @@ def test_launch_local_makes_a_plain_unlabelled_tab(client: FakeClient, tmp_path:
     assert client.commands == []
     assert sessions.list_sessions() == []
     assert pane_id == "wA:p2"
+
+
+# --- a shell tab on a session that is already running -----------------------
+
+
+def test_a_shell_tab_asks_the_backend_for_a_shell_and_is_labelled_as_one(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tab bar has to tell the two apart: they are the same sandbox, not the same thing."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    write_registry(state_dir, [record(backend="fake")])
+
+    sessions.attach(sessions.get_session("demo"), shell=True)
+
+    assert fake.opened == [(fake.run, "sbx:demo (shell)", None, True)]
+
+
+def test_a_shell_tab_is_a_pane_of_the_session_like_any_other(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It holds the session open, and closing it is what ends the session when it is last."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    write_registry(state_dir, [record(backend="fake")])
+    session = sessions.get_session("demo")
+
+    agent_pane = sessions.attach(session)
+    shell_pane = sessions.attach(sessions.get_session("demo"), shell=True)
+    client.live.update({agent_pane, shell_pane})  # the fake backend opens its own panes
+
+    assert sessions.get_session("demo").pane_ids == [agent_pane, shell_pane]
+
+    client.close_pane(agent_pane)
+    assert [collected.name for collected in sessions.reconcile()] == []
+    assert sessions.get_session("demo").pane_ids == [shell_pane]
+
+    client.close_pane(shell_pane)
+    assert [collected.name for collected in sessions.reconcile()] == ["demo"]
+    assert sessions.get_session("demo") is None
+
+
+def test_the_label_says_shell_only_when_it_is_one() -> None:
+    assert sessions.pane_label("review") == "sbx:review"
+    assert sessions.pane_label("review", shell=True) == "sbx:review (shell)"
+
+
+# --- ctrl-c between the boot and the first tab ------------------------------
+
+
+def test_ctrl_c_before_the_first_tab_tears_the_session_down_and_is_not_wrapped(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cli.py turns KeyboardInterrupt into exit 130, so wrapping it would lose that."""
+    fake = FakeBackend(fails_with=KeyboardInterrupt())
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    with pytest.raises(KeyboardInterrupt):
+        sessions.launch(Profile(name="demo"), "demo", backend="fake")
+
+    assert sessions.list_sessions() == []
+    assert fake.collected  # the boot was torn down, not left running
+
+
+def test_a_launch_that_fails_for_any_other_reason_still_says_which_session(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend(fails_with=RuntimeError("no tab"))
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    with pytest.raises(RuntimeError, match="could not open its first tab"):
+        sessions.launch(Profile(name="demo"), "demo", backend="fake")
+
+
+# --- sweeping what a killed launch left running -----------------------------
+
+
+class SweepingBackend(FakeBackend):
+    """A backend with something running that no session claims.
+
+    It applies the rule the real backends apply, on handles named the way msb names its
+    own, so what these tests are really about is the ownership set sessions hands it.
+    """
+
+    def __init__(self, running: list[str]) -> None:
+        super().__init__()
+        self.running = running
+        self.swept: list[tuple[set[str], set[str]]] = []
+
+    def sweep(self, known: set[str], ours: set[str]) -> Swept:
+        self.swept.append((set(known), set(ours)))
+        loose = [name for name in self.running if name not in known]
+        return Swept(
+            removed=[name for name in loose if name.removeprefix("paddock-") in ours],
+            unowned=[name for name in loose if name.removeprefix("paddock-") not in ours],
+        )
+
+
+def owned_run(state_dir: Path, name: str) -> Path:
+    """A run dir under this state dir, which is what makes `paddock-<name>` ours to sweep."""
+    path = state_dir / "runs" / name
+    path.mkdir(parents=True)
+    return path
+
+
+def test_gc_sweeps_what_no_session_claims(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # no msb on this host to ask
+    owned_run(state_dir, "orphan")
+    kept = owned_run(state_dir, "kept")
+    backend = SweepingBackend(["paddock-orphan", "paddock-kept"])
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+    write_registry(
+        state_dir,
+        [record(backend="fake", vm_handle="paddock-kept", run_dir=str(kept))],
+    )
+
+    assert sessions.collect_orphans() == Swept(removed=["paddock-orphan"], unowned=[])
+    assert backend.swept == [({"paddock-kept"}, {"orphan", "kept"})]
+
+
+def test_gc_leaves_a_sandbox_no_run_of_this_state_dir_made(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two paddock state dirs on one host must not reap each other's VMs (SPEC §3.4)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    backend = SweepingBackend(["paddock-20260822-155634-elsewhere"])
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+
+    swept = sessions.collect_orphans()
+
+    assert swept == Swept(removed=[], unowned=["paddock-20260822-155634-elsewhere"])
+    assert backend.swept == [(set(), set())]
+
+
+def test_a_run_only_the_registry_still_remembers_is_this_state_dirs_to_sweep(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run dir removed under a live session leaves a VM that is still this paddock's."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    backend = SweepingBackend(["paddock-gone"])
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+    write_registry(state_dir, [record(backend="fake", run_dir=str(state_dir / "runs" / "gone"))])
+
+    assert sessions.collect_orphans() == Swept(removed=["paddock-gone"], unowned=[])
+
+
+def test_a_backend_that_will_not_answer_a_sweep_is_a_message_not_a_failure(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gc has already collected what it collected, and the rest is next time's job."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    class Sulking(FakeBackend):
+        def sweep(self, known: set[str], ours: set[str]) -> Swept:
+            raise RuntimeError("msb ls did not answer")
+
+    monkeypatch.setitem(sessions.BACKENDS, "fake", Sulking())
+
+    assert sessions.collect_orphans() == Swept(removed=[], unowned=[])
+    assert "could not sweep" in capsys.readouterr().err
+
+
+# --- sweeping the run dirs of launches that failed --------------------------
+
+
+def raising(error: Exception):
+    """A backend call that will not do what it was asked."""
+
+    def fail(*args: object, **kwargs: object):
+        raise error
+
+    return fail
+
+
+def test_a_launch_that_never_opened_a_tab_takes_its_run_dir_with_it(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing ran in there, so nothing in it is anyone's work."""
+    monkeypatch.setattr(srt, "open_pane", raising(RuntimeError("no srt")))
+    runs = sessions.state_dir() / "runs"
+
+    with pytest.raises(RuntimeError):
+        sessions.launch(Profile(name="demo", tools=[]), "demo")
+
+    assert list(runs.glob("*")) == []
+
+
+def test_ctrl_c_before_the_first_tab_takes_the_run_dir_too(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(srt, "open_pane", raising(KeyboardInterrupt()))
+    runs = sessions.state_dir() / "runs"
+
+    with pytest.raises(KeyboardInterrupt):
+        sessions.launch(Profile(name="demo", tools=[]), "demo")
+
+    assert list(runs.glob("*")) == []
+
+
+def test_a_directory_outside_the_runs_dir_is_never_removed(tmp_path: Path) -> None:
+    """The only directories paddock takes away are the ones it made."""
+    elsewhere = tmp_path / "work"
+    elsewhere.mkdir()
+
+    sessions.remove_run_dir(elsewhere)
+
+    assert elsewhere.is_dir()
+
+
+def stale_run(state_dir: Path, name: str, work: str = "") -> Path:
+    """A run dir old enough to sweep, with something in its workdir when `work` is named."""
+    path = state_dir / "runs" / name
+    (path / "work").mkdir(parents=True)
+    if work:
+        (path / "work" / work).write_text("someone's work\n")
+    old = time.time() - sessions.RUN_DIR_GRACE_SECONDS - 60
+    os.utime(path, (old, old))
+    return path
+
+
+def test_gc_sweeps_a_run_dir_no_session_claims(state_dir: Path) -> None:
+    left = stale_run(state_dir, "20260822-000000-gone")
+
+    assert sessions.collect_run_dirs() == [left]
+    assert not left.exists()
+
+
+def test_gc_leaves_the_run_dir_of_a_live_session_alone(state_dir: Path) -> None:
+    kept = stale_run(state_dir, "20260822-000000-live")
+    write_registry(state_dir, [record(run_dir=str(kept))])
+
+    assert sessions.collect_run_dirs() == []
+    assert kept.is_dir()
+
+
+def test_gc_never_sweeps_a_workdir_with_work_in_it(state_dir: Path) -> None:
+    """A collected session keeps its run dir on purpose: deleting a workdir loses work."""
+    kept = stale_run(state_dir, "20260822-000000-used", work="notes.md")
+
+    assert sessions.collect_run_dirs() == []
+    assert (kept / "work" / "notes.md").is_file()
+
+
+def test_gc_leaves_a_run_dir_that_is_still_being_prepared(state_dir: Path) -> None:
+    """`prepare` makes the directory before the session that claims it is registered."""
+    fresh = state_dir / "runs" / "20260822-000000-new"
+    (fresh / "work").mkdir(parents=True)
+
+    assert sessions.collect_run_dirs() == []
+    assert fresh.is_dir()
+
+
+def test_gc_with_no_runs_directory_at_all_sweeps_nothing(state_dir: Path) -> None:
+    assert sessions.collect_run_dirs() == []

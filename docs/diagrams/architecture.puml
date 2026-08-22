@@ -8,7 +8,7 @@ skinparam defaultTextAlignment center
 actor User
 
 package "Herdr 0.8.0" {
-  [Keybinding\nprefix+c -> popup\n(written by `paddock init`)] as Keybinding
+  [Keybindings\nprefix+s -> the chooser\nprefix+shift+s -> the attach list\n(written by `paddock init`)] as Keybinding
   [herdr CLI\ntab create / pane run] as HerdrCLI
   [Workspace / tabs / panes] as HerdrUI
 }
@@ -16,10 +16,12 @@ package "Herdr 0.8.0" {
 package "paddock" {
   [cli.py\nchoose | launch | attach | profiles | gc | logs | init\n~--cwd, ~--dry-run] as CLI
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
-  [tui.py\nquestionary chooser\nanswers -> a plan] as TUI
-  [sessions.py\nsession registry\ncreate | attach | remove_pane\n(collect on the last pane)] as Sessions
+  [tui.py\nthe chooser: fields, words and rules\nanswers -> a plan] as TUI
+  [screen.py\nthe screens: form, list, checklist, box,\nconfirm, and the one a failed launch ends on\none prompt_toolkit Application each,\nplus the progress lines a slow launch prints] as Screen
+  [recent.py\nthe profile each workspace\nlaunched last] as Recent
+  [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
-  [agents.py\nagent registry\ncommand, domains, credential paths,\nimage + install for the guest] as Agents
+  [agents.py\nagent registry\ncommand, domains, required tools,\ncredential paths,\nimage + install for the guest] as Agents
   [synth_config.py\nsynthesized config dir\n(credentials + ticked skills\n+ MCP whitelist)] as SynthConfig
   interface "Backend\nprepare(profile) -> run\nload_run(run_dir) -> run\nopen_pane(run, label)\n-> pane id\ncollect(run_dir)" as BackendAPI
   [sessions.BACKENDS\nbackend name -> the module\nthat runs it] as BackendRegistry
@@ -42,16 +44,20 @@ package "Sandbox runtimes" {
 
 User --> CLI : runs `paddock init` once, after installing
 CLI --> Init : init (backs the config up first)
-Init --> Keybinding : writes the popup block\nand moves new_tab to prefix+shift+c
+Init --> Keybinding : writes the popup blocks\nand moves herdr settings to prefix+comma
 Init --> HerdrClient : herdr config check, then reload-config\n(a refused config is put back;\nno herdr to ask is only a message)
-User --> Keybinding : presses prefix+c
+User --> Keybinding : presses prefix+s
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
 TUI --> CLI : one plan:\nlocal | attach | new session
+TUI --> Screen : draws the form, one editor per field\nover it, the confirm, and what a launch\nis doing and why it failed
+TUI --> Recent : which profile to open on
+CLI --> Recent : remembers the profile a launch used
 TUI --> Profiles : load / save profile
 TUI --> Agents : list agents, remember a typed command
 TUI --> Sessions : list live sessions
 Sessions ..> RunDir : registry survives\nHerdr restart
+Recent ..> RunDir : last-profile.json,\nper workspace
 Profiles ..> ConfigFiles : reads / writes
 Agents ..> ConfigFiles : reads user agents/*.json
 

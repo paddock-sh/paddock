@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from paddock.backends import Swept
 from paddock.profiles import Profile
 
 
@@ -40,6 +41,9 @@ def reset() -> None:
     calls.clear()
     registry.clear()
     collects.clear()
+    orphans.clear()
+    unowned.clear()
+    stale_runs.clear()
 
 
 def list_sessions() -> list[Session]:
@@ -65,8 +69,8 @@ def create_session(profile: Profile, name: str | None = None, backend: str = "sr
     )
 
 
-def attach(session: Session, cwd: Path | None = None) -> str:
-    calls.append(("attach", session, cwd))
+def attach(session: Session, cwd: Path | None = None, shell: bool = False) -> str:
+    calls.append(("attach", session, cwd, shell))
     return "wA:p9"
 
 
@@ -81,6 +85,11 @@ def launch(profile: Profile, name: str | None = None, backend: str = "srt") -> t
     return session, "wA:p3"
 
 
+def set_keep_alive(session: Session, keep_alive: bool) -> None:
+    calls.append(("set_keep_alive", session, keep_alive))
+    session.keep_alive = keep_alive
+
+
 def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
 
@@ -88,6 +97,26 @@ def remove_pane(pane_id: str) -> None:
 def reconcile() -> list[Session]:
     calls.append(("reconcile",))
     return list(collects)
+
+
+# Sandboxes a test wants the backend sweep to find running with no session behind them.
+orphans: list[str] = []
+# Paddock-named sandboxes a test wants the sweep to find that this state dir does not own.
+unowned: list[str] = []
+
+
+def collect_orphans() -> Swept:
+    calls.append(("collect_orphans",))
+    return Swept(removed=list(orphans), unowned=list(unowned))
+
+
+# Run dirs a test wants the sweep to find with no session claiming them.
+stale_runs: list[Path] = []
+
+
+def collect_run_dirs() -> list[Path]:
+    calls.append(("collect_run_dirs",))
+    return list(stale_runs)
 
 
 def launch_local(cwd: Path | None = None) -> str:

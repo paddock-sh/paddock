@@ -26,8 +26,10 @@ LOG_FILE = "paddock.log"
 MAX_BYTES = 1_000_000
 BACKUP_COUNT = 3
 
-# What a pane's launch script keeps its stderr in, next to the run it belongs to.
+# What a pane's launch script keeps its stderr in, next to the run it belongs to. A shell
+# tab keeps its own, so the agent's log stays the agent's: they are two different stories.
 PANE_LOG = "pane.log"
+SHELL_LOG = "shell.log"
 
 FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -48,9 +50,9 @@ def log_path() -> Path:
     return Path(override).expanduser() if override else state_dir() / "logs" / LOG_FILE
 
 
-def pane_log_path(run_dir: Path) -> Path:
-    """Where the launch script of one run keeps the pane's stderr."""
-    return run_dir / PANE_LOG
+def pane_log_path(run_dir: Path, name: str = PANE_LOG) -> Path:
+    """Where a launch script of one run keeps its pane's stderr."""
+    return run_dir / name
 
 
 def stderr_level() -> int:
@@ -155,9 +157,14 @@ def scrub(text: str) -> str:
 
 
 def tail(path: Path, count: int) -> str:
-    """The last `count` lines of a file, or a line saying there is nothing there yet."""
+    """The last `count` lines of a file, or a line saying there is nothing there yet.
+
+    An empty file gets that line too. A pane log with nothing in it is the ordinary case,
+    not a broken one, and printing nothing after naming the file looks like a command that
+    failed silently.
+    """
     try:
         lines = path.read_text(errors="replace").splitlines(keepends=True)
     except OSError:
-        return f"paddock: nothing logged yet at {path}\n"
-    return "".join(lines[-count:])
+        lines = []
+    return "".join(lines[-count:]) or f"paddock: nothing logged yet at {path}\n"

@@ -12,17 +12,19 @@ import fcntl
 import json
 import os
 import secrets
+import shutil
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
 from paddock import herdr_client, log, state_dir, synth_config
-from paddock.backends import SandboxGone, microsandbox, srt
+from paddock.backends import SandboxGone, Swept, microsandbox, srt
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
@@ -34,6 +36,14 @@ logger = log.get_logger(__name__)
 BACKENDS: dict[str, ModuleType] = {"srt": srt, "msb": microsandbox}
 
 DEFAULT_BACKEND = "srt"
+
+# Where every backend's run dirs live, under the state dir.
+RUNS = "runs"
+
+# How long a run dir nothing claims is left alone. `prepare` makes the directory before
+# the session that claims it is registered, so a sweep in another pane must not take a
+# launch's own workdir out from under it while it is still starting.
+RUN_DIR_GRACE_SECONDS = 300
 
 
 @dataclass
@@ -125,7 +135,7 @@ def create_session(
             name=name,
             profile_name=profile.name,
             agent=profile.agent,
-            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            created_at=datetime.now(UTC).isoformat(timespec="seconds"),
             run_dir=str(run.run_dir),
             keep_alive=False,
             pane_ids=[],
@@ -149,16 +159,27 @@ def create_session(
         return session
 
 
-def attach(session: Session, cwd: Path | None = None) -> str:
+def pane_label(name: str, shell: bool = False) -> str:
+    """What the tab is called in the tab bar (SPEC §3.5). A shell tab says which it is."""
+    return f"sbx:{name} (shell)" if shell else f"sbx:{name}"
+
+
+def attach(session: Session, cwd: Path | None = None, shell: bool = False) -> str:
     """Open a tab on the session and start the agent in it. Returns the pane id.
 
     The tab starts in the session's workdir unless another directory is named, which
     not every backend can honour: an msb tab always opens in the guest (SPEC §2.2).
+
+    `shell` opens a plain shell inside the same sandbox instead of the agent. It is a tab
+    on the session like any other: it is registered, it holds the session open, and the
+    session is collected when it is the last one to close.
     """
     backend = backend_for(session.backend)
     run = backend.load_run(Path(session.run_dir))
     try:
-        pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+        pane_id = backend.open_pane(
+            run, label=pane_label(session.name, shell), cwd=cwd, shell=shell
+        )
     except SandboxGone as error:
         # There is nothing left to attach to, so the session ends here rather than
         # sitting in the registry offering tabs that cannot open (SPEC §3.4).
@@ -174,6 +195,7 @@ def attach(session: Session, cwd: Path | None = None) -> str:
             backend=session.backend,
             pane=pane_id,
             cwd=cwd,
+            shell=shell,
         ),
     )
     return pane_id
@@ -186,11 +208,116 @@ def launch(
     session = create_session(profile, name, backend)
     try:
         return session, attach(session)
-    except Exception as error:
+    except BaseException as error:
         # create_session has already booted whatever the backend runs. A session that
         # never got its first tab must not keep that running, or sit in the registry.
+        # BaseException, so ctrl-c between the boot and the tab tears the VM down too.
         _forget(session)
+        # And the directory it prepared goes with it: no tab ever opened, so nothing in
+        # there is anyone's work, and a run dir nothing removes is a run dir for ever.
+        remove_run_dir(Path(session.run_dir))
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise  # never wrapped: cli.py turns it into the exit code the convention wants
         raise RuntimeError(f"{_describe(session)} could not open its first tab: {error}") from error
+
+
+def collect_orphans() -> Swept:
+    """Remove what a launch nobody could roll back left running (SPEC §8, §3.4).
+
+    `prepare` rolls its own boot back, ctrl-c included, but a process killed outright cannot.
+    What that leaves is a sandbox no session claims, which nothing else would ever collect,
+    so `paddock gc` asks each backend what it is running that the registry has never heard of.
+
+    A sandbox is only this gc's to remove when a run of this state dir made it. The registry
+    is per state dir and a backend's sandboxes are per host, so the handles alone cannot tell
+    a session nobody rolled back from a live session belonging to another paddock context:
+    sweeping on the registry alone reaped a running VM out of another context. What this
+    state dir cannot claim comes back named instead, for the caller to say so.
+    """
+    claimed = {session.vm_handle for session in list_sessions() if session.vm_handle}
+    ours = owned_runs()
+    swept = Swept()
+    for name in sorted(BACKENDS):
+        module = BACKENDS[name]
+        try:
+            found = module.sweep(claimed, ours)
+        except RuntimeError as error:
+            # A backend that will not answer is a message, not a failed gc: the sessions
+            # this has already collected are collected, and the rest is next time's job.
+            print(f"paddock: could not sweep the {name} backend: {error}", file=sys.stderr)
+            continue
+        for handle in found.removed:
+            logger.info("orphan swept %s", log.context(backend=name, vm=handle))
+        for handle in found.unowned:
+            logger.info("orphan left alone %s", log.context(backend=name, vm=handle))
+        swept.removed += found.removed
+        swept.unowned += found.unowned
+    return swept
+
+
+def owned_runs() -> set[str]:
+    """The names of the runs this state dir answers for, which is what a sweep may touch.
+
+    A directory under `<state>/runs/`, or a run a record in this registry claims: the second
+    is the session whose directory has been taken from under it while its sandbox runs on.
+    Any other name was made by a paddock running on another state dir (SPEC §3.4).
+    """
+    runs = state_dir() / RUNS
+    on_disk = {path.name for path in runs.glob("*") if path.is_dir()}
+    registered = {
+        Path(session.run_dir).name
+        for session in list_sessions()
+        if Path(session.run_dir).parent == runs
+    }
+    return on_disk | registered
+
+
+def collect_run_dirs() -> list[Path]:
+    """Remove the run dirs of launches nothing is left to roll back (SPEC §8). Returns them.
+
+    A launch that fails takes its own directory away, but a paddock killed outright cannot,
+    and neither can one whose registry was lost. What that leaves is a directory no session
+    claims, which nothing else would ever remove.
+
+    A dir whose workdir holds anything is left where it is, however old, because that is
+    somebody's work and no `paddock gc` is worth losing it. So this only ever removes the
+    settings, the shim dir and the empty scratch dir of a session that produced nothing.
+    """
+    runs = state_dir() / RUNS
+    claimed = {Path(session.run_dir) for session in list_sessions()}
+    removed = []
+    for path in sorted(runs.glob("*")):
+        if not path.is_dir() or path in claimed or _holds_work(path):
+            continue
+        if time.time() - path.stat().st_mtime < RUN_DIR_GRACE_SECONDS:
+            continue  # young enough to be a launch that has not registered its session yet
+        remove_run_dir(path)
+        removed.append(path)
+    return removed
+
+
+def remove_run_dir(run_dir: Path) -> None:
+    """Take a run dir away, if it is one paddock made. Doing it twice is not an error."""
+    if run_dir.parent != state_dir() / RUNS:
+        return  # not paddock's directory, so not paddock's to remove
+    shutil.rmtree(run_dir, ignore_errors=True)
+    logger.info("run dir removed %s", log.context(run_dir=run_dir))
+
+
+def _holds_work(run_dir: Path) -> bool:
+    """Whether the scratch workdir under this run has anything in it.
+
+    A profile that shares a host directory has no scratch dir at all, and what it wrote
+    is outside the run dir where nothing here would touch it.
+    """
+    work = run_dir / "work"
+    return work.is_dir() and any(work.iterdir())
+
+
+def set_keep_alive(session: Session, keep_alive: bool) -> None:
+    """Whether the session survives its last pane (SPEC 3.4), written down where it is read."""
+    session.keep_alive = keep_alive
+    _record(session)
 
 
 def remove_pane(pane_id: str) -> None:
@@ -323,6 +450,10 @@ def _record(session: Session) -> None:
     """Store the session, keeping the panes another tab registered since it was loaded.
 
     `keep_alive` comes from the caller: it is the one field a caller sets on purpose.
+
+    A session that is no longer registered was collected while this caller held it, so it is
+    left collected. Writing it back would bring a dead session round again, with a run dir
+    whose credentials have already been discarded.
     """
     with _locked():
         live = list_sessions()
@@ -332,10 +463,13 @@ def _record(session: Session) -> None:
                 # Same reason: a key the other writer added is not this one's to drop.
                 session._unknown = {**other._unknown, **session._unknown}
                 live[index] = session
-                break
-        else:
-            live.append(session)
-        _save(live)
+                _save(live)
+                return
+        print(
+            f"paddock: session {session.name!r} was collected while it was being used, "
+            "so it is not being registered again",
+            file=sys.stderr,
+        )
 
 
 def _save(sessions: list[Session]) -> None:

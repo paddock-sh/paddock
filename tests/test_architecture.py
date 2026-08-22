@@ -9,8 +9,9 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent.parent / "paddock"
 
-# The presentation layer: it asks the questions and hands out a plan.
-PRESENTATION = ["paddock.tui", "paddock.cli"]
+# The presentation layer: it asks the questions and hands out a plan. `screen` draws, `tui`
+# decides what is drawn, and `cli` is the only one of the three that acts on the answer.
+PRESENTATION = ["paddock.tui", "paddock.screen", "paddock.cli"]
 
 # The one door to a running sandbox. Presentation goes through it; backends sit behind it.
 DOOR = "paddock.sessions"

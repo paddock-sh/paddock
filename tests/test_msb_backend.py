@@ -11,9 +11,10 @@ import pytest
 
 from paddock import backends
 from paddock.agents import AgentSpec
-from paddock.backends import RunNotFound, SandboxGone
+from paddock.backends import RunNotFound, SandboxGone, Swept
 from paddock.backends import microsandbox as msb
-from paddock.profiles import Profile
+from paddock.backends.microsandbox import GUEST_CONFIG_SRC
+from paddock.profiles import NETWORK_ALL, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
 
@@ -155,6 +156,35 @@ def test_a_profile_with_no_domains_gets_no_network_at_all(
 
     assert flag(argv, "--net-rule") == []
     assert flag(argv, "--net-default") == ["deny"]
+
+
+def test_allow_all_is_a_default_and_not_a_rule(which: dict[str, str], tmp_path: Path) -> None:
+    """msb can express what srt cannot: no allowlist at all, DNS and every port with it."""
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, ["github.com"], NO_CONFIG, True)
+
+    assert flag(argv, "--net-default") == ["allow"]
+    assert flag(argv, "--net-rule") == []
+
+
+def test_the_ordinary_case_is_untouched_by_the_allow_all_flag(
+    which: dict[str, str], tmp_path: Path
+) -> None:
+    assert msb.net_rules(["github.com"]) == [
+        "--net-default", "deny", "--net-rule", "allow@dns", "--net-rule", "allow@github.com:tcp:443"
+    ]
+    assert msb.net_rules([]) == ["--net-default", "deny"]
+    assert msb.net_rules([], everything=True) == ["--net-default", "allow"]
+
+
+def test_a_profile_that_opens_every_domain_boots_a_vm_that_can_reach_anything(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """The sentinel reaches the backend through the profile, not through a domain list."""
+    msb.prepare(Profile(agent="shell", network_presets=[NETWORK_ALL]))
+
+    argv = create_call(msb_calls)
+    assert flag(argv, "--net-default") == ["allow"]
+    assert flag(argv, "--net-rule") == []
 
 
 # --- the attach and stop commands ------------------------------------------
@@ -394,7 +424,7 @@ def test_the_config_dir_variable_is_set_on_create(
     """`msb create -e` reaches every later exec, including the shell a tab attaches to."""
     msb.prepare(CLAUDE)
 
-    assert flag(create_call(msb_calls), "-e") == [f"CLAUDE_CONFIG_DIR={msb.GUEST_CONFIG}"]
+    assert f"CLAUDE_CONFIG_DIR={msb.GUEST_CONFIG}" in flag(create_call(msb_calls), "-e")
 
 
 def test_the_host_tab_is_given_no_environment(
@@ -836,3 +866,172 @@ def test_the_record_wins_over_a_handle_that_disagrees(
     msb.collect(run.run_dir, "paddock-stale")
 
     assert msb_calls[-1] == ["msb", "rm", "-f", run.vm_handle]
+
+
+# --- a shell in the guest the agent is in -----------------------------------
+
+
+def test_a_shell_tab_execs_the_guests_own_shell_into_the_running_vm(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """Same guest, same /work, same process namespace: that is what `msb exec` joins.
+
+    The shell is named. `msb exec` with no argv runs the image's own command, which for
+    node:22-slim is the Node REPL, and a tab that drops into that is not a shell tab.
+    """
+    run = msb.prepare(CLAUDE)
+
+    assert run.shell_command == f"msb exec --tty {run.vm_handle} -- /bin/sh"
+    assert run.command.startswith(f"msb exec --tty {run.vm_handle} -- claude")
+
+
+def test_the_shell_script_is_a_second_script_beside_the_agents(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    run = msb.prepare(CLAUDE)
+
+    assert (run.run_dir / "shell.sh").is_file()
+    assert run.shell_command in (run.run_dir / "shell.sh").read_text()
+
+
+def test_a_shell_pane_runs_the_shell_script_and_the_agent_pane_the_other(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path, client: FakeClient
+) -> None:
+    run = msb.prepare(CLAUDE)
+
+    msb.open_pane(run, label="sbx:demo")
+    msb.open_pane(run, label="sbx:demo (shell)", shell=True)
+
+    assert client.commands[0][1].endswith("launch.sh")
+    assert client.commands[1][1].endswith("shell.sh")
+    assert [label for _, label, _ in client.tabs] == ["sbx:demo", "sbx:demo (shell)"]
+
+
+def test_a_shell_tab_is_refused_when_the_vm_is_gone_like_any_other(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path, client: FakeClient
+) -> None:
+    run = msb.prepare(CLAUDE)
+    msb._run(*msb.stop_argv(run.vm_handle))
+
+    with pytest.raises(SandboxGone):
+        msb.open_pane(run, shell=True)
+
+
+def test_a_run_prepared_before_shell_tabs_says_so_instead_of_opening_a_dead_one(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path, client: FakeClient
+) -> None:
+    run = msb.prepare(CLAUDE)
+    record = json.loads((run.run_dir / "launch.json").read_text())
+    del record["shell_command"]
+    (run.run_dir / "launch.json").write_text(json.dumps(record))
+
+    reloaded = msb.load_run(run.run_dir)
+
+    with pytest.raises(ValueError, match="before paddock could open a shell"):
+        msb.open_pane(reloaded, shell=True)
+    assert client.commands == []
+
+
+# --- a launch nobody could roll back ----------------------------------------
+
+
+def test_ctrl_c_mid_launch_takes_the_microvm_down_with_it(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """Nearly the whole 20 to 70 second wait is after the VM exists, so this is the window."""
+    real = msb._run
+
+    def interrupted(*args: str) -> str:
+        if args[1] == "exec" and "npm install" in args[-1]:
+            raise KeyboardInterrupt
+        return real(*args)
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(msb, "_run", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):  # never wrapped: the exit code depends on it
+            msb.prepare(CLAUDE)
+    finally:
+        monkeypatched.undo()
+
+    assert "rm" in commands(msb_calls)
+    assert msb_calls[-1][-1].startswith("paddock-")
+
+
+def test_an_interrupt_after_the_token_is_placed_still_discards_it(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path,
+    state_dir: Path, keychain: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy step runs after place_credentials, so this is where a token can be left."""
+    keychain["Claude Code-credentials"] = "sk-planted"
+    real = msb._run
+    placed: list[Path] = []
+
+    def interrupted(*args: str) -> str:
+        if args[1] == "exec" and GUEST_CONFIG_SRC in args[-1]:
+            placed.extend((state_dir / "runs").glob("*/config/.credentials.json"))
+            raise KeyboardInterrupt
+        return real(*args)
+
+    monkeypatch.setattr(msb, "_run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        msb.prepare(CLAUDE)
+
+    assert placed, "the token has to be on disk for its removal to mean anything"
+    assert not placed[0].exists()
+    assert "rm" in commands(msb_calls)
+
+
+def test_a_sweep_removes_a_sandbox_no_session_claims(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """A process killed outright rolls nothing back, so gc asks msb what it is still running."""
+    run = msb.prepare(SHELL)
+
+    swept = msb.sweep(set(), {run.run_dir.name})
+
+    assert swept == Swept(removed=[run.vm_handle], unowned=[])
+    assert msb_calls[-1] == msb.stop_argv(run.vm_handle)
+
+
+def test_a_sweep_leaves_the_sandbox_its_session_still_claims(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    run = msb.prepare(SHELL)
+
+    assert msb.sweep({run.vm_handle}, {run.run_dir.name}) == Swept(removed=[], unowned=[])
+    assert "rm" not in commands(msb_calls)
+
+
+def test_a_sweep_never_touches_a_sandbox_paddock_did_not_make(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another tool's microVMs are none of paddock's business."""
+    calls = stub_msb(monkeypatch, [{"name": "someone-elses", "status": "Running"}])
+
+    assert msb.sweep(set(), set()) == Swept(removed=[], unowned=[])
+    assert "rm" not in commands(calls)
+
+
+def test_a_sweep_names_a_paddock_sandbox_this_state_dir_does_not_own(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No run of this state dir made it, so it is another context's VM, or a test's."""
+    theirs = "paddock-20260822-155634-elsewhere"
+    calls = stub_msb(monkeypatch, [{"name": theirs, "status": "Running"}])
+
+    swept = msb.sweep(set(), {"20260822-000000-ours"})
+
+    assert swept == Swept(removed=[], unowned=[theirs])
+    assert "rm" not in commands(calls)
+
+
+def test_a_machine_with_no_msb_is_swept_without_asking_it_anything(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`paddock gc` must not say it could not sweep a backend this host has never had."""
+    monkeypatch.setattr(msb.shutil, "which", lambda name: None)
+    calls = stub_msb(monkeypatch, [])
+
+    assert msb.sweep(set(), set()) == Swept(removed=[], unowned=[])
+    assert calls == []

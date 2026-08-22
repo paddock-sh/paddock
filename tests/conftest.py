@@ -2,14 +2,38 @@
 
 import shutil
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 
 from paddock import herdr_client, log
 from tests import fake_sessions as fake_sessions_module
+
+
+class Terminal(DummyOutput):
+    """A terminal of the size the design is drawn to, for tests that press keys at a screen."""
+
+    def get_size(self) -> Size:
+        return Size(rows=24, columns=80)
+
+
+@pytest.fixture
+def press() -> Callable[[str, Callable[[], object]], object]:
+    """Press these keys at whatever the code draws, with no terminal at all."""
+
+    def run(keys: str, action: Callable[[], object]) -> object:
+        with create_pipe_input() as pipe:
+            pipe.send_text(keys)
+            with create_app_session(input=pipe, output=Terminal()):
+                return action()
+
+    return run
 
 
 @pytest.fixture(autouse=True)
