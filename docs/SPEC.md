@@ -1,7 +1,7 @@
 # paddock — Specification
 
 Status: **pre-alpha.** Section 7 is being built. Profiles, the agent registry, the
-herdr client and the srt backend exist; sessions, the synthesized config dir, the
+herdr client, the srt backend, sessions and the synthesized config dir exist; the
 TUI and the CLI do not.
 
 paddock takes over new-window creation in [herdr](https://herdr.dev) (a terminal
@@ -76,7 +76,9 @@ Options in 0.8.0: `--workspace <WORKSPACE_ID>`, `--cwd <PATH>`, `--label <TEXT>`
 `--env <KEY=VALUE>` (repeatable), `--focus` / `--no-focus`.
 
 `--env` matters for layer 3 (§4.3): `CLAUDE_CONFIG_DIR` and friends are set at
-tab creation instead of being smuggled into the command string.
+tab creation, so the pane's own shell agrees with the sandbox. The sandbox command
+starts from `env -i` (§2.1), which wipes that, so the launcher writes the same
+variables into the command as well. Both, on purpose: neither covers the other.
 
 Output:
 
@@ -108,16 +110,19 @@ keybinding. The keybinding keeps working; the manifest is sugar over it.
 
 ## 2. Backends
 
-One interface:
+One interface, in two halves:
 
 ```
-Backend.launch(profile) -> pane id
+Backend.prepare(profile) -> run          # settings file, shim dir, config dir, command
+Backend.open_pane(run, label) -> pane id # a tab on a prepared run
 ```
 
-A backend works out the whole launch — settings file, shim dir, pane command —
-as plain functions, then opens the tab and starts the command through
-`herdr_client` (§7). `herdr_client` is the seam every test mocks, so a backend is
-still testable with no herdr server and no sandbox.
+They are separate because a session is prepared once and attached to many times
+(§3.2). A backend works the whole launch out as plain functions, then opens the
+tab and starts the command through `herdr_client` (§7). `herdr_client` is the seam
+every test mocks, so a backend is still testable with no herdr server and no
+sandbox. Sessions (§3) drive both calls; a backend knows nothing about the
+registry.
 
 The interface exists because v1 needs it, to keep srt's settings and invocation
 out of the chooser — not in anticipation of a second backend.
@@ -166,26 +171,34 @@ Three defaults shape everything else:
   discarded output works. `$TMPDIR` joins them when the host sets one, resolved
   through its symlinks, because the sandbox keeps that variable and tools write
   where it points. The run directory itself is **not** writable: it holds
-  the settings file and the shim dir, which the sandbox only reads. `denyWrite`
-  mirrors `denyRead`, so a denied path is off limits both ways.
+  the settings file and the shim dir, which the sandbox only reads. Its `config/`
+  subdirectory is the exception — that is the synthesized config dir (§4.3), and
+  srt matches paths as written, so allowing it does not allow its parent.
+  `denyWrite` mirrors `denyRead`, so a denied path is off limits both ways.
 - **Network is allowlist-only.** Anything not listed is refused. `deniedDomains`
   stays empty; it is written because the schema wants the key.
 
-**Known gap:** `allowWrite` also gets the agent's `config_write_paths`, which is
-its real config directory. Blocking it breaks the agent. Layer 3 (§4.3) closes
-this by pointing the agent at a synthesized config dir instead; until that ships,
-a sandboxed agent can write to its own config.
+**The agent's config directory** depends on whether layer 3 can redirect it
+(§4.3). When it can — Claude Code today — the real directory is denied for reading
+and writing, and the synthesized one under the run dir is writable instead. The
+agent's own credential files stay in `allowRead`, so it can still authenticate;
+they are read-only inside the sandbox. When it cannot, `allowWrite` gets the
+agent's `config_write_paths`, its real config directory, because blocking it
+breaks the agent. That is a **known gap** for those agents, and it closes when
+they get a redirection.
 
 Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expands
 `~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
 `config_write_paths`, `shared_dir`, `extra_allow_write`) when it generates the
 settings file, so profiles stay portable between machines.
 
-Each launch gets its own timestamped directory under
-`~/.local/state/paddock/runs/`, holding the settings file, the PATH shim dir, and
-the scratch workdir when the profile shares no host directory.
-`PADDOCK_STATE_DIR` overrides the state directory; tests point it at a temporary
-one. Nothing collects old run directories yet.
+Each session gets its own timestamped directory under
+`~/.local/state/paddock/runs/`, holding the settings file, the PATH shim dir, the
+synthesized config dir, the scratch workdir when the profile shares no host
+directory, and a small `launch.json` — the command, workdir and environment, so a
+tab attaching later gets exactly what the first one got. `PADDOCK_STATE_DIR`
+overrides the state directory; tests point it at a temporary one. Nothing collects
+old run directories yet, including those of collected sessions (§8).
 
 **Invocation:**
 
@@ -201,11 +214,14 @@ The inner command is the agent, wrapped so it starts from an empty environment:
 
 ```sh
 env -i HOME=... USER=... LOGNAME=... SHELL=... TERM=... LANG=... LC_ALL=... \
-       TMPDIR=... PATH=<shim dir>:/usr/bin:/bin <agent>
+       TMPDIR=... CLAUDE_CONFIG_DIR=... PATH=<shim dir>:/usr/bin:/bin \
+       <agent> <layer-2 flags>
 ```
 
 The keep list is deliberately short. Everything the popup inherited — API tokens
-above all — stays outside the sandbox. `PATH` points at the shim dir (§4.1).
+above all — stays outside the sandbox. `PATH` points at the shim dir (§4.1). The
+config dir variable and the flags after the agent come from layer 3 (§4.3); an
+agent with neither gets the line as it was.
 
 ### 2.2 v1.1 — `microsandbox` (design record, not stubbed in v1)
 
@@ -299,26 +315,36 @@ nothing about the sessions.
 
 ### 3.4 Session registry
 
-Sessions are tracked in the plugin state dir:
+Sessions are tracked in `<state>/sessions.json`, a list of records:
 
 | Field | Meaning |
 | --- | --- |
-| `session_id` | Internal id |
-| `name` | Shown in the chooser and pane labels |
-| `backend` | `srt` or `microsandbox` |
-| `profile` | Profile the session was created from |
-| `attached_panes` | Pane ids currently attached |
-| `vm_handle` | microsandbox VM handle; `null` for srt |
-| `created_at` | Timestamp |
+| `session_id` | Internal id, short |
+| `name` | Shown in the chooser and pane labels; unique among live sessions |
+| `profile_name` | Profile the session was created from |
+| `agent` | Registry key of the agent it runs |
+| `created_at` | ISO 8601 UTC timestamp |
+| `run_dir` | Its directory under `runs/`: settings, shim dir, config dir, workdir |
+| `keep_alive` | Survives its last pane |
+| `pane_ids` | Pane ids currently attached |
+
+An unnamed session is named after its profile plus a short suffix. The file is
+written whole and swapped in, so a crash mid-write leaves the previous registry
+rather than half of one. A file that will not parse is reported and treated as
+empty, and a record of the wrong shape is dropped rather than half-applied.
+
+v1.1 adds `backend` and `vm_handle` when there is a second backend to name.
 
 **Sessions survive Herdr detach and restart.** A microVM keeps running with no
 tab attached, and an srt session is just a settings file and a workdir.
 Reattaching puts the user back where they were.
 
 **Lifecycle:** when the last tab closes, the session is neither destroyed nor
-leaked silently. The user is prompted, with a keep-alive option, and unclaimed
-sessions are collected. Both failure modes cost something real: a discarded
-microVM loses running state, a leaked one holds memory.
+leaked silently. A session with `keep_alive` set stays; every other one is
+dropped from the registry. Its run directory is left on disk — deleting a workdir
+would lose work (§8). The prompt that offers keep-alive arrives with the TUI.
+Both failure modes cost something real: a discarded microVM loses running state, a
+leaked one holds memory.
 
 ### 3.5 Pane labels
 
@@ -370,24 +396,41 @@ otherwise, and the UI says so.
 | OpenCode | generated `opencode.json` with a `permissions` block |
 
 `--strict-mcp-config` is the important one. Without it Claude Code merges MCP
-config from user and project scopes and the whitelist leaks.
+config from user and project scopes and the whitelist leaks. It is passed with
+`--mcp-config <file>`, which names the generated file: strict mode on its own
+loads no servers at all.
+
+v1 generates the MCP whitelist. The servers come from the agent's own config on
+the host, filtered to the ones the profile ticked — an empty list means an empty
+whitelist, not an absent one. The `permissions` block is not generated yet.
 
 ### 4.3 Layer 3 — Synthesized config dir (hard)
 
-The launcher builds a fresh agent config directory per run holding only:
+The launcher builds a fresh agent config directory per session — `run_dir/config`
+— holding only:
 
-- the credentials that agent needs, and
+- the credentials that agent needs, symlinked in by filename,
 - the skills the user ticked (symlinked for srt, copied for microsandbox, which
-  cannot follow them).
+  cannot follow them), and
+- the generated MCP whitelist (§4.2).
 
 The agent is pointed at it — for Claude Code via `CLAUDE_CONFIG_DIR`, passed
-through `herdr tab create --env` — and the real config dir stays outside the
-readable set.
+through `herdr tab create --env` and written into the sandbox command (§1.3) — and
+its real config dir is denied for reading and writing.
 
 This is why it is worth doing: **unselected skills and MCP servers do not exist
 inside the sandbox.** Nothing to enumerate, nothing to load, nothing for a
 prompt-injected agent to reach. Layer 2 tells the agent not to; layer 3 means
 there is nothing there.
+
+Everything else comes from the agent registry (§5): credentials from
+`auth_read_paths`, skills from `skills/` under any of the agent's
+`config_write_paths`. The chooser offers the same set, so what it lists and what
+the sandbox gets are the same thing.
+
+**Only Claude Code has a config-dir variable today.** An agent without one is
+launched as before: no synthesized directory, and its real config dir stays
+readable and writable (§2.1). Adding one is a line in the redirection table.
 
 ---
 
@@ -471,22 +514,22 @@ Notes:
 
 ---
 
-## 7. Module plan (not yet implemented)
+## 7. Module plan
 
 The first epic (`sandbox_core_launcher`) builds these as separate feature PRs,
 tests first. Each should be small — mostly plain functions over a `Profile` — and
 no v1.1 concern appears in any of them:
 
-| Module | Responsibility |
-| --- | --- |
-| `paddock/sessions.py` | Session registry in `~/.local/state/paddock/`: create, list, attach, workspace bindings, lifecycle (§3) |
-| `paddock/profiles.py` | `Profile` dataclass, network presets, tool candidates, load/save |
-| `paddock/agents.py` | Agent registry and per-agent layer-2 config |
-| `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `Backend.launch()` |
-| `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI — the one seam tests mock |
-| `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills |
-| `paddock/tui.py` | The questionary chooser |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `profiles`, `sessions` |
+| Module | Responsibility | Status |
+| --- | --- | --- |
+| `paddock/sessions.py` | Session registry in `~/.local/state/paddock/`: create, list, attach, lifecycle (§3) | Done; workspace bindings (§3.3) wait for the TUI |
+| `paddock/profiles.py` | `Profile` dataclass, network presets, tool candidates, load/save | Done |
+| `paddock/agents.py` | Agent registry and per-agent layer-2 config | Registry done; the layer-2 `permissions` block is not generated yet |
+| `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |
+| `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI — the one seam tests mock | Done |
+| `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
+| `paddock/tui.py` | The questionary chooser | Not started |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `profiles`, `sessions` | Not started |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
 `herdr`, and only the backend shells out to `srt`.** Everything else is pure

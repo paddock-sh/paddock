@@ -77,6 +77,29 @@ def test_create_tab_ignores_an_empty_workspace(
     assert "--workspace" not in herdr.argv
 
 
+def test_create_tab_sets_the_environment_the_sandbox_config_needs(
+    herdr: FakeHerdr, tmp_path: Path
+) -> None:
+    """One --env per variable: this is how CLAUDE_CONFIG_DIR reaches the pane (SPEC §1.3)."""
+    create_tab(tmp_path, env={"CLAUDE_CONFIG_DIR": "/run/config", "FOO": "bar"})
+
+    assert herdr.argv == [
+        "herdr", "tab", "create",
+        "--cwd", str(tmp_path),
+        "--env", "CLAUDE_CONFIG_DIR=/run/config",
+        "--env", "FOO=bar",
+        "--focus",
+    ]
+
+
+def test_create_tab_without_environment_passes_no_env_flag(
+    herdr: FakeHerdr, tmp_path: Path
+) -> None:
+    create_tab(tmp_path)
+
+    assert "--env" not in herdr.argv
+
+
 def test_create_tab_returns_the_pane_id(herdr: FakeHerdr, tmp_path: Path) -> None:
     assert create_tab(tmp_path) == "wA:p2"
 

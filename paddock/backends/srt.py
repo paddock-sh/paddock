@@ -4,6 +4,9 @@ srt is Anthropic's sandbox-runtime — Seatbelt on macOS, bubblewrap on Linux. I
 enforces write paths, read denials and the domain allowlist. Tool selection is a
 PATH shim dir, which is a soft allowlist: an absolute path still reaches any
 binary on the host (SPEC §4.1).
+
+`prepare()` gets a run ready on disk and `open_pane()` puts a tab on it. They are
+separate because a session is prepared once and attached to many times (SPEC §3.2).
 """
 
 from __future__ import annotations
@@ -15,20 +18,39 @@ import shutil
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, state_dir
+from paddock import herdr_client, state_dir, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.profiles import Profile
+from paddock.synth_config import SynthConfig
 
 INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
 
 # All the sandbox inherits from the popup. Anything else — API tokens above all — stays out.
 KEEP_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
+# The prepared run, written into the run dir so a later tab can attach to the same policy.
+LAUNCH_FILE = "launch.json"
+
 
 class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
+
+
+class RunNotFound(RuntimeError):
+    """The run dir holds no usable launch record, so nothing can attach to it."""
+
+
+@dataclass
+class Run:
+    """One prepared sandbox: the settings and workdir every attached tab shares."""
+
+    run_dir: Path
+    workdir: Path
+    command: str
+    env: dict[str, str]
 
 
 def find_srt() -> list[str]:
@@ -73,7 +95,9 @@ def build_shim_dir(run_dir: Path, tools: list[str]) -> tuple[Path, list[str]]:
     return shim, skipped
 
 
-def build_settings(profile: Profile, agent: AgentSpec, workdir: Path) -> dict:
+def build_settings(
+    profile: Profile, agent: AgentSpec, workdir: Path, synth: SynthConfig
+) -> dict:
     """The srt policy for one run. Every configured path is expanded here (SPEC §2.1).
 
     srt validates this against a schema and refuses to start if a key is missing, so
@@ -89,11 +113,19 @@ def build_settings(profile: Profile, agent: AgentSpec, workdir: Path) -> dict:
         allow_write.append(Path(os.path.realpath(tmpdir)))
     if profile.shared_dir:
         allow_write.append(_expand(profile.shared_dir))
-    # Known gap: this is the agent's real config dir. Blocking it breaks the agent; the
-    # synthesized config dir (SPEC §4.3) closes it by pointing the agent somewhere else.
-    allow_write += [_expand(path) for path in agent.config_write_paths]
-    allow_write += [_expand(path) for path in profile.extra_allow_write]
     deny_read = [_expand(path) for path in profile.deny_read]
+    config_dirs = [_expand(path) for path in agent.config_write_paths]
+    if synth.dir is None:
+        # The agent has no synthesized config dir, so it writes to its real one. Blocking
+        # it would break the agent (SPEC §2.1).
+        allow_write += config_dirs
+    else:
+        # Layer 3: the agent writes in the synthesized dir instead, and its real config dir
+        # is denied both ways — so the skills and MCP servers nobody ticked are not there
+        # to read. Its credentials stay in allowRead below (SPEC §4.3).
+        allow_write.append(synth.dir)
+        deny_read += config_dirs
+    allow_write += [_expand(path) for path in profile.extra_allow_write]
     return {
         "network": {
             "allowedDomains": profile.allowed_domains(),
@@ -110,21 +142,28 @@ def build_settings(profile: Profile, agent: AgentSpec, workdir: Path) -> dict:
     }
 
 
-def pane_command(profile: Profile, agent: AgentSpec, settings: Path, shim: Path) -> str:
+def pane_command(
+    profile: Profile, agent: AgentSpec, settings: Path, shim: Path, synth: SynthConfig
+) -> str:
     """The command `herdr pane run` executes: srt wrapping the agent on a shimmed PATH."""
     entries = [str(shim)]
     if profile.include_system_path:
         entries += ["/usr/bin", "/bin"]
     keep = [f"{name}={os.environ[name]}" for name in KEEP_ENV if os.environ.get(name)]
+    # `env -i` wipes what the tab was given, so the config dir variable is set here too.
+    keep += [f"{name}={value}" for name, value in synth.env.items()]
     path = "PATH=" + ":".join(entries)
-    inner = shlex.join(["env", "-i", *keep, path, *shlex.split(agent.command)])
+    inner = shlex.join(["env", "-i", *keep, path, *shlex.split(agent.command), *synth.args])
     # -c takes the whole command as one string. Passed as bare words, srt's own parser
     # reads the agent's flags as its own.
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
 
 
-def launch(profile: Profile) -> str:
-    """Set up the run, open a sandboxed tab, start the agent in it. Returns the pane id."""
+def prepare(profile: Profile) -> Run:
+    """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
+
+    Opens no pane. Sessions decide when a tab appears and how many.
+    """
     agent = load_agents().get(profile.agent)
     if agent is None:
         raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
@@ -137,20 +176,36 @@ def launch(profile: Profile) -> str:
     shim, skipped = build_shim_dir(run_dir, tools)
     if skipped:
         print(f"paddock: left off the sandbox PATH: {', '.join(skipped)}", file=sys.stderr)
+    synth = synth_config.build(profile, agent, run_dir)
+    if synth.missing:
+        left_out = ", ".join(synth.missing)
+        print(f"paddock: not in the sandbox config dir: {left_out}", file=sys.stderr)
     settings = run_dir / "srt-settings.json"
-    settings.write_text(json.dumps(build_settings(profile, agent, workdir), indent=2) + "\n")
-    # Composed before the tab exists, so a missing srt fails with no pane left behind.
-    command = pane_command(profile, agent, settings, shim)
+    settings.write_text(json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n")
+    # Composed before any tab exists, so a missing srt fails with no pane left behind.
+    command = pane_command(profile, agent, settings, shim, synth)
 
-    # Sessions arrive in the next feature; until then the label names the profile (SPEC §3.5).
-    pane_id = herdr_client.create_tab(workdir, label=f"sbx:{profile.name}")
-    herdr_client.run_in_pane(pane_id, command)
+    run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
+    (run_dir / LAUNCH_FILE).write_text(
+        json.dumps({"workdir": str(workdir), "command": command, "env": synth.env}, indent=2) + "\n"
+    )
+    return run
+
+
+def load_run(run_dir: Path) -> Run:
+    """Read a prepared run back, so a later tab attaches to the same settings and workdir."""
+    try:
+        data = json.loads((run_dir / LAUNCH_FILE).read_text())
+        return Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise RunNotFound(f"no usable launch record in {run_dir}") from error
+
+
+def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
+    """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
+    pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
+    herdr_client.run_in_pane(pane_id, run.command)
     return pane_id
-
-
-def launch_local(cwd: Path) -> str:
-    """The chooser's other branch: an ordinary tab, no sandbox, no label."""
-    return herdr_client.create_tab(cwd)
 
 
 def _expand(path: str) -> Path:
