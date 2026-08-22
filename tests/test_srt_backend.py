@@ -24,6 +24,7 @@ REDIRECTED = SynthConfig(
     dir=Path("/run/config"),
     env={"CLAUDE_CONFIG_DIR": "/run/config"},
     args=["--mcp-config", "/run/config/.mcp.json", "--strict-mcp-config"],
+    skill_sources=[HOME / ".claude/skills/writing"],
 )
 
 # What `env -i` keeps, in the order the backend writes it.
@@ -75,10 +76,14 @@ def test_writes_are_allowed_for_the_workdir_and_temp(tmp_path: Path) -> None:
     assert "/dev/null" in allow_write
 
 
-def test_the_temp_dir_from_the_environment_is_writable(
+def test_the_temp_dir_from_the_environment_is_writable_under_both_names(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """TMPDIR is kept in the sandbox environment, so what it points at has to be writable."""
+    """TMPDIR is kept in the sandbox environment, so what it points at has to be writable.
+
+    Both names are listed, the way /tmp and /private/tmp are: srt matches the path as
+    written, and resolves the one the agent actually opens.
+    """
     real = tmp_path / "real-tmp"
     real.mkdir()
     link = tmp_path / "link-tmp"
@@ -88,7 +93,7 @@ def test_the_temp_dir_from_the_environment_is_writable(
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
 
     assert str(real.resolve()) in settings["filesystem"]["allowWrite"]
-    assert str(link) not in settings["filesystem"]["allowWrite"]
+    assert str(link) in settings["filesystem"]["allowWrite"]
 
 
 @pytest.mark.parametrize("value", ["", None])
@@ -214,6 +219,22 @@ def test_a_redirected_agent_can_still_read_its_credentials(tmp_path: Path) -> No
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", REDIRECTED)
 
     assert str(HOME / ".claude/.credentials.json") in settings["filesystem"]["allowRead"]
+
+
+def test_a_redirected_agents_credentials_are_read_only(tmp_path: Path) -> None:
+    """A sandboxed agent reading its own key is the point; rewriting the host's copy is not."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", REDIRECTED)
+
+    assert str(HOME / ".claude/.credentials.json") in settings["filesystem"]["denyWrite"]
+    assert str(HOME / ".claude.json") in settings["filesystem"]["denyWrite"]
+
+
+def test_the_skills_the_config_dir_linked_stay_readable(tmp_path: Path) -> None:
+    """The links point back into the denied config dir, and srt checks the resolved path."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", REDIRECTED)
+
+    assert str(HOME / ".claude/skills/writing") in settings["filesystem"]["allowRead"]
+    assert str(HOME / ".claude") in settings["filesystem"]["denyRead"]
 
 
 def test_an_agent_with_no_redirection_keeps_writing_to_its_own_config(tmp_path: Path) -> None:
@@ -447,6 +468,19 @@ def test_prepare_writes_everything_the_run_needs(
     assert json.loads((run.run_dir / "srt-settings.json").read_text())["filesystem"]
     assert (run.run_dir / "bin" / "git").is_symlink()
     assert (run.run_dir / "config" / ".mcp.json").is_file()
+
+
+def test_a_ticked_skill_is_readable_end_to_end(which: dict[str, str], fake_home: Path) -> None:
+    """The whole point of layer 3, and the one thing a symlink alone does not buy."""
+    skill = fake_home / ".claude" / "skills" / "writing"
+    skill.mkdir(parents=True)
+
+    run = srt.prepare(Profile(agent="claude", tools=[], skills=["writing"]))
+
+    settings = json.loads((run.run_dir / "srt-settings.json").read_text())["filesystem"]
+    assert (run.run_dir / "config" / "skills" / "writing").readlink() == skill
+    assert str(skill) in settings["allowRead"]
+    assert str(fake_home / ".claude") in settings["denyRead"]
 
 
 def test_prepare_opens_no_tab(which: dict[str, str], fake_home: Path, client: FakeClient) -> None:

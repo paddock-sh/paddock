@@ -72,6 +72,13 @@ def test_only_the_ticked_skills_are_there(home: Path, run_dir: Path) -> None:
     assert (skills / "writing").readlink() == home / ".claude/skills/writing"
 
 
+def test_the_sources_it_linked_come_back_for_the_settings(home: Path, run_dir: Path) -> None:
+    """srt checks the path a symlink resolves to, so the launch has to allow reading it."""
+    synth = synth_config.build(Profile(skills=["writing", "nope"]), CLAUDE, run_dir)
+
+    assert synth.skill_sources == [home / ".claude/skills/writing"]
+
+
 def test_no_skills_means_an_empty_skills_dir(home: Path, run_dir: Path) -> None:
     synth = synth_config.build(Profile(skills=[]), CLAUDE, run_dir)
 

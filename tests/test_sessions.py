@@ -96,6 +96,16 @@ def test_a_name_already_in_use_is_refused(which: dict[str, str], client: FakeCli
     assert len(sessions.list_sessions()) == 1
 
 
+def test_a_name_that_is_another_sessions_id_is_refused(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    """Both are references, so a name that is also an id would make lookups ambiguous."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+
+    with pytest.raises(ValueError, match=session.session_id):
+        sessions.create_session(Profile(tools=[]), name=session.session_id)
+
+
 def test_an_empty_name_is_refused(which: dict[str, str], client: FakeClient) -> None:
     """The chooser sends None for a blank answer; a name of spaces is a mistake, not a blank."""
     with pytest.raises(ValueError, match="name"):
@@ -128,6 +138,16 @@ def test_a_session_is_found_by_name_or_by_id(which: dict[str, str], client: Fake
 
     assert sessions.get_session("demo").session_id == session.session_id
     assert sessions.get_session(session.session_id).name == "demo"
+
+
+def test_an_id_wins_over_a_name_that_looks_like_one(state_dir: Path) -> None:
+    """create_session keeps these apart; a hand-edited registry may not."""
+    write_registry(
+        state_dir,
+        [record(session_id="one", name="abc"), record(session_id="abc", name="two")],
+    )
+
+    assert sessions.get_session("abc").name == "two"
 
 
 def test_an_unknown_reference_finds_nothing(which: dict[str, str], client: FakeClient) -> None:
@@ -184,6 +204,19 @@ def test_a_second_tab_gets_the_same_settings_file_and_workdir(
     assert first != second
     assert client.commands[0][1] == client.commands[1][1]
     assert {cwd for cwd, _, _ in client.tabs} == {Path(session.run_dir) / "work"}
+    assert sessions.get_session("demo").pane_ids == [first, second]
+
+
+def test_two_tabs_from_separate_loads_both_stay_attached(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    """Two popups each load the session before either attaches; neither pane may be lost."""
+    sessions.create_session(Profile(tools=[]), name="demo")
+    one, two = sessions.get_session("demo"), sessions.get_session("demo")
+
+    first = sessions.attach(one)
+    second = sessions.attach(two)
+
     assert sessions.get_session("demo").pane_ids == [first, second]
 
 
@@ -313,6 +346,16 @@ def test_the_registry_is_never_written_in_place(
         sessions.create_session(Profile(tools=[]), name="other")
 
     assert (state_dir / "sessions.json").read_text() == before
+    assert list(state_dir.glob("*.tmp")) == []
+
+
+def test_writers_take_a_lock_on_the_state_dir(
+    which: dict[str, str], client: FakeClient, state_dir: Path
+) -> None:
+    """Two popups are two processes, so the read-modify-write is serialized by a file lock."""
+    sessions.create_session(Profile(tools=[]), name="demo")
+
+    assert (state_dir / "sessions.lock").exists()
 
 
 def _boom(*args: object, **kwargs: object) -> None:

@@ -27,6 +27,9 @@ class SynthConfig:
     dir: Path | None = None
     env: dict[str, str] = field(default_factory=dict)
     args: list[str] = field(default_factory=list)
+    # The real directories the skill symlinks point at. srt checks the path an access
+    # resolves to, so the launch has to allow reading these (SPEC §4.3).
+    skill_sources: list[Path] = field(default_factory=list)
     # Skills and MCP servers the profile asked for that the host does not have.
     missing: list[str] = field(default_factory=list)
 
@@ -42,7 +45,7 @@ def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
 
     for path in agent.auth_read_paths:
         _link(Path(path).expanduser(), config / Path(path).name)
-    missing = _link_skills(skill_dirs(agent), config / "skills", profile.skills)
+    sources, missing = _link_skills(skill_dirs(agent), config / "skills", profile.skills)
 
     servers, unknown = _whitelisted_servers(agent, profile.mcp)
     mcp_file = config / ".mcp.json"
@@ -55,6 +58,7 @@ def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
         # --strict-mcp-config is the important one: without it the agent merges MCP config
         # from its other scopes and the whitelist leaks (SPEC §4.2).
         args=["--mcp-config", str(mcp_file), "--strict-mcp-config"],
+        skill_sources=sources,
         missing=missing + [f"MCP server {name!r}" for name in unknown],
     )
 
@@ -70,10 +74,10 @@ def _link(target: Path, link: Path) -> None:
         link.symlink_to(target)
 
 
-def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> list[str]:
-    """Symlink the ticked skills, and report the ones the host does not have."""
+def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[list[Path], list[str]]:
+    """Symlink the ticked skills. Returns what was linked, and what the host does not have."""
     dest.mkdir(parents=True, exist_ok=True)
-    missing = []
+    linked, missing = [], []
     for name in names:
         # A skill is a bare directory name: `../..` would link the whole config dir in.
         plain = bool(name) and "/" not in name and not name.startswith(".")
@@ -84,7 +88,8 @@ def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> list[str]
         link = dest / name
         if not link.exists():
             link.symlink_to(found[0])
-    return missing
+        linked.append(found[0])
+    return linked, missing
 
 
 def _whitelisted_servers(agent: AgentSpec, wanted: list[str]) -> tuple[dict, list[str]]:

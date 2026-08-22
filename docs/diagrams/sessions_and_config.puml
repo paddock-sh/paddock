@@ -38,7 +38,7 @@ package "backends/srt.py" {
 
 package "synth_config.py" {
   class "functions" as SynthFns {
-    build(profile, agent, run_dir) -> dir, env, args, missing
+    build(profile, agent, run_dir) -> dir, env, args, skill sources, missing
   }
 }
 
@@ -60,7 +60,7 @@ database "$PADDOCK_STATE_DIR\n(default $HOME/.local/state/paddock)" as StateDir 
 database "the agent's real config dirs\nconfig_write_paths, e.g. $HOME/.claude" as RealConfig
 
 SessionFns --> Session : builds
-SessionFns --> Registry : written whole, then swapped in;\na file that will not parse is reported\nand treated as empty
+SessionFns --> Registry : written whole under a file lock,\nthen swapped in; a file that will not parse\nis reported and treated as empty
 SessionFns --> SrtFns : create_session -> prepare\nattach -> load_run + open_pane
 SrtFns --> SynthFns : build the config dir
 SrtFns --> RunDir : writes
@@ -83,8 +83,11 @@ note bottom of RealConfig
   With a redirection (Claude Code today) these
   directories are in denyRead and denyWrite, so
   the skills and MCP servers nobody ticked are not
-  there to read. The credential files stay in
-  allowRead, read-only (SPEC section 4.3).
+  there to read. srt checks the path a symlink
+  resolves to, so the settings allow two things
+  back by name: the credential files, read-only,
+  and the real dirs of the ticked skills
+  (SPEC section 4.3).
 end note
 
 note bottom of Config

@@ -109,11 +109,15 @@ def build_settings(
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
         # The sandbox keeps TMPDIR (see KEEP_ENV), so what it points at has to be writable.
-        # Resolved, because on macOS it runs through the /var -> /private/var symlink.
-        allow_write.append(Path(os.path.realpath(tmpdir)))
+        allow_write += _both_names(Path(tmpdir))
     if profile.shared_dir:
         allow_write.append(_expand(profile.shared_dir))
     deny_read = [_expand(path) for path in profile.deny_read]
+    # What the agent may not read, it may not write either.
+    deny_write = list(deny_read)
+    auth = [_expand(path) for path in agent.auth_read_paths]
+    # The selected agent's own credentials, so a broad deny_read cannot lock it out.
+    allow_read = list(auth)
     config_dirs = [_expand(path) for path in agent.config_write_paths]
     if synth.dir is None:
         # The agent has no synthesized config dir, so it writes to its real one. Blocking
@@ -122,9 +126,14 @@ def build_settings(
     else:
         # Layer 3: the agent writes in the synthesized dir instead, and its real config dir
         # is denied both ways — so the skills and MCP servers nobody ticked are not there
-        # to read. Its credentials stay in allowRead below (SPEC §4.3).
+        # to read (SPEC §4.3).
         allow_write.append(synth.dir)
         deny_read += config_dirs
+        # Its credentials and the skills it did tick are symlinks back into that denied
+        # directory, and srt checks the path an access resolves to. Allowing them by name
+        # re-opens exactly those, and no more. The credentials are read-only.
+        deny_write += config_dirs + auth
+        allow_read += [path for source in synth.skill_sources for path in _both_names(source)]
     allow_write += [_expand(path) for path in profile.extra_allow_write]
     return {
         "network": {
@@ -133,11 +142,9 @@ def build_settings(
         },
         "filesystem": {
             "denyRead": _as_strings(deny_read),
-            # The selected agent's own credentials, so a broad deny_read cannot lock it out.
-            "allowRead": _as_strings(_expand(path) for path in agent.auth_read_paths),
+            "allowRead": _as_strings(allow_read),
             "allowWrite": _as_strings(allow_write),
-            # What the agent may not read, it may not write either.
-            "denyWrite": _as_strings(deny_read),
+            "denyWrite": _as_strings(deny_write),
         },
     }
 
@@ -210,6 +217,14 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
 
 def _expand(path: str) -> Path:
     return Path(path).expanduser()
+
+
+def _both_names(path: Path) -> list[Path]:
+    """A path as written and as resolved, the way /tmp and /private/tmp are both listed.
+
+    srt matches the path as written, and checks the one an access resolves to.
+    """
+    return [path, Path(os.path.realpath(path))]
 
 
 def _as_strings(paths) -> list[str]:

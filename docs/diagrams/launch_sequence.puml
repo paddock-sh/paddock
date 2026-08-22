@@ -83,14 +83,14 @@ Backend -> Backend : build_shim_dir(run_dir, tools)\nsymlink one binary per tool
 Backend -> Synth : build(profile, agent, run_dir)
 activate Synth
 Synth -> Synth : run_dir/config/\nsymlink the agent's credentials by filename\nsymlink ONLY the ticked skills from <real config>/skills\nwrite .mcp.json with ONLY the ticked MCP servers
-Synth --> Backend : dir, env {CLAUDE_CONFIG_DIR: run_dir/config},\nargs [~--mcp-config <file>, ~--strict-mcp-config],\nwhat the host did not have
+Synth --> Backend : dir, env {CLAUDE_CONFIG_DIR: run_dir/config},\nargs [~--mcp-config <file>, ~--strict-mcp-config],\nthe real skill dirs it linked, what the host did not have
 deactivate Synth
 note right of Synth
   Layer 3. Only Claude Code has a config-dir
   variable today; other agents get nothing back
   and keep their real config dir (SPEC 4.3).
 end note
-Backend -> Backend : build_settings(profile, agent, workdir, synth)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp, /dev/null,\nand run_dir/config when redirected, else config_write_paths)\nfilesystem.allowRead (the agent's own credentials)\nfilesystem.denyRead = denyWrite (~/.ssh, ~/.aws, ...,\nplus the real config dir when redirected)\nevery configured path expanded here
+Backend -> Backend : build_settings(profile, agent, workdir, synth)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp, /dev/null,\nand run_dir/config when redirected, else config_write_paths)\nfilesystem.allowRead (the agent's own credentials, plus the\nreal skill dirs the config dir linked — srt sees the target)\nfilesystem.denyRead (~/.ssh, ~/.aws, ..., plus the real\nconfig dir when redirected); denyWrite adds the credentials\nevery configured path expanded here
 Backend -> Backend : pane_command(...)\nfind_srt(): `srt`, else `npx -y @anthropic-ai/sandbox-runtime`\n(composed before any tab exists, so a missing srt\nfails with no empty pane left behind)
 Backend -> Backend : write run_dir/launch.json\n(command, workdir, env — what a later attach replays)
 Backend --> Sessions : Run
@@ -105,7 +105,7 @@ Client -> Herdr : herdr tab create [~--workspace <id>]\n~--cwd <workdir> ~--labe
 Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:p2"}}}
 Client --> Backend : "wA:p2"
 Backend -> Client : run_in_pane("wA:p2", command)
-Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`PATH=<shim>:/usr/bin:/bin <agent> --strict-mcp-config'`
+Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`PATH=<shim>:/usr/bin:/bin <agent> --mcp-config <file> --strict-mcp-config'`
 deactivate Client
 Backend --> Sessions : pane_id
 deactivate Backend

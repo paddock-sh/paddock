@@ -172,20 +172,28 @@ Three defaults shape everything else:
   through its symlinks, because the sandbox keeps that variable and tools write
   where it points. The run directory itself is **not** writable: it holds
   the settings file and the shim dir, which the sandbox only reads. Its `config/`
-  subdirectory is the exception — that is the synthesized config dir (§4.3), and
-  srt matches paths as written, so allowing it does not allow its parent.
-  `denyWrite` mirrors `denyRead`, so a denied path is off limits both ways.
+  and, for an isolated profile, its `work/` subdirectory are the exceptions —
+  the synthesized config dir (§4.3) and the workdir. srt matches paths as
+  written, so allowing a subdirectory does not allow its parent. `denyWrite`
+  mirrors `denyRead`, so a denied path is off limits both ways.
 - **Network is allowlist-only.** Anything not listed is refused. `deniedDomains`
   stays empty; it is written because the schema wants the key.
 
+**srt checks the path an access resolves to**, not the path the agent typed. A
+symlink is therefore governed by its target: what the policy has to name is the
+real file, never the link. That is why the synthesized config dir (§4.3) works —
+and why the settings have to allow its targets by name.
+
 **The agent's config directory** depends on whether layer 3 can redirect it
 (§4.3). When it can — Claude Code today — the real directory is denied for reading
-and writing, and the synthesized one under the run dir is writable instead. The
-agent's own credential files stay in `allowRead`, so it can still authenticate;
-they are read-only inside the sandbox. When it cannot, `allowWrite` gets the
-agent's `config_write_paths`, its real config directory, because blocking it
-breaks the agent. That is a **known gap** for those agents, and it closes when
-they get a redirection.
+and writing, and the synthesized one under the run dir is writable instead. Two
+things are then allowed back by name, because the synthesized dir links to them:
+the agent's own credential files, so it can still authenticate, and the real
+directories of the skills the user ticked. The credentials are in `denyWrite`
+too, so they are read-only inside the sandbox. When the agent cannot be
+redirected, `allowWrite` gets its `config_write_paths`, its real config directory,
+because blocking it breaks the agent. That is a **known gap** for those agents,
+and it closes when they get a redirection.
 
 Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expands
 `~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
@@ -328,10 +336,14 @@ Sessions are tracked in `<state>/sessions.json`, a list of records:
 | `keep_alive` | Survives its last pane |
 | `pane_ids` | Pane ids currently attached |
 
-An unnamed session is named after its profile plus a short suffix. The file is
-written whole and swapped in, so a crash mid-write leaves the previous registry
-rather than half of one. A file that will not parse is reported and treated as
-empty, and a record of the wrong shape is dropped rather than half-applied.
+An unnamed session is named after its profile plus a short suffix. A name may not
+be another session's id either, since both are references a caller can look up.
+
+Two popups are two processes, so every write takes an exclusive lock on
+`<state>/sessions.lock` and re-reads the registry inside it. The file is written
+whole and swapped in, so a crash mid-write leaves the previous registry rather
+than half of one. A file that will not parse is reported and treated as empty,
+and a record of the wrong shape is dropped rather than half-applied.
 
 v1.1 adds `backend` and `vm_handle` when there is a second backend to name.
 
@@ -400,9 +412,11 @@ config from user and project scopes and the whitelist leaks. It is passed with
 `--mcp-config <file>`, which names the generated file: strict mode on its own
 loads no servers at all.
 
-v1 generates the MCP whitelist. The servers come from the agent's own config on
-the host, filtered to the ones the profile ticked — an empty list means an empty
-whitelist, not an absent one. The `permissions` block is not generated yet.
+v1 generates the MCP whitelist. The server definitions are read from the agent's
+own config files — whichever of its `auth_read_paths` holds an `mcpServers`
+object, which for Claude Code is `~/.claude.json` — and filtered to the names the
+profile ticked. An empty list means an empty whitelist, not an absent one. The
+`permissions` block is not generated yet.
 
 ### 4.3 Layer 3 — Synthesized config dir (hard)
 
@@ -416,7 +430,9 @@ The launcher builds a fresh agent config directory per session — `run_dir/conf
 
 The agent is pointed at it — for Claude Code via `CLAUDE_CONFIG_DIR`, passed
 through `herdr tab create --env` and written into the sandbox command (§1.3) — and
-its real config dir is denied for reading and writing.
+its real config dir is denied for reading and writing. The symlinks stay
+readable because the settings allow their targets by name (§2.1); denying the
+directory and allowing those few paths is what leaves nothing else in it.
 
 This is why it is worth doing: **unselected skills and MCP servers do not exist
 inside the sandbox.** Nothing to enumerate, nothing to load, nothing for a
