@@ -92,12 +92,21 @@ has no way to express "any domain", so that one row is refused there and says to
 use the `msb` backend instead. There is deliberately no all-of-it row for writes:
 a sandbox with no filesystem fence is a Local tab, which is one field up.
 
+Ticking every tool hands the sandbox this machine's own `PATH` rather than a
+directory of symlinks, and changes **nothing** about what it may write or reach.
+The `PATH` was never the fence: an absolute path reaches any binary on the machine
+whatever is ticked, which is why the tool list is described as convenience rather
+than as a boundary.
+
 `Open` lists every live session by its name, backend, agent, profile and
 attached tabs, so a second tab on one of them is a pick and not a screen of its
 own. Picking one asks what goes in the tab: the agent again, or a plain shell
 inside the same sandbox, which is `paddock attach <session> --shell` on the
-command line. A shell tab is labelled `sbx:<name> (shell)` and counts as a tab of
-the session like any other.
+command line. A shell tab is labelled `sbx:<name> (shell)`, counts as a tab of the
+session like any other, and puts `paddock:` in front of its prompt, so the one tab
+that could be mistaken for an ordinary shell says what it is. Your own prompt is
+kept: a zsh theme comes back as `paddock:` and then the theme. A `bash` whose
+`~/.bashrc` writes its own prompt keeps that, and there the label is what says it.
 
 Launching a sandbox ends on a confirm: the one screen that shows the policy
 resolved, with the domain groups expanded into the domains they open, and Launch,

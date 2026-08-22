@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 
 from paddock import log
 from paddock.agents import AgentSpec
-from paddock.profiles import Profile
+from paddock.profiles import EVERYTHING, Profile
 
 logger = log.get_logger(__name__)
 
@@ -30,11 +30,6 @@ CREDENTIALS_FILE = ".credentials.json"
 
 # The agent's own login inside a Keychain entry. The rest of that entry stays in the Keychain.
 LOGIN_KEY = "claudeAiOauth"
-
-
-# Every skill the agent has, rather than a list of them. The chooser writes it into
-# `profile.skills`; here it means "take the lot" (SPEC §4.3).
-ALL_SKILLS = "*"
 
 
 @dataclass(frozen=True)
@@ -354,7 +349,7 @@ def _take_skills(
     skill of its own, so nothing about it can go missing.
     """
     dest.mkdir(parents=True, exist_ok=True)
-    if ALL_SKILLS in names:
+    if EVERYTHING in names:
         names = _every_skill(sources)
     taken, missing = [], []
     for name in names:

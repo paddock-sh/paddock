@@ -22,6 +22,7 @@ from paddock import recent, screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
     DEFAULT_DENY_READ,
+    EVERYTHING,
     LOCAL_SERVICES_CONSEQUENCE,
     NETWORK_ALL,
     NETWORK_PRESETS,
@@ -52,21 +53,12 @@ BACKEND_HINTS = {
     "and a filesystem of its own.",
 }
 
-# The checklist entry that is not a tool or a skill: no list at all, everything the host
-# has. One spelling for both, so a profile file reads the same way whichever list it is in.
-# The network has a sentinel of its own (profiles.NETWORK_ALL), because a backend reads it.
-EVERYTHING = "*"
-
 # What each allow-all row is called, and what ticking it grants in the words of the screen
 # that says what was granted.
 ALL_ROWS = {
     NETWORK_ALL: "everything (any domain, no restriction)",
     "tools": "Everything on the host PATH",
     "skills": "All installed skills",
-}
-ALL_HINTS = {
-    "tools": "every binary you can run, the sandbox can run",
-    "skills": "every skill the agent has installed, not the ticked ones",
 }
 ALL_GRANTED = {
     "network": "ANY domain (unrestricted)",

@@ -67,6 +67,40 @@ PROXY_ENV = (
 )
 
 
+# What a sandboxed shell puts in front of its prompt, so the tab does not read like an
+# ordinary one (SPEC §3.2).
+PROMPT_PREFIX = "paddock:"
+
+# The startup files a shell tab is pointed at, under the run dir.
+SHELL_RC_DIR = "shellrc"
+ZSHRC = ".zshrc"
+ENV_FILE = "env.sh"
+
+# zsh reads this instead of ~/.zshrc, because ZDOTDIR names the directory it is in. So it
+# runs the user's own files first and then takes the prompt they left, whatever it is.
+ZSHRC_TEXT = f"""\
+# Written by paddock for a sandboxed shell tab (SPEC §3.2).
+# ZDOTDIR points zsh here, so the user's own startup files are run by name from $HOME.
+ZDOTDIR=$HOME
+[ -r "$ZDOTDIR/.zshenv" ] && . "$ZDOTDIR/.zshenv"
+[ -r "$ZDOTDIR/.zshrc" ] && . "$ZDOTDIR/.zshrc"
+case "$PROMPT" in
+  {PROMPT_PREFIX}*) ;;
+  *) PROMPT="{PROMPT_PREFIX}$PROMPT" ;;
+esac
+"""
+
+# What `$ENV` names, which is how a POSIX sh gets a startup file. It has no user file to
+# run first: a sh reads $ENV and nothing else when it is interactive.
+ENV_TEXT = f"""\
+# Written by paddock for a sandboxed shell tab (SPEC §3.2).
+case "$PS1" in
+  {PROMPT_PREFIX}*) ;;
+  *) PS1="{PROMPT_PREFIX}${{PS1:-$ }}" ;;
+esac
+"""
+
+
 class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
 
@@ -204,17 +238,31 @@ def build_settings(
     }
 
 
-def pane_command(
-    profile: Profile, agent: AgentSpec, settings: Path, shim: Path, synth: SynthConfig
-) -> str:
-    """The command the launch script holds: srt wrapping the agent on a shimmed PATH."""
+def sandbox_path(profile: Profile, shim: Path | None) -> str:
+    """What the sandbox's PATH is: the shim dir, or this machine's own (SPEC §4.1).
+
+    `shim` is None for a profile that ticked every tool. There is no list of names to
+    write then, and building a shim dir of every binary on the host would be a slower way
+    of saying the same thing, so the sandbox is handed the PATH the launcher was started
+    with. Nothing about what it may write or reach changes: the shim dir was never the
+    boundary, since an absolute path reaches any binary whatever is in it.
+    """
+    if shim is None:
+        return os.environ.get("PATH") or "/usr/bin:/bin"
     entries = [str(shim)]
     if profile.include_system_path:
         entries += ["/usr/bin", "/bin"]
+    return ":".join(entries)
+
+
+def pane_command(
+    profile: Profile, agent: AgentSpec, settings: Path, shim: Path | None, synth: SynthConfig
+) -> str:
+    """The command the launch script holds: srt wrapping the agent on a shimmed PATH."""
     keep = [f"{name}={os.environ[name]}" for name in KEEP_ENV if os.environ.get(name)]
     # `env -i` wipes what the tab was given, so the config dir variable is set here too.
     keep += [f"{name}={value}" for name, value in synth.env.items()]
-    path = "PATH=" + ":".join(entries)
+    path = "PATH=" + sandbox_path(profile, shim)
     # Unquoted on purpose: srt's own shell is where these have values, and where they expand.
     proxied = " ".join(f'{name}="${name}"' for name in PROXY_ENV)
     rest = shlex.join([path, *shlex.split(agent.command), *synth.args])
@@ -229,16 +277,98 @@ def host_shell() -> str:
     return os.environ.get("SHELL") or "/bin/sh"
 
 
-def shell_command(profile: Profile, settings: Path, shim: Path, synth: SynthConfig) -> str:
+def write_shell_rc(run_dir: Path) -> Path:
+    """The startup files a shell tab is pointed at, in the run dir. Returns the directory.
+
+    They run the user's own files and then put `paddock:` in front of whatever prompt
+    those left. Both are written every time and both refuse to prefix twice, so a shell
+    that reads one, the other or neither ends up saying it once.
+
+    They live in the run dir, which the sandbox may read and may not write (SPEC §2.1), so
+    what starts a sandboxed shell is not the sandboxed shell's to rewrite.
+    """
+    directory = run_dir / SHELL_RC_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / ZSHRC).write_text(ZSHRC_TEXT)
+    (directory / ENV_FILE).write_text(ENV_TEXT)
+    return directory
+
+
+def prompt_env(rc_dir: Path) -> dict[str, str]:
+    """How a shell tab is told to say it is in a sandbox. All three, because shells differ.
+
+    Measured on this machine rather than assumed, because a prompt is set in a different
+    place by every shell:
+
+    - zsh runs the startup files `ZDOTDIR` names, and an inherited prompt alone is no use
+      there: any rc that writes one (oh-my-zsh does) overwrites it.
+    - a POSIX sh runs the one `$ENV` names, which is the same trick under another name.
+    - a shell with no startup file of its own takes the prompt straight out of `PS1`, and
+      that covers bash, which reads neither of the other two when it is interactive.
+
+    A bash with an rc of its own that sets `PS1` keeps its own prompt. paddock does not
+    edit anyone's `~/.bashrc` to win that, so there the tab label `sbx:<name> (shell)` is
+    what says the tab is sandboxed (SPEC §3.2).
+    """
+    return {
+        "PS1": f"{PROMPT_PREFIX}$ ",
+        "ZDOTDIR": str(rc_dir),
+        "ENV": str(rc_dir / ENV_FILE),
+    }
+
+
+def shell_command(
+    profile: Profile, settings: Path, shim: Path | None, synth: SynthConfig, rc_dir: Path
+) -> str:
     """The same sandbox entered as a plain shell: one settings file, one workdir, no agent.
 
     Composed the way the agent's own command is, so the policy, the PATH and the kept
     environment cannot drift apart between the two. The config dir variable stays set, so
     a shell that runs the agent by hand gets the same synthesized config. The agent's
     command-line flags do not come with it: they are the agent's, not the shell's.
+
+    What it adds is the prompt: those variables go on this command and not on the agent's,
+    which draws its own interface and has no prompt for anyone to prefix.
     """
     shell = AgentSpec(name="shell", command=host_shell())
-    return pane_command(profile, shell, settings, shim, replace(synth, args=[]))
+    env = {**synth.env, **prompt_env(rc_dir)}
+    return pane_command(profile, shell, settings, shim, replace(synth, args=[], env=env))
+
+
+def _shim_dir(profile: Profile, agent: AgentSpec, run_dir: Path) -> Path | None:
+    """The PATH shim dir for this run, or None when the profile asked for the host's own.
+
+    The agent runs on the shimmed PATH like everything else, so it needs a shim of its own,
+    and one for whatever it cannot start without: `codex` is a script that runs `node`. An
+    agent named by absolute path (the shell, say) is found without one. Choosing the agent
+    is what put these here, and every screen that says what can run names them.
+
+    A profile that ticked every tool gets no shim dir at all (SPEC §4.1): there is no list
+    to shim, nothing can be missing from it, and so nothing is reported as left off.
+    """
+    if profile.opens_every_tool():
+        logger.debug("no shim dir %s", log.context(run_dir=run_dir, path="the host's own"))
+        return None
+    tools = list(
+        dict.fromkeys(list(profile.tools) + shlex.split(agent.command)[:1] + agent.required_tools)
+    )
+    shim, skipped = build_shim_dir(run_dir, tools)
+    logger.debug(
+        "shim dir %s",
+        log.context(dir=shim, shimmed=len(tools) - len(skipped), skipped=", ".join(skipped)),
+    )
+    # A name with a slash is the agent's own command. It runs without a shim, so it is
+    # reported as how it runs, not as a tool that went missing.
+    missing = [tool for tool in skipped if "/" not in tool]
+    if missing:
+        print(f"paddock: left off the sandbox PATH: {', '.join(missing)}", file=sys.stderr)
+    for tool in (tool for tool in skipped if "/" in tool):
+        print(
+            f"paddock: {tool} runs by its absolute path; "
+            "only bare tool names go on the sandbox PATH",
+            file=sys.stderr,
+        )
+    return shim
 
 
 def prepare(profile: Profile) -> Run:
@@ -262,29 +392,7 @@ def prepare(profile: Profile) -> Run:
             profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
         ),
     )
-    # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own,
-    # and one for whatever it cannot start without: `codex` is a script that runs `node`.
-    # An agent named by absolute path (the shell, say) is found without one. Choosing the
-    # agent is what put these here, and every screen that says what can run names them.
-    tools = list(
-        dict.fromkeys(list(profile.tools) + shlex.split(agent.command)[:1] + agent.required_tools)
-    )
-    shim, skipped = build_shim_dir(run_dir, tools)
-    logger.debug(
-        "shim dir %s",
-        log.context(dir=shim, shimmed=len(tools) - len(skipped), skipped=", ".join(skipped)),
-    )
-    # A name with a slash is the agent's own command. It runs without a shim, so it is
-    # reported as how it runs, not as a tool that went missing.
-    missing = [tool for tool in skipped if "/" not in tool]
-    if missing:
-        print(f"paddock: left off the sandbox PATH: {', '.join(missing)}", file=sys.stderr)
-    for tool in (tool for tool in skipped if "/" in tool):
-        print(
-            f"paddock: {tool} runs by its absolute path; "
-            "only bare tool names go on the sandbox PATH",
-            file=sys.stderr,
-        )
+    shim = _shim_dir(profile, agent, run_dir)
     synth = synth_config.build(profile, agent, run_dir)
     if synth.missing:
         left_out = ", ".join(synth.missing)
@@ -295,7 +403,7 @@ def prepare(profile: Profile) -> Run:
     logger.debug("settings written %s", log.context(path=settings, size=f"{len(text)} bytes"))
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
-    shell = shell_command(profile, settings, shim, synth)
+    shell = shell_command(profile, settings, shim, synth, write_shell_rc(run_dir))
     script = write_launch_script(run_dir, command)
     write_launch_script(run_dir, shell, SHELL_SCRIPT)
     # The length, never the command: it carries every environment value the sandbox keeps.
@@ -342,6 +450,9 @@ def load_run(run_dir: Path) -> Run:
     ensure_launch_script(run_dir, run.command)
     if run.shell_command:
         ensure_launch_script(run_dir, run.shell_command, SHELL_SCRIPT)
+        # The stored command may point a shell at these, and a startup file that is not
+        # there would cost that shell the user's own. Cheap to write, so they are.
+        write_shell_rc(run_dir)
     return run
 
 

@@ -838,6 +838,29 @@ dir holds two scripts for this, `launch.sh` and `shell.sh`, composed the same wa
 and wrapped by the same launcher (§9), so a shell tab that cannot start is held,
 logged and replayed exactly as an agent tab is.
 
+**A sandboxed shell says so in its prompt.** It is the one tab that looks exactly
+like an ordinary one, and mistaking the two is how someone runs the wrong command
+in the wrong place. So a shell tab is given `paddock:` in front of its prompt, and
+the tab label stays `sbx:<name> (shell)` as well.
+
+Where that is set depends on the shell, and each was measured rather than assumed,
+because every shell takes its prompt from somewhere else:
+
+| Shell | How | Result |
+| --- | --- | --- |
+| zsh | `ZDOTDIR` points at `<run dir>/shellrc`, whose `.zshrc` runs `~/.zshenv` and `~/.zshrc` and then prefixes `PROMPT` | Works, and keeps the user's own theme: an oh-my-zsh prompt comes back as `paddock:(base) ~/dir` |
+| POSIX sh | `ENV` names `<run dir>/shellrc/env.sh`, which prefixes `PS1` | Works |
+| bash | the exported `PS1` | Works unless the user's `~/.bashrc` writes its own prompt, which paddock will not edit |
+| anything else | the exported `PS1` | Best effort |
+
+Exporting `PS1` alone is not enough and that is the whole reason for the files: an
+interactive shell reads its startup files *after* the environment, and any of them
+that writes a prompt overwrites what was inherited. Both files refuse to prefix a
+prompt that already starts with `paddock:`, so a shell that reads one, both or
+neither says it exactly once. They are written into the run dir, which the sandbox
+can read and cannot write, so what starts a sandboxed shell is not that shell's to
+rewrite, and `load_run` puts them back if they have gone.
+
 ### 3.3 Workspace default binding
 
 An optional binding (*new tabs in workspace W attach to session S*) stored in
@@ -969,6 +992,20 @@ Choosing an agent is consenting to what it runs on, which is why this is not a
 permission the user is asked for a second time, but it is never silent: the
 agent list says what the choice puts on the PATH, the confirm names each one with
 the agent that asked for it, and `--dry-run` prints the same line.
+
+**Ticking every tool takes the shim dir away rather than filling it.** A profile
+whose `tools` hold the `*` sentinel gets no shim directory at all: the sandbox
+runs on the PATH the launcher itself was started with. Building a dir of symlinks
+to every binary on the host would be a slower way of saying the same thing, and it
+would then need a warning for each name it could not find. So `prepare` writes no
+`bin/`, and nothing is reported as left off a list that does not exist.
+
+Nothing else about the policy moves: the settings file for `tools = ["*"]` is
+byte for byte the one for any other tool list. That is the point. The PATH was
+always the soft layer, and the writes and the domains are the boundary. Verified
+live in a sandboxed shell with the sentinel ticked: `cargo`, which nothing shimmed,
+resolves to `/opt/homebrew/bin/cargo`, and `touch ~/anything` is still *Operation
+not permitted*.
 
 > **Known bypass:** `PATH` only governs bare-name lookup. An agent that runs
 > `/opt/homebrew/bin/docker` gets a binary nobody ticked. The shim dir shapes
