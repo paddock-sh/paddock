@@ -23,6 +23,7 @@ from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
     DEFAULT_DENY_READ,
     LOCAL_SERVICES_CONSEQUENCE,
+    NETWORK_ALL,
     NETWORK_PRESETS,
     TOOL_CANDIDATES,
     Profile,
@@ -50,6 +51,35 @@ BACKEND_HINTS = {
     MSB: "A microVM: about 20 seconds to its first start, and full isolation, with a kernel "
     "and a filesystem of its own.",
 }
+
+# The checklist entry that is not a tool or a skill: no list at all, everything the host
+# has. One spelling for both, so a profile file reads the same way whichever list it is in.
+# The network has a sentinel of its own (profiles.NETWORK_ALL), because a backend reads it.
+EVERYTHING = "*"
+
+# What each allow-all row is called, and what ticking it grants in the words of the screen
+# that says what was granted.
+ALL_ROWS = {
+    NETWORK_ALL: "everything (any domain, no restriction)",
+    "tools": "Everything on the host PATH",
+    "skills": "All installed skills",
+}
+ALL_HINTS = {
+    "tools": "every binary you can run, the sandbox can run",
+    "skills": "every skill the agent has installed, not the ticked ones",
+}
+ALL_GRANTED = {
+    "network": "ANY domain (unrestricted)",
+    "tools": "the full host PATH",
+    "skills": "all skills",
+}
+
+# Why the network's allow-all cannot be ticked on srt. Measured against srt 0.0.73:
+# `network.allowedDomains` is a required key and a bare `*` is refused as too broad, so
+# there is no settings file that means unrestricted egress (SPEC §2.1).
+NO_ALLOW_ALL_ON_SRT = (
+    "srt cannot run without a domain allowlist; use the msb backend or list domains"
+)
 
 # The two rows of the Files field, which were two questions before this design.
 FILES_CHOICES = (
@@ -118,9 +148,11 @@ FIELD_HINTS = {
     "tools": "Ticked binaries are on the sandbox PATH. Unticked ones are not reachable by "
     "name. An absolute path still runs them, so this is convenience, not a boundary.",
     "network": "Only these domains are reachable. Everything else is refused by the OS. Tick "
-    "nothing for an offline sandbox.",
+    "nothing and only the agent's own API stays reachable; pick the Shell agent for a fully "
+    "offline sandbox.",
     "files": "Isolated: the sandbox gets a fresh scratch directory and no host path of yours "
-    "is writable. Shared: that one directory is the only thing on your machine it can change.",
+    "is writable. Shared: that one directory is the only thing on your machine it can change. "
+    "Want no filesystem fence at all? Use a Local tab.",
     "skills": "Unticked skills are not in the sandbox's config dir at all, so the agent "
     "cannot find them.",
     "advanced": "The session name, saving these answers as a profile, keeping the session "
@@ -255,7 +287,7 @@ class NewSession:
 Plan = Local | Attach | NewSession
 
 
-def choose(cwd: Path, answers: dict | None = None) -> Plan | None:
+def choose(cwd: Path, answers: dict | None = None, attach: bool = False) -> Plan | None:
     """Ask what to open. None means the popup was closed with nothing done.
 
     Ctrl-c raises KeyboardInterrupt from wherever it was pressed, which `cli.py` turns into
@@ -263,10 +295,20 @@ def choose(cwd: Path, answers: dict | None = None) -> Plan | None:
 
     `answers` starts the form on answers already given, which is how a launch that failed
     comes back to the form it was made on instead of to a blank one.
+
+    `attach` opens the Open list first, which is the whole of the second key binding: a
+    session picked there is launched without the form, and backing out of it leaves the
+    form exactly where it would have been. With nothing running there is no list to open,
+    so it is the ordinary chooser.
     """
     saved, registry = load_profiles(), load_agents()
     live = sessions.list_sessions()
     answers = dict(answers) if answers else opening_answers(saved)
+    if attach and live:
+        answers = _edit_open(answers, live)
+        picked = plan_from(answers, base_profile(saved, answers), cwd)
+        if isinstance(picked, Attach):
+            return picked
     cursor = 0
     while True:
         base = base_profile(saved, answers)
@@ -426,20 +468,51 @@ def _edit_tools(answers: dict, base: Profile) -> dict:
     rows = tool_choices(base, answers.get("tools"))
     if not rows:  # nothing on this host to offer, so there is nothing to ask
         return answers
+    before = [value for _, value, on in rows if on]
     ticked = screen.tick(FIELD_TITLES["tools"], _boxes(rows), FIELD_HINTS["tools"])
-    return dict(answers, tools=[rows[index][1] for index in ticked])
+    return dict(answers, tools=exclusive(before, [rows[index][1] for index in ticked], EVERYTHING))
 
 
 def _edit_network(answers: dict, base: Profile) -> dict:
     rows = network_choices(base, answers.get("network"))
     typed = str(answers.get("domains", " ".join(base.extra_domains)))
+    before = [value for _, value, on in rows if on]
     ticked, extra = screen.tick(
         FIELD_TITLES["network"],
         _boxes(rows),
         FIELD_HINTS["network"],
         box=("Also allow", typed, EDITOR_HINTS["also_allow"]),
+        refused=network_refusals(rows, str(answers.get("backend", SRT))),
     )
-    return dict(answers, network=[rows[index][1] for index in ticked], domains=extra)
+    picked = exclusive(before, [rows[index][1] for index in ticked], NETWORK_ALL)
+    return dict(answers, network=picked, domains=extra)
+
+
+def exclusive(before: list[str], after: list[str], all_of_it: str) -> list[str]:
+    """Allow-all and a list of exceptions cannot both be the answer, so one of them wins.
+
+    Whichever was just ticked is the one meant: ticking allow-all clears the rest, and
+    ticking anything else while allow-all is on takes allow-all off. Neither is a screen
+    telling the user their last key press did nothing.
+    """
+    if all_of_it not in after:
+        return after
+    if all_of_it not in before:
+        return [all_of_it]
+    return [name for name in after if name != all_of_it] or [all_of_it]
+
+
+def network_refusals(rows: list[tuple[str, str, bool]], backend: str) -> dict[int, str]:
+    """Which network rows this backend cannot enforce, and why (SPEC §2.1).
+
+    srt has no allow-all: every settings file it takes names the domains. The row stays on
+    the list and says so, the way an agent this machine has not got stays on the agent list,
+    because hiding it would leave the user wondering where it went.
+    """
+    if backend != SRT:
+        return {}
+    return {index: NO_ALLOW_ALL_ON_SRT for index, (_, value, _) in enumerate(rows)
+            if value == NETWORK_ALL}
 
 
 def _edit_files(answers: dict, base: Profile, cwd: Path) -> dict:
@@ -470,8 +543,9 @@ def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -
     rows = skill_choices(registry.get(agent, AgentSpec()), list(answers.get("skills", carried)))
     if not rows:  # this agent has no skills directory, so there is nothing to ask
         return answers
+    before = [value for _, value, on in rows if on]
     ticked = screen.tick(FIELD_TITLES["skills"], _boxes(rows), FIELD_HINTS["skills"])
-    return dict(answers, skills=[rows[index][1] for index in ticked])
+    return dict(answers, skills=exclusive(before, [rows[index][1] for index in ticked], EVERYTHING))
 
 
 def _edit_advanced(answers: dict, base: Profile) -> dict:
@@ -721,14 +795,13 @@ def _field_values(
     plan = build_session(base, answers)
     profile = plan.profile
     opened = str(answers.get("open", NEW))
-    tools = " ".join(profile.tools)
     return {
         "open": _open_value(opened, live, shell),
         "profile": profile_label(str(answers.get("profile", CUSTOM))),
         "backend": _backend_value(answers),
         "agent": agent_title(profile.agent, registry),
-        "tools": tools or "none",
-        "network": ", ".join(profile.network_presets) or "none",
+        "tools": _tools_value(profile),
+        "network": _network_value(profile, registry),
         "files": _files_value(opened, profile, cwd),
         "skills": _skills_value(profile, registry),
         "advanced": _advanced_value(plan),
@@ -740,16 +813,47 @@ def _field_notes(answers: dict, base: Profile) -> dict[str, str]:
     profile = build_session(base, answers).profile
     domains = profile.allowed_domains()
     counted = _counted(domains) if domains else "offline"
+    if profile.opens_every_domain():
+        counted = "unrestricted"
     return {
         field: "" for field in FIELDS
     } | {
-        "tools": f"({len(profile.tools)})" if profile.tools else "",
+        "tools": "(all)" if EVERYTHING in profile.tools else (
+            f"({len(profile.tools)})" if profile.tools else ""
+        ),
         "network": f"({counted})",
     }
 
 
+def _tools_value(profile: Profile) -> str:
+    if EVERYTHING in profile.tools:
+        return ALL_ROWS["tools"].lower()
+    return " ".join(profile.tools) or "none"
+
+
+def _network_value(profile: Profile, registry: dict[str, AgentSpec]) -> str:
+    """What the Network row reads as.
+
+    Nothing ticked is not no network: the chosen agent's own API is open whatever the
+    profile says (SPEC §5), so a row reading "none" beside a note counting two domains was
+    the form contradicting itself.
+    """
+    if profile.opens_every_domain():
+        return "everything (any domain)"
+    if profile.network_presets:
+        return ", ".join(profile.network_presets)
+    if profile.extra_domains:
+        return "the domains you typed"
+    spec = registry.get(profile.agent)
+    if spec and spec.api_domains:
+        return f"only {spec.name or profile.agent}'s own API"
+    return "none"
+
+
 def _skills_value(profile: Profile, registry: dict[str, AgentSpec]) -> str:
     """An agent with no skills directory says so, rather than opening an empty list."""
+    if EVERYTHING in profile.skills:
+        return ALL_ROWS["skills"].lower()
     if profile.skills:
         return " ".join(profile.skills)
     offered = skill_choices(registry.get(profile.agent, AgentSpec()), [])
@@ -852,6 +956,9 @@ def _readable(profile: Profile, backend: str = SRT) -> str:
 
 def _reachable(profile: Profile) -> str:
     """The count and every domain it names. The screen elides only when the popup makes it."""
+    if profile.opens_every_domain():
+        # No list to print, and no count that would mean anything: this is the whole grant.
+        return ALL_GRANTED["network"]
     domains = profile.allowed_domains()
     if not domains:
         return "nothing, this sandbox is offline"
@@ -876,6 +983,8 @@ def _runnable(profile: Profile, registry: dict[str, AgentSpec], backend: str = S
         spec = registry.get(profile.agent, AgentSpec())
         image = spec.image or "the guest"
         return f"whatever the {image} image ships, plus {profile.agent} itself"
+    if EVERYTHING in profile.tools:
+        return ALL_GRANTED["tools"]
     named = profile.tools + [
         f"{tool} (needed by {profile.agent})" for tool in required_tools(profile, registry)
     ]
@@ -900,7 +1009,10 @@ def _visible(profile: Profile, registry: dict[str, AgentSpec]) -> str:
     spec = registry.get(profile.agent)
     name = spec.name if spec and spec.name else profile.agent
     parts = [f"its own {name} login", "No other agent's keys"]
-    parts.append(f"Skills: {', '.join(profile.skills)}" if profile.skills else "No skills")
+    if EVERYTHING in profile.skills:
+        parts.append(f"Skills: {ALL_GRANTED['skills']}")
+    else:
+        parts.append(f"Skills: {', '.join(profile.skills)}" if profile.skills else "No skills")
     if profile.mcp:
         parts.append(f"MCP servers: {', '.join(profile.mcp)}")
     return ". ".join(parts) + "."
@@ -1108,8 +1220,10 @@ def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple
     which is what a question asked a second time offers back.
     """
     ticked = base.tools if selected is None else selected
-    rows = []
+    rows = [(ALL_ROWS["tools"], EVERYTHING, EVERYTHING in ticked)]
     for name in dict.fromkeys(TOOL_CANDIDATES + base.tools + list(ticked)):
+        if name == EVERYTHING:
+            continue  # already the first row, and it is not a binary to look for
         if shutil.which(name):
             rows.append((name, name, name in ticked))
         elif name in base.tools or name in ticked:
@@ -1120,21 +1234,33 @@ def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple
 def network_choices(
     base: Profile, selected: list[str] | None = None
 ) -> list[tuple[str, str, bool]]:
+    """The domain groups, with the one that is not a group at the top of the list."""
     ticked = base.network_presets if selected is None else selected
-    return [(name, name, name in ticked) for name in NETWORK_PRESETS]
+    groups = [name for name in NETWORK_PRESETS if name != NETWORK_ALL]
+    return [
+        (ALL_ROWS[NETWORK_ALL], NETWORK_ALL, NETWORK_ALL in ticked),
+        *((name, name, name in ticked) for name in groups),
+    ]
 
 
 def skill_choices(agent: AgentSpec, selected: list[str]) -> list[tuple[str, str, bool]]:
     """Skills under the agent's own config dirs, plus any already chosen, which stay ticked.
 
-    An agent with no skills directory offers none, and the question is skipped.
+    An agent with no skills directory offers none, and the question is skipped. The
+    allow-all row is only there when there is something for it to mean.
     """
     names: list[str] = []
     for path in agent.config_write_paths:
         directory = Path(path).expanduser() / "skills"
         if directory.is_dir():
             names += sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
-    return [(name, name, name in selected) for name in dict.fromkeys(names + list(selected))]
+    found = [name for name in dict.fromkeys(names + list(selected)) if name != EVERYTHING]
+    if not found and EVERYTHING not in selected:
+        return []
+    return [
+        (ALL_ROWS["skills"], EVERYTHING, EVERYTHING in selected),
+        *((name, name, name in selected) for name in found),
+    ]
 
 
 def parse_domains(text: str) -> list[str]:

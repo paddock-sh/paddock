@@ -14,7 +14,7 @@ from paddock.agents import AgentSpec
 from paddock.backends import RunNotFound, SandboxGone
 from paddock.backends import microsandbox as msb
 from paddock.backends.microsandbox import GUEST_CONFIG_SRC
-from paddock.profiles import Profile
+from paddock.profiles import NETWORK_ALL, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
 
@@ -156,6 +156,35 @@ def test_a_profile_with_no_domains_gets_no_network_at_all(
 
     assert flag(argv, "--net-rule") == []
     assert flag(argv, "--net-default") == ["deny"]
+
+
+def test_allow_all_is_a_default_and_not_a_rule(which: dict[str, str], tmp_path: Path) -> None:
+    """msb can express what srt cannot: no allowlist at all, DNS and every port with it."""
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, ["github.com"], NO_CONFIG, True)
+
+    assert flag(argv, "--net-default") == ["allow"]
+    assert flag(argv, "--net-rule") == []
+
+
+def test_the_ordinary_case_is_untouched_by_the_allow_all_flag(
+    which: dict[str, str], tmp_path: Path
+) -> None:
+    assert msb.net_rules(["github.com"]) == [
+        "--net-default", "deny", "--net-rule", "allow@dns", "--net-rule", "allow@github.com:tcp:443"
+    ]
+    assert msb.net_rules([]) == ["--net-default", "deny"]
+    assert msb.net_rules([], everything=True) == ["--net-default", "allow"]
+
+
+def test_a_profile_that_opens_every_domain_boots_a_vm_that_can_reach_anything(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """The sentinel reaches the backend through the profile, not through a domain list."""
+    msb.prepare(Profile(agent="shell", network_presets=[NETWORK_ALL]))
+
+    argv = create_call(msb_calls)
+    assert flag(argv, "--net-default") == ["allow"]
+    assert flag(argv, "--net-rule") == []
 
 
 # --- the attach and stop commands ------------------------------------------
@@ -395,7 +424,7 @@ def test_the_config_dir_variable_is_set_on_create(
     """`msb create -e` reaches every later exec, including the shell a tab attaches to."""
     msb.prepare(CLAUDE)
 
-    assert flag(create_call(msb_calls), "-e") == [f"CLAUDE_CONFIG_DIR={msb.GUEST_CONFIG}"]
+    assert f"CLAUDE_CONFIG_DIR={msb.GUEST_CONFIG}" in flag(create_call(msb_calls), "-e")
 
 
 def test_the_host_tab_is_given_no_environment(

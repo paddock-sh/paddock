@@ -125,12 +125,19 @@ def workdir_for(profile: Profile, run_dir: Path) -> Path:
     return workdir.resolve()
 
 
-def net_rules(domains: list[str]) -> list[str]:
+def net_rules(domains: list[str], everything: bool = False) -> list[str]:
     """Deny everything, then allow one host per domain the profile named.
 
     A rule names a host, a protocol and a port, so this is https to those hosts and
     nothing else. No domains at all means no network, and no DNS to resolve it with.
+
+    `everything` is the profile asking for no allowlist at all (SPEC §2.1), which msb
+    expresses as a default rather than a rule: `--net-default allow` with nothing after
+    it, so every host, every port and DNS with it. srt has no form of this at all and
+    refuses the profile instead, which is the difference the chooser shows.
     """
+    if everything:
+        return ["--net-default", "allow"]
     rules = ["--net-default", "deny"]
     if not domains:
         return rules
@@ -141,7 +148,12 @@ def net_rules(domains: list[str]) -> list[str]:
 
 
 def create_argv(
-    handle: str, image: str, workdir: Path, domains: list[str], synth: SynthConfig
+    handle: str,
+    image: str,
+    workdir: Path,
+    domains: list[str],
+    synth: SynthConfig,
+    everything: bool = False,
 ) -> list[str]:
     """The command that boots the session's VM. The image is positional, so it comes last.
 
@@ -165,7 +177,7 @@ def create_argv(
         argv += ["--mount-dir", f"{synth.dir.resolve()}:{GUEST_CONFIG_SRC}:ro"]
         for name, value in synth.env.items():
             argv += ["-e", f"{name}={value}"]
-    return argv + [*net_rules(domains), image]
+    return argv + [*net_rules(domains, everything), image]
 
 
 def copy_config_argv(handle: str) -> list[str]:
@@ -318,7 +330,14 @@ def prepare(profile: Profile) -> Run:
     # Without the token: nothing can use it until the agent is installed, and everything
     # between here and there can fail (SPEC §4.3).
     synth = synth_config.build(
-        profile, agent, run_dir, guest_dir=GUEST_CONFIG, defer_credentials=True
+        profile,
+        agent,
+        run_dir,
+        guest_dir=GUEST_CONFIG,
+        defer_credentials=True,
+        # A guest tab starts in the mount, not in the host directory behind it, so that is
+        # the path the agent asks about trusting.
+        workdir=GUEST_WORKDIR,
     )
     if synth.missing:
         left_out = ", ".join(synth.missing)
@@ -331,7 +350,16 @@ def prepare(profile: Profile) -> Run:
         )
     image = agent.image or DEFAULT_IMAGE
     try:
-        _run(*create_argv(handle, image, workdir, profile.allowed_domains(), synth))
+        _run(
+            *create_argv(
+                handle,
+                image,
+                workdir,
+                profile.allowed_domains(),
+                synth,
+                profile.opens_every_domain(),
+            )
+        )
         if agent.install:
             _provision(handle, agent, image)
         if synth.dir is not None:

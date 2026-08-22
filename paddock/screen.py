@@ -691,6 +691,7 @@ def tick(
     rows: list[tuple[str, bool]],
     hint: str = "",
     box: tuple[str, str, str] | None = None,
+    refused: dict[int, str] | None = None,
 ) -> list[int] | tuple[list[int], str]:
     """A checklist. What is ticked, whether it was left with enter, escape or the Back row.
 
@@ -698,6 +699,11 @@ def tick(
 
     With a `box` of (label, value, hint) under the list, tab moves between the two and the
     answer is both: the ticks and what the box holds.
+
+    `refused` says which rows cannot be ticked here and why, the way `pick` refuses a row:
+    the reason takes the key line rather than the tick quietly not happening, and it goes
+    when the cursor moves on. A refused row that is already ticked stays ticked, because it
+    is an answer the profile gave and not one this screen may throw away.
     """
     state: dict = {
         "cursor": 1,  # the Back row is first, so the first thing to tick is second
@@ -705,10 +711,12 @@ def tick(
         "filtering": False,
         "keys": False,
         "in_box": False,
+        "error": "",
         "typed": box[1] if box else "",
         "ticked": {index for index, (_, on) in enumerate(rows) if on},
     }
     labels = [label for label, _ in rows]
+    why = refused or {}
 
     def shown() -> list[int]:
         return matching(labels, state["filter"])
@@ -722,12 +730,17 @@ def tick(
     @keys.add("space", filter=on_list)
     def _(event: object) -> None:
         places = shown()
-        if state["cursor"] and places:  # the Back row has nothing to tick
-            state["ticked"] ^= {places[state["cursor"] - 1]}
+        if not state["cursor"] or not places:  # the Back row has nothing to tick
+            return
+        index = places[state["cursor"] - 1]
+        state["error"] = why.get(index, "") if index not in state["ticked"] else ""
+        if not state["error"]:
+            state["ticked"] ^= {index}
 
     @keys.add("a", filter=on_list)
     def _(event: object) -> None:
-        state["ticked"] |= set(shown())  # all of what is on screen, so a filter narrows it
+        # All of what is on screen, so a filter narrows it. A refused row is not "all".
+        state["ticked"] |= {index for index in shown() if index not in why}
 
     @keys.add("n", filter=on_list)
     def _(event: object) -> None:
@@ -752,6 +765,8 @@ def tick(
         )
 
     def foot(width: int) -> str:
+        if state["error"]:
+            return cut(state["error"], width)
         return _keys_or_filter(state, footer_line(BOX_KEYS if box else TICK_KEYS, width), width)
 
     return _run(body, foot, keys, state)
