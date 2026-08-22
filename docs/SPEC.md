@@ -362,8 +362,10 @@ offering the last session as a zeroth option: every session is one field away.
 for stays on the list and says why it cannot be chosen, rather than vanishing.
 
 The keys match herdr's navigate mode: arrows with `hjkl` beside them, enter to
-take, escape to back out one level, and a digit to jump to a field. Two promises
-hold everywhere. **Escape never loses an answer**: it closes what is open and
+take, escape to back out one level, and a digit to jump to a field. Every list
+and checklist draws the way back as its first row as well, so the key is never
+the only way anyone could find. The form has no such row, because nothing is
+before it. Two promises hold everywhere. **Escape never loses an answer**: it closes what is open and
 leaves the value it was editing in place. **Ctrl-c cancels the whole popup**, at
 any depth, and costs nothing, because the chooser returns a plan and `cli.py` is
 the only thing that acts on one. Filtering a long list is a mode `/` opens, so

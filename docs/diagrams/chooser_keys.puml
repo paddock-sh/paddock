@@ -4,7 +4,7 @@ title paddock: the chooser's screens, and the keys between them
 skinparam shadowing false
 hide empty description
 
-[*] --> Form : the popup opens on the answers,\nfilled in from the profile used last
+[*] --> Form : the popup opens on the answers,\nfilled in from paddock's own defaults
 
 state Form : one field per decision, the hint for the\none the cursor is on, then Launch and Cancel
 state "List" as Pick : one row per choice, what it means beside it
@@ -14,8 +14,8 @@ state "Box" as Type : one line to type, and what is wrong with it
 Form --> Pick : enter on Open, Profile, Backend, Agent or Files
 Form --> Tick : enter on Tools, Network or Skills
 Form --> Type : enter on a name or a typed command
-Pick --> Form : enter takes the row\nesc takes nothing, so the old value stands
-Tick --> Form : enter or esc, and the ticks stand either way
+Pick --> Form : enter takes the row\nesc, or the Back row, takes nothing:\nthe old value stands
+Tick --> Form : enter, esc or the Back row,\nand the ticks stand either way
 Type --> Form : enter when the check passes\nesc keeps what was typed
 Form --> [*] : L, or enter on Launch\nesc, or enter on Cancel: nothing at all
 
@@ -33,6 +33,12 @@ note right of Tick
 end note
 
 note right of Type
+  Every list and every checklist draws the way
+  back as its first row, so escape has something
+  on screen saying what it does. The form has no
+  such row: nothing is before it, and its key
+  line says cancel rather than back.
+
   `?` puts the whole key map over whatever is
   on screen, and any key takes it off again.
 

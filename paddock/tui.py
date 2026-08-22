@@ -216,7 +216,9 @@ def choose(cwd: Path) -> Plan | None:
         if what == screen.LAUNCH:
             return plan_from(answers, base, cwd)
         if what == screen.SAVE:
-            answers = _edit_save_as(answers)
+            # A local or an attached tab permits nothing, so it has nothing to save either.
+            if editable(answers, "advanced"):
+                answers = _edit_save_as(answers)
         elif editable(answers, FIELDS[cursor]):
             answers = _edit(FIELDS[cursor], answers, base, saved, registry, live, cwd)
 
@@ -260,7 +262,7 @@ def _edit(
     if field == "backend":
         return _edit_backend(answers)
     if field == "agent":
-        return _edit_agent(answers, registry)
+        return _edit_agent(answers, base, registry)
     if field == "tools":
         return _edit_tools(answers, base)
     if field == "network":
@@ -275,7 +277,8 @@ def _edit(
 def _edit_open(answers: dict, live: list[sessions.Session]) -> dict:
     choices = open_choices(live)
     rows = [(title, open_hint(value)) for title, value in choices]
-    index = screen.pick(FIELD_TITLES["open"], rows, rule_after=1)
+    where = _at(choices, str(answers.get("open", NEW)))
+    index = screen.pick(FIELD_TITLES["open"], rows, cursor=where, rule_after=open_rule(live))
     return answers if index is None else dict(answers, open=choices[index][1])
 
 
@@ -283,7 +286,8 @@ def _edit_profile(answers: dict, saved: dict[str, Profile], registry: dict[str, 
     choices = profile_choices(saved)
     rows = [(title, profile_hint(value, saved, registry)) for title, value in choices]
     note = f"{len(saved)} saved"
-    index = screen.pick(FIELD_TITLES["profile"], rows, note, rule_after=len(choices) - 2)
+    where = _at(choices, str(answers.get("profile", CUSTOM)))
+    index = screen.pick(FIELD_TITLES["profile"], rows, note, where, rule_after=len(choices) - 2)
     if index is None:
         return answers
     return settle(dict(answers, profile=choices[index][1]), "profile")
@@ -293,14 +297,16 @@ def _edit_backend(answers: dict) -> dict:
     rows = backend_choices()
     refused = {index: why for index, (_, _, why) in enumerate(rows) if why}
     choices = [(key, hint) for key, hint, _ in rows]
-    index = screen.pick(FIELD_TITLES["backend"], choices, refused=refused)
+    where = _at([(key, key) for key, _, _ in rows], str(answers.get("backend", SRT)))
+    index = screen.pick(FIELD_TITLES["backend"], choices, cursor=where, refused=refused)
     return answers if index is None else dict(answers, backend=rows[index][0])
 
 
-def _edit_agent(answers: dict, registry: dict[str, AgentSpec]) -> dict:
+def _edit_agent(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
     choices = agent_choices(registry)
     rows = [(title, agent_hint(value, registry)) for title, value in choices]
-    index = screen.pick(FIELD_TITLES["agent"], rows)
+    where = _at(choices, str(answers.get("agent", base.agent)))
+    index = screen.pick(FIELD_TITLES["agent"], rows, cursor=where)
     if index is None:
         return answers
     key = choices[index][1]
@@ -335,20 +341,25 @@ def _edit_network(answers: dict, base: Profile) -> dict:
 
 
 def _edit_files(answers: dict, base: Profile, cwd: Path) -> dict:
+    """Two rows and a box, and escape from the box backs out to the rows, not to the form."""
     shares = shares_a_directory(answers, base)
-    index = screen.pick(FIELD_TITLES["files"], list(FILES_CHOICES), cursor=int(shares))
-    if index is None:
-        return answers
-    if index == 0:
-        return settle(dict(answers, share=False), "files")
-    typed = screen.type_in(
-        "Directory",
-        str(answers.get("directory") or base.shared_dir or cwd),
-        EDITOR_HINTS["directory"],
-        check=lambda text: missing_directory(text, cwd),
-    )
-    shared = resolve_shared_dir(typed, cwd)
-    return settle(dict(answers, share=bool(shared), directory=shared), "files")
+    while True:
+        index = screen.pick(FIELD_TITLES["files"], list(FILES_CHOICES), cursor=int(shares))
+        if index is None:
+            return answers
+        if index == 0:
+            return settle(dict(answers, share=False), "files")
+        typed, backed_out = screen.typed_in(
+            "Directory",
+            str(answers.get("directory") or base.shared_dir or cwd),
+            EDITOR_HINTS["directory"],
+            check=lambda text: missing_directory(text, cwd),
+        )
+        shared = resolve_shared_dir(typed, cwd)
+        answers = settle(dict(answers, share=bool(shared), directory=shared), "files")
+        if not backed_out:
+            return answers
+        shares = bool(shared)
 
 
 def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
@@ -383,12 +394,24 @@ def _boxes(rows: list[tuple[str, str, bool]]) -> list[tuple[str, bool]]:
 
 
 def remembered_key(command: str, registry: dict[str, AgentSpec]) -> str:
-    """The key a typed command is saved under, asked for only when it would take another's."""
+    """The key a typed command is saved under, asked for only when it would take another's.
+
+    The box opens on a name nothing answers to, so taking it as it stands cannot fail. The
+    colliding one is what the question is about, not what it offers.
+    """
     key = suggested_key(command, registry)
     known = registry.get(key)
     if known is not None and known.command != command:
-        key = screen.type_in(key_clash(key), key).strip()
+        key = screen.type_in(key_clash(key), free_key(key, registry)).strip()
     return key
+
+
+def free_key(key: str, registry: dict[str, AgentSpec]) -> str:
+    """`key` if the registry has no such agent, else the same with a number after it."""
+    candidate, count = key, 2
+    while candidate in registry:
+        candidate, count = f"{key}-{count}", count + 1
+    return candidate
 
 
 def missing_directory(typed: str, cwd: Path) -> str:
@@ -532,7 +555,7 @@ def _field_values(
         "tools": tools or "none",
         "network": ", ".join(profile.network_presets) or "none",
         "files": _files_value(opened, profile, cwd),
-        "skills": " ".join(profile.skills) or "none",
+        "skills": _skills_value(profile, registry),
         "advanced": _advanced_value(plan),
     }
 
@@ -548,6 +571,20 @@ def _field_notes(answers: dict, base: Profile) -> dict[str, str]:
         "tools": f"({len(profile.tools)})" if profile.tools else "",
         "network": f"({counted})",
     }
+
+
+def _skills_value(profile: Profile, registry: dict[str, AgentSpec]) -> str:
+    """An agent with no skills directory says so, rather than opening an empty list."""
+    if profile.skills:
+        return " ".join(profile.skills)
+    offered = skill_choices(registry.get(profile.agent, AgentSpec()), [])
+    return "none" if offered else "none for this agent"
+
+
+def _at(choices: list[tuple[str, str]], value: str) -> int:
+    """Where an answer already given sits on its list, so opening it changes nothing."""
+    values = [item[1] for item in choices]
+    return values.index(value) if value in values else 0
 
 
 def _backend_value(answers: dict) -> str:
@@ -662,6 +699,11 @@ def advanced_choices(answers: dict) -> list[tuple[str, str, str]]:
         ("Name", f"{name}. {EDITOR_HINTS['name']}", "name"),
         ("Save as profile", f"{save_as}. {EDITOR_HINTS['save_as']}", "save_as"),
     ]
+
+
+def open_rule(live: list[sessions.Session]) -> int:
+    """Where the line under the two ways to start a tab goes, when there is anything under it."""
+    return 1 if live else -1
 
 
 def open_hint(value: str) -> str:

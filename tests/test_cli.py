@@ -332,6 +332,22 @@ def test_a_launch_that_fails_says_why_instead_of_tracing_back(
     assert capsys.readouterr().err.strip() == f"paddock: {error}"
 
 
+class Redirected:
+    """A stream that is not a terminal, which is what a pipe or a file looks like."""
+
+    def isatty(self) -> bool:
+        return False
+
+
+def test_a_redirected_screen_is_no_more_a_terminal_than_a_redirected_keyboard(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The form would be written into the redirect, and the terminal left blank."""
+    monkeypatch.setattr(cli.sys, "stdout", Redirected())
+
+    assert cli.has_terminal() is False
+
+
 def test_without_a_terminal_the_chooser_says_which_flag_does_the_job(
     fake_sessions, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

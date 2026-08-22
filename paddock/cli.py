@@ -181,8 +181,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def has_terminal() -> bool:
-    """The chooser draws a screen, so it needs one. Without it, say which flag does the job."""
-    return sys.stdin.isatty()
+    """The chooser reads keys and draws a screen, so both of those ends have to be a terminal.
+
+    Redirected output would take the screen with it and leave the terminal blank. The message
+    that says so goes to stderr either way, which is where every other one goes.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _fail(message: str) -> int:

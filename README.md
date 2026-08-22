@@ -46,13 +46,15 @@ paddock                          claude-default            in ~/dev/paddock
 
    [ Launch ]        [ Cancel ]
 
-enter edit   ^v move   1-9 jump   L launch   s save   esc close   ? keys
+enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys
 ```
 
 The form is filled in already, so the ordinary case is one key press: `L`. Every
-field is one arrow key or one digit away, enter opens it, and escape closes what
-it opened without losing what you did there. Ctrl-c cancels the whole popup from
-any depth, and nothing has been launched or written by then.
+field is one arrow key or one digit away, and enter opens it. Escape closes what
+it opened without losing what you did there, and every list and checklist draws a
+**← Back** row that does the same thing for anyone who would rather see it than
+know it. Escape on the form itself cancels, because nothing is before it. Ctrl-c
+cancels from any depth, and nothing has been launched or written by then.
 
 | Field | What it decides |
 | --- | --- |
@@ -66,8 +68,9 @@ any depth, and nothing has been launched or written by then.
 | `Skills` | Only the ticked ones exist inside the sandbox at all |
 | `Advanced` | The session name, and saving these answers as a profile |
 
-`s` saves the answers as a profile, which makes them one pick next time. Plain
-new-tab moves to `prefix+shift+c`.
+`s` saves the answers as a profile, which makes them one pick next time. It is
+for a sandbox: a local tab and an attached one have no permissions of their own
+to save. Plain new-tab moves to `prefix+shift+c`.
 
 ## Sessions
 

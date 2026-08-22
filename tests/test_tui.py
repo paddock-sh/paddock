@@ -723,6 +723,10 @@ def test_the_confirm_says_whether_the_answers_still_match_the_profile() -> None:
 # --- the chooser, driven by real key presses --------------------------------
 
 # The keys, as the parser sees them. A digit jumps to a field and enter opens it.
+#
+# Escape needs a byte after it before the parser can be sure it is not the start of an arrow
+# key, and the screen that is closing swallows that byte. So a screen left with escape in the
+# middle of a run is sent two, and `k` moves up where an arrow would be eaten.
 ESC, CTRL_C = "\x1b", "\x03"
 DOWN, UP, TAB = "\x1b[B", "\x1b[A", "\t"
 OPEN_FIELD, PROFILE, BACKEND, AGENT = "1\r", "2\r", "3\r", "4\r"
@@ -789,7 +793,7 @@ def test_another_profile_hands_over_all_of_its_answers(
 ) -> None:
     save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
 
-    plan = press(f"{PROFILE}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}{UP}\rL", lambda: tui.choose(tmp_path))
 
     assert plan.profile == load_profiles()["hardened"]
 
@@ -822,7 +826,7 @@ def test_choosing_another_agent_drops_the_skills_that_came_with_the_last_one(
     monkeypatch.setenv("HOME", str(tmp_path))
     save_profile(Profile(name="reviewing", agent="claude", skills=["reviewer"]))
 
-    plan = press(f"{PROFILE}{DOWN}\r{AGENT}{DOWN}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}\r{AGENT}{DOWN}\rL", lambda: tui.choose(tmp_path))
 
     assert plan.profile.agent == "codex"
     assert plan.profile.skills == []
@@ -832,7 +836,7 @@ def test_a_typed_command_is_asked_for_on_the_agent_field(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """Three questions became one field: the agent, the command, and the key it is saved under."""
-    keys = f"{AGENT}{DOWN * 6}\rnpx claude-code\rL"
+    keys = f"{AGENT}{DOWN * 5}\rnpx claude-code\rL"
 
     plan = press(keys, lambda: tui.choose(tmp_path))
 
@@ -880,7 +884,7 @@ def test_the_isolated_scratch_directory_is_the_other_answer_to_the_same_field(
 ) -> None:
     save_profile(Profile(name="shared", shared_dir=str(tmp_path)))
 
-    plan = press(f"{PROFILE}{DOWN}{DOWN}\r{FILES}{UP}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}\r{FILES}{UP}\rL", lambda: tui.choose(tmp_path))
 
     assert plan.profile.shared_dir == ""
 
@@ -922,7 +926,7 @@ def test_the_whole_form_becomes_one_plan(
     """The pin: every field answered, and the one plan they describe."""
     monkeypatch.setenv("HOME", str(tmp_path))  # no skills, so that field opens nothing
     keys = (
-        f"{AGENT}{DOWN}{DOWN}\r"  # codex
+        f"{AGENT}{DOWN}\r"  # codex
         f"{TOOLS} \r"  # untick git
         f"{NETWORK} {TAB}example.com\r"  # github only, plus a domain
         f"{FILES}{DOWN}\r\r"  # share this directory
@@ -945,3 +949,103 @@ def test_the_whole_form_becomes_one_plan(
         save_as="review-profile",
         backend="srt",
     )
+
+
+def test_every_list_opens_on_the_answer_it_already_has(
+    press, fake_sessions, config_dir: Path, tmp_path: Path
+) -> None:
+    """Enter on a list you only meant to look at must not quietly change the answer."""
+    save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
+
+    opened = press(f"{OPEN_FIELD}{DOWN}\r{OPEN_FIELD}\rL", lambda: tui.choose(tmp_path))
+    profile = press(f"{PROFILE}{UP}{UP}\r{PROFILE}\rL", lambda: tui.choose(tmp_path))
+    agent = press(f"{AGENT}{DOWN}\r{AGENT}\rL", lambda: tui.choose(tmp_path))
+
+    assert opened == tui.Local(cwd=str(tmp_path))
+    assert profile.profile == load_profiles()["hardened"]
+    assert agent.profile.agent == "codex"
+
+
+def test_the_backend_list_opens_on_the_backend_that_was_chosen(
+    press, fake_sessions, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Reopening it and pressing enter reverted the microVM to srt, which is a silent downgrade."""
+    monkeypatch.setattr(shutil, "which", {"msb": "/opt/bin/msb"}.get)
+
+    plan = press(f"{BACKEND}{DOWN}\r{BACKEND}\rL", lambda: tui.choose(tmp_path))
+
+    assert plan.backend == "msb"
+
+
+def test_a_key_clash_offers_a_name_that_is_free(
+    press, fake_sessions, config_dir: Path, tmp_path: Path
+) -> None:
+    """Offering the taken name back would fail the launch after the whole form was filled in."""
+    tui.remember_agent("claude-custom", "some other wrapper")
+    keys = f"{AGENT}{DOWN * 6}\rclaude --model opus\r\rL"
+
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan.profile.agent == "claude-custom-2"
+    assert plan.agent_command == "claude --model opus"
+
+
+def test_a_free_key_is_one_the_registry_does_not_answer_to(config_dir: Path) -> None:
+    registry = load_agents()
+
+    assert tui.free_key("wrapped", registry) == "wrapped"
+    assert tui.free_key("claude", registry) == "claude-2"
+
+
+def test_saving_answers_needs_answers_to_save(press, fake_sessions, tmp_path: Path) -> None:
+    """A local tab permits nothing, so there is nothing for the s key to write down."""
+    plan = press(f"{OPEN_FIELD}{DOWN}\rsL", lambda: tui.choose(tmp_path))
+
+    assert plan == tui.Local(cwd=str(tmp_path))
+
+
+def test_the_open_list_rules_off_the_sessions_only_when_there_are_some() -> None:
+    assert tui.open_rule([]) == -1
+    assert tui.open_rule([Session(session_id="s1")]) == 1
+
+
+def test_escape_from_the_directory_box_goes_back_to_the_files_list(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """One level at a time: the box was opened from the list, so escape lands on the list."""
+    plan = press(f"{FILES}{DOWN}\r{ESC}{ESC}k\rL", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.shared_dir == ""
+
+
+def test_the_skills_field_says_when_the_agent_has_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Section 4.4: a field with nothing to offer says so, rather than opening on nothing."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    bare = tui.form_rows({}, Profile(), load_agents(), [])
+
+    (tmp_path / ".claude" / "skills" / "reviewer").mkdir(parents=True)
+    offered = tui.form_rows({}, Profile(), load_agents(), [])
+
+    assert dict((label, value) for label, value, _, _ in bare)["Skills"] == "none for this agent"
+    assert dict((label, value) for label, value, _, _ in offered)["Skills"] == "none"
+
+
+def test_taking_the_back_row_leaves_a_field_as_it_was(
+    press, fake_sessions, config_dir: Path, tmp_path: Path
+) -> None:
+    """The row and the key are one answer: one level back, with every answer kept."""
+    save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
+
+    plan = press(f"{PROFILE}{UP}{UP}\r{PROFILE}{UP}{UP}\rL", lambda: tui.choose(tmp_path))
+
+    assert plan.profile == load_profiles()["hardened"]
+
+
+def test_the_back_row_on_a_checklist_keeps_the_ticks(
+    press, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    plan = press(f"{TOOLS} {UP * 4}\rL", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.tools == ["rg", "curl"]
