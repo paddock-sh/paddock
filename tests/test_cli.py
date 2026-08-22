@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from paddock import cli, log, sessions, tui
+from paddock import cli, log, recent, sessions, tui
 from paddock.backends.srt import SrtNotFound
 from paddock.herdr_client import HerdrError
-from paddock.profiles import Profile, load_profiles
+from paddock.profiles import Profile, load_profiles, save_profile
 from tests import fake_sessions as fake_sessions_module
 from tests.fake_sessions import Session
 
@@ -585,6 +585,55 @@ def test_gc_takes_no_arguments() -> None:
         cli.parse_args(["gc", "review"])
 
 
+def test_a_launch_is_what_the_chooser_opens_on_next_time(
+    fake_sessions, chooser, config_dir: Path, state_dir: Path
+) -> None:
+    """The profile the answers stood on, so a changed launch still opens on the one it began as."""
+    save_profile(Profile(name="hardened"))
+    changed = Profile(name="hardened+custom", tools=["git"])
+    chooser(tui.NewSession(profile=changed, started_from="hardened"))
+
+    assert cli.main(["choose"]) == 0
+    assert recent.last_profile() == "hardened"
+
+
+def test_answers_that_stand_on_nothing_saved_are_not_opened_on(
+    fake_sessions, chooser, state_dir: Path
+) -> None:
+    """Custom is not a profile anyone can come back to, so it is not remembered as one."""
+    chooser(tui.NewSession(profile=Profile(), started_from=tui.CUSTOM))
+
+    assert cli.main(["choose"]) == 0
+    assert recent.last_profile() == ""
+
+
+def test_saving_the_answers_is_what_the_next_popup_opens_on(
+    fake_sessions, chooser, config_dir: Path, state_dir: Path
+) -> None:
+    chooser(tui.NewSession(profile=Profile(), save_as="review", started_from=tui.CUSTOM))
+
+    assert cli.main(["choose"]) == 0
+    assert recent.last_profile() == "review"
+
+
+def test_a_session_told_to_keep_running_is_written_down_as_keeping_running(
+    fake_sessions, chooser
+) -> None:
+    """SPEC 3.4's one field a caller sets on purpose, asked for under Advanced."""
+    chooser(tui.NewSession(profile=Profile(), keep_alive=True))
+
+    assert cli.main(["choose"]) == 0
+    assert names(rest(fake_sessions.calls)) == ["launch", "set_keep_alive"]
+    assert fake_sessions.calls[-1][2] is True
+
+
+def test_a_session_that_ends_with_its_last_tab_is_left_alone(fake_sessions, chooser) -> None:
+    chooser(tui.NewSession(profile=Profile()))
+
+    assert cli.main(["choose"]) == 0
+    assert names(rest(fake_sessions.calls)) == ["launch"]
+
+
 # --- wiring paddock into herdr ---------------------------------------------
 
 
@@ -754,6 +803,7 @@ def test_the_fake_sessions_module_matches_the_real_one() -> None:
         "create_session",
         "attach",
         "launch",
+        "set_keep_alive",
         "remove_pane",
         "reconcile",
         "launch_local",

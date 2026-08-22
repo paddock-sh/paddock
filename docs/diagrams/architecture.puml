@@ -17,8 +17,9 @@ package "paddock" {
   [cli.py\nchoose | launch | attach | profiles | gc | logs | init\n~--cwd, ~--dry-run] as CLI
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
   [tui.py\nthe chooser: fields, words and rules\nanswers -> a plan] as TUI
-  [screen.py\nthe five screens: form, list, checklist,\nbox, and the one a failed launch ends on\none prompt_toolkit Application each,\nplus the progress lines a slow launch prints] as Screen
-  [sessions.py\nsession registry\ncreate | attach | remove_pane\n(collect on the last pane)] as Sessions
+  [screen.py\nthe screens: form, list, checklist, box,\nconfirm, and the one a failed launch ends on\none prompt_toolkit Application each,\nplus the progress lines a slow launch prints] as Screen
+  [recent.py\nthe profile each workspace\nlaunched last] as Recent
+  [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
   [agents.py\nagent registry\ncommand, domains, required tools,\ncredential paths,\nimage + install for the guest] as Agents
   [synth_config.py\nsynthesized config dir\n(credentials + ticked skills\n+ MCP whitelist)] as SynthConfig
@@ -49,11 +50,14 @@ User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
 TUI --> CLI : one plan:\nlocal | attach | new session
-TUI --> Screen : draws the form, then one editor\nper field over it, then what a launch\nis doing and why it failed
+TUI --> Screen : draws the form, one editor per field\nover it, the confirm, and what a launch\nis doing and why it failed
+TUI --> Recent : which profile to open on
+CLI --> Recent : remembers the profile a launch used
 TUI --> Profiles : load / save profile
 TUI --> Agents : list agents, remember a typed command
 TUI --> Sessions : list live sessions
 Sessions ..> RunDir : registry survives\nHerdr restart
+Recent ..> RunDir : last-profile.json,\nper workspace
 Profiles ..> ConfigFiles : reads / writes
 Agents ..> ConfigFiles : reads user agents/*.json
 

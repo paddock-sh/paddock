@@ -4,12 +4,13 @@ title paddock: the chooser's screens, and the keys between them
 skinparam shadowing false
 hide empty description
 
-[*] --> Form : the popup opens on the answers,\nfilled in from paddock's own defaults
+[*] --> Form : the popup opens on the answers,\nfilled in from the profile this\nworkspace launched last
 
 state Form : one field per decision, the hint for the\none the cursor is on, then Launch and Cancel
 state "List" as Pick : one row per choice, what it means beside it
-state "Checklist" as Tick : two columns, a count in the header
+state "Checklist" as Tick : as many columns as the width holds,\nand a count in the header
 state "Box" as Type : one line to type, and what is wrong with it
+state Confirm : the resolved policy in full, over\nLaunch, Back to the form and Cancel.\n`s` saves the answers from here
 state "Failed" as Failed : what went wrong, the log path,\nand the two ways on
 
 Form --> Pick : enter on Open, Profile, Backend, Agent or Files
@@ -18,10 +19,12 @@ Form --> Type : enter on a name or a typed command
 Pick --> Form : enter takes the row\nesc, or the Back row, takes nothing:\nthe old value stands
 Tick --> Form : enter, esc or the Back row,\nand the ticks stand either way
 Type --> Form : enter when the check passes\nesc keeps what was typed
-Form --> Failed : the launch raised before any pane existed\n(cli.py draws this, not the form)
+Form --> Confirm : L, or enter on Launch,\nfor a sandbox
+Form --> [*] : L on a local or an attached tab:\nno policy, so nothing to confirm\nesc, or enter on Cancel: nothing at all
+Confirm --> Form : Back to the form, or esc,\nwith every answer where it was
+Confirm --> Failed : Launch, and it raised before any pane existed\n(cli.py draws this, not the chooser)
 Failed --> Form : enter on Back to the form, or esc:\nthe answers that made the plan, back
-Failed --> [*] : enter on Cancel
-Form --> [*] : L, or enter on Launch\nesc, or enter on Cancel: nothing at all
+Failed --> [*] : Launch that opened a pane, or Cancel here
 
 note right of Tick
   `/` opens a filter on a list and on a
@@ -30,10 +33,12 @@ note right of Tick
   a checklist can keep `a` for all and `n`
   for none while still narrowing.
 
-  A terminal too short for every row scrolls
-  them around the cursor rather than clipping
-  them, so the cursor, the hint, what you have
-  typed and the buttons are always on screen.
+  The popup is 70% of the terminal minus its
+  sidebar, so an ordinary one is about 48 by 18.
+  Every screen scrolls its rows rather than
+  clipping them, and pins what must never scroll
+  off: the cursor, the hint, what you have typed,
+  and the confirm's own three buttons.
 end note
 
 note right of Type

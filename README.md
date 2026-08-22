@@ -52,8 +52,11 @@ paddock                          claude-default            in ~/dev/paddock
 enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys
 ```
 
-The form is filled in already, so the ordinary case is one key press: `L`. Every
-field is one arrow key or one digit away, and enter opens it. Escape closes what
+The form is filled in already, so the ordinary case is two key presses: `L`, then
+enter on the confirm. The confirm stays even for a repeat launch, because it is
+the whole promise of the tool: the thing that grants the permissions says out
+loud what it is granting. Every field is one arrow key or one digit away, and
+enter opens it. Escape closes what
 it opened without losing what you did there, and every list and checklist draws a
 **← Back** row that does the same thing for anyone who would rather see it than
 know it. Escape on the form itself cancels, because nothing is before it. Ctrl-c
@@ -69,7 +72,7 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Network` | The domain allowlist, by group, plus any domain you add. Everything else is refused by the OS |
 | `Files` | An isolated scratch directory, or the one host directory the sandbox may change |
 | `Skills` | Only the ticked ones exist inside the sandbox at all |
-| `Advanced` | The session name, and saving these answers as a profile |
+| `Advanced` | The session name, saving these answers as a profile, keeping the session running after its last tab, MCP servers, extra writable paths, denied reads and the system PATH |
 
 `Open` lists every live session by its name, backend, agent, profile and
 attached tabs, so a second tab on one of them is a pick and not a screen of its
@@ -78,9 +81,21 @@ inside the same sandbox, which is `paddock attach <session> --shell` on the
 command line. A shell tab is labelled `sbx:<name> (shell)` and counts as a tab of
 the session like any other.
 
-`s` saves the answers as a profile, which makes them one pick next time. It is
-for a sandbox: a local tab and an attached one have no permissions of their own
-to save. Plain new-tab moves to `prefix+shift+c`.
+Launching a sandbox ends on a confirm: the one screen that shows the policy
+resolved, with the domain groups expanded into the domains they open, and Launch,
+Back to the form and Cancel on it. A local tab has no policy, so it has no
+confirm. A launch that never gets as far as a pane comes back on a screen of its
+own, with the reason, the log path and the way back to the form.
+
+The form opens on the profile that workspace launched last, so the ordinary run
+is the same sandbox as yesterday's, unchanged, in those two presses. `s` saves the
+answers as a profile, which makes them one pick anywhere. Plain new-tab moves to
+`prefix+shift+c`.
+
+The popup herdr opens is smaller than the terminal it is in, so the screens are
+built for a small one: they scroll their rows, they pin what must never scroll
+off, such as the confirm's buttons, and they grow into a bigger popup up to a
+line length that is still comfortable to read.
 
 ## Sessions
 
