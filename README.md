@@ -74,6 +74,11 @@ v1 backend, attached tabs share a settings file and a workdir but get **separate
 process trees**: shared files, never a shared runtime. See
 [docs/SPEC.md §3](docs/SPEC.md#3-sandbox-sessions).
 
+When a session's last tab closes it is collected: dropped from the registry, its
+copied credentials deleted, and its microVM destroyed if it had one. Nothing is
+running to watch for that, so it happens at the next `paddock` command rather
+than the instant the tab closes. `paddock gc` forces it.
+
 ## Trust model
 
 Sandboxes run under [Anthropic's sandbox-runtime](https://github.com/anthropics/sandbox-runtime)
@@ -108,6 +113,7 @@ The popup is the usual way in. The same jobs work without questions:
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock profiles                # list saved profiles
+paddock gc                      # collect sessions whose tabs are all closed
 paddock init                    # wire the chooser into herdr's config
 ```
 

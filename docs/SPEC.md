@@ -324,6 +324,11 @@ reported and not raised: the session is over either way. Removal is best effort.
 closing is no place to raise, so an `msb` that refuses or cannot be reached leaves the VM
 up, and the message names the handle and the `msb rm -f` that finishes the job.
 
+**A VM outlives its last tab, and then some.** Nothing watches herdr, so a session
+whose tabs have all closed is collected at the next paddock invocation rather than
+when the tab closed (§3.4). Until then the microVM is still running and still holding
+memory. `paddock gc` is the explicit run, and `msb ls` is how to check.
+
 **Attaching checks the VM first**, with `msb ls --format json`. `msb exec` into a VM
 that is gone fails after the pane exists, which leaves a dead tab and a pane id nothing
 can use. A session whose VM has gone is dropped from the registry there and then, the
@@ -621,6 +626,31 @@ session. The prompt that offers keep-alive arrives with the TUI.
 Both failure modes cost something real: a discarded microVM loses running state, a
 leaked one holds memory.
 
+**How a closed tab is noticed: reconciliation.** herdr sends pane events over its
+socket, but nothing on paddock's side is running to hear them: paddock starts, does
+one job and exits. So `sessions.reconcile()` compares the registry with `herdr pane
+list`, drops the pane ids herdr no longer has, and collects the sessions that ran out
+of them. It runs first in every command that opens or lists sessions (`choose`,
+`launch`, `attach`), and `paddock gc` is that on its own. A herdr that does not answer
+is a no-op: no pane list is not the same as no panes, and treating it as one would
+collect every session.
+
+That makes collection **prompt, not instant**. A closed tab's session lives on until
+the next paddock invocation. So the §8 guarantee is that the token does not outlive
+the session, enforced at every paddock invocation, and the same holds for the VM an
+msb session leaves running. `paddock gc` is how to force it.
+
+Two reconciles at once are safe. The pane list and the registry are both read with the
+lock held, so a tab another paddock opened and registered a moment earlier is in the
+pane list too and never reads as closed. A session with no panes at all is left alone:
+that is a session between `create_session` and its first `attach`, not one that lost
+its last tab.
+
+A watcher process subscribed to herdr's `pane_closed` events was the alternative.
+Nothing owns its lifecycle, so it would have to be started, restarted after a crash
+and stopped, and all it buys is the gap between a tab closing and the next paddock
+command. It was not built.
+
 Two other endings get the same treatment, because `create_session` boots a sandbox
 before any tab exists:
 
@@ -876,7 +906,7 @@ should be small, and mostly plain functions over a `Profile`:
 
 | Module | Responsibility | Status |
 | --- | --- | --- |
-| `paddock/sessions.py` | Session registry in `~/.local/state/paddock/`: create, list, attach, lifecycle (§3), and the backend dispatch dict (§2) | Done; workspace bindings (§3.3) wait for the TUI |
+| `paddock/sessions.py` | Session registry in `~/.local/state/paddock/`: create, list, attach, lifecycle and reconciliation (§3), and the backend dispatch dict (§2) | Done; workspace bindings (§3.3) wait for the TUI |
 | `paddock/profiles.py` | `Profile` dataclass, network presets, tool candidates, load/save | Done |
 | `paddock/agents.py` | Agent registry and per-agent layer-2 config | Registry done; the layer-2 `permissions` block is not generated yet |
 | `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |
@@ -884,7 +914,7 @@ should be small, and mostly plain functions over a `Profile`:
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `gc`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
@@ -903,8 +933,9 @@ testable on a Linux CI runner with no sandbox present.
 - How should a pane show what permissions it actually got? A written manifest in
   the workdir is the current favourite.
 - What happens to an srt session's run directory when the session is collected?
-  The credential file goes, because it may be an exported token (§4.3). The rest
-  stays: deleting a workdir loses work, keeping it leaks disk.
+  The credential file goes, because it may be an exported token (§4.3), at the
+  next paddock invocation that reconciles (§3.4) and not the instant the tab
+  closed. The rest stays: deleting a workdir loses work, keeping it leaks disk.
 - Can a tab move between sessions after creation, or is detach-and-relaunch the
   honest answer, given that srt cannot migrate a running process tree?
 - Is v2 per-binary blocking (§4.1) worth the enumeration cost, or is the honest

@@ -32,11 +32,14 @@ class Session:
 calls: list[tuple] = []
 # Sessions a test wants to exist.
 registry: list[Session] = []
+# Sessions a test wants `reconcile` to say it collected.
+collects: list[Session] = []
 
 
 def reset() -> None:
     calls.clear()
     registry.clear()
+    collects.clear()
 
 
 def list_sessions() -> list[Session]:
@@ -80,6 +83,11 @@ def launch(profile: Profile, name: str | None = None, backend: str = "srt") -> t
 
 def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
+
+
+def reconcile() -> list[Session]:
+    calls.append(("reconcile",))
+    return list(collects)
 
 
 def launch_local(cwd: Path | None = None) -> str:
