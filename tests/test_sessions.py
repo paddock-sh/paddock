@@ -277,6 +277,37 @@ def test_a_keep_alive_session_survives_its_last_pane(
     assert sessions.get_session("demo").pane_ids == []
 
 
+def test_a_collected_session_loses_the_token_in_its_run_dir(
+    which: dict[str, str], client: FakeClient, keychain: dict[str, str]
+) -> None:
+    """The run dir stays — deleting a workdir would lose work — but the token in it goes."""
+    keychain["Claude Code-credentials"] = '{"claudeAiOauth": {}}'
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    pane_id = sessions.attach(session)
+    config = Path(session.run_dir) / "config"
+    assert (config / ".credentials.json").is_file()
+
+    sessions.remove_pane(pane_id)
+
+    assert not (config / ".credentials.json").exists()
+    assert (config / ".mcp.json").is_file()
+    assert Path(session.run_dir).is_dir()
+
+
+def test_a_session_that_survives_keeps_its_token(
+    which: dict[str, str], client: FakeClient, keychain: dict[str, str]
+) -> None:
+    """A keep-alive session is still usable, so it still needs the agent to authenticate."""
+    keychain["Claude Code-credentials"] = '{"claudeAiOauth": {}}'
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    session.keep_alive = True
+    pane_id = sessions.attach(session)
+
+    sessions.remove_pane(pane_id)
+
+    assert (Path(session.run_dir) / "config" / ".credentials.json").is_file()
+
+
 def test_a_pane_nobody_registered_changes_nothing(
     which: dict[str, str], client: FakeClient
 ) -> None:

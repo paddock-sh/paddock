@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from paddock.agents import AgentSpec
 from paddock.profiles import Profile
+
+# The file an agent reads its token from inside the config dir, and what a collected session
+# loses (SPEC §8).
+CREDENTIALS_FILE = ".credentials.json"
 
 
 @dataclass(frozen=True)
@@ -25,11 +30,20 @@ class Redirection:
     # Credential files the agent writes back to. Copied, so the sandbox works on its own
     # and the host's file is never touched. Everything else is a read-only symlink.
     copied: tuple[str, ...] = ()
+    # macOS Keychain service holding the token when the agent kept none in a file. A
+    # fallback source for CREDENTIALS_FILE, never a replacement for one (SPEC §4.3).
+    keychain: str = ""
 
 
 # Only Claude Code can be redirected today, so every other agent keeps its real config
 # dir (SPEC §4.3).
-REDIRECTIONS = {"claude": Redirection("CLAUDE_CONFIG_DIR", copied=(".claude.json",))}
+REDIRECTIONS = {
+    "claude": Redirection(
+        "CLAUDE_CONFIG_DIR",
+        copied=(".claude.json",),
+        keychain="Claude Code-credentials",
+    )
+}
 
 
 @dataclass
@@ -64,6 +78,9 @@ def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
         by_copy = source.name in redirect.copied
         if _take(source, config / source.name, copy=by_copy):
             (copied if by_copy else linked).append(source)
+    if redirect.keychain and not (config / CREDENTIALS_FILE).exists():
+        # The host keeps no credential file, so the redirected agent has nothing to read.
+        _export_token(redirect.keychain, config / CREDENTIALS_FILE)
     sources, missing = _link_skills(skill_dirs(agent), config / "skills", profile.skills)
 
     servers, unknown = _whitelisted_servers(agent, profile.mcp)
@@ -88,6 +105,15 @@ def skill_dirs(agent: AgentSpec) -> list[Path]:
     return [Path(path).expanduser() / "skills" for path in agent.config_write_paths]
 
 
+def discard_credentials(run_dir: Path) -> None:
+    """Delete the credential file of a run nobody is using any more (SPEC §8).
+
+    The rest of the run dir stays — deleting a workdir would lose work — but an exported
+    token must not outlive the session. A symlinked one loses only the link.
+    """
+    (run_dir / "config" / CREDENTIALS_FILE).unlink(missing_ok=True)
+
+
 def _take(source: Path, dest: Path, copy: bool) -> bool:
     """Put one credential file in the config dir, by copy or by symlink. Was there one?
 
@@ -99,9 +125,47 @@ def _take(source: Path, dest: Path, copy: bool) -> bool:
         return True
     if copy:
         shutil.copy2(source, dest)
+        _drop_mcp_servers(dest)
     else:
         dest.symlink_to(source)
     return True
+
+
+def _drop_mcp_servers(path: Path) -> None:
+    """Take the servers out of a copied config, leaving everything else as it was.
+
+    The copy is a whole file, so its definitions would travel into the sandbox. The
+    generated whitelist is the only source of servers (SPEC §4.3).
+    """
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if isinstance(data, dict) and "mcpServers" in data:
+        del data["mcpServers"]
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def _export_token(service: str, dest: Path) -> None:
+    """Write the token macOS keeps in the login Keychain into the config dir, if it has one.
+
+    A token on disk, so it goes nowhere but the run dir, readable by its owner alone.
+    Anywhere without `security`, or without that entry, gets no file (SPEC §4.3).
+    """
+    try:
+        found = subprocess.run(
+            ["security", "find-generic-password", "-s", service, "-w"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    token = found.stdout.strip()
+    if not token:
+        return
+    dest.touch(mode=0o600)
+    dest.write_text(token + "\n")
 
 
 def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[list[Path], list[str]]:

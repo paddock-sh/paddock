@@ -82,7 +82,7 @@ Backend -> Backend : workdir_for(profile, run_dir)\nshared_dir, else run_dir/wor
 Backend -> Backend : build_shim_dir(run_dir, tools)\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
 Backend -> Synth : build(profile, agent, run_dir)
 activate Synth
-Synth -> Synth : run_dir/config/\nsymlink the key it only reads; copy the config it writes back\nsymlink ONLY the ticked skills from <real config>/skills\nwrite .mcp.json with ONLY the ticked MCP servers
+Synth -> Synth : run_dir/config/\nsymlink the key it only reads; copy the config it writes back,\nminus its mcpServers key\nno key file on the host? export the login Keychain token,\nmode 0600 (macOS, deleted when the session is collected)\nsymlink ONLY the ticked skills from <real config>/skills\nwrite .mcp.json with ONLY the ticked MCP servers
 Synth --> Backend : dir, env {CLAUDE_CONFIG_DIR: run_dir/config},\nargs [~--mcp-config <file>, ~--strict-mcp-config],\nwhat it linked, what it copied, what the host did not have
 deactivate Synth
 note right of Synth

@@ -35,15 +35,27 @@ def real_subprocess() -> None:
 
 
 @pytest.fixture(autouse=True)
-def no_subprocess(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """CI has no herdr and no srt, so a test that shells out to either is a bug."""
+def keychain(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """The login Keychain a test sees: empty, unless the test puts a token in it by service.
+
+    synth_config asks macOS `security` for the agent's token, so faking that command keeps
+    the developer's own Keychain out of the tests. Any other command is a bug: CI has no
+    herdr and no srt.
+    """
+    entries: dict[str, str] = {}
     if "real_subprocess" in request.fixturenames:
-        return
+        return entries
 
-    def fail(argv: object, **kwargs: object) -> None:
-        raise AssertionError(f"the test ran a real subprocess: {argv!r}")
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        if list(argv[:2]) != ["security", "find-generic-password"]:
+            raise AssertionError(f"the test ran a real subprocess: {argv!r}")
+        service = argv[argv.index("-s") + 1]
+        if service not in entries:
+            raise subprocess.CalledProcessError(44, argv)
+        return subprocess.CompletedProcess(argv, 0, entries[service] + "\n", "")
 
-    monkeypatch.setattr(subprocess, "run", fail)
+    monkeypatch.setattr(subprocess, "run", run)
+    return entries
 
 
 class FakeClient:

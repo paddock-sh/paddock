@@ -1,6 +1,8 @@
 """Layer 3: a config dir holding only the agent's credentials and the skills that were ticked."""
 
 import json
+import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,9 @@ from paddock.profiles import Profile
 CLAUDE = builtin_agents()["claude"]
 CODEX = builtin_agents()["codex"]
 
+# What macOS holds under "Claude Code-credentials" when the login is a Keychain one.
+TOKEN = json.dumps({"claudeAiOauth": {"accessToken": "sk-ant-oat-test"}})
+
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -21,7 +26,13 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (home / ".claude" / "skills" / "deploy").mkdir(parents=True)
     (home / ".claude" / ".credentials.json").write_text("{}")
     (home / ".claude.json").write_text(
-        json.dumps({"mcpServers": {"github": {"command": "gh-mcp"}, "db": {"command": "db-mcp"}}})
+        json.dumps(
+            {
+                "numStartups": 7,
+                "projects": {"/repo": {"history": ["hello"]}},
+                "mcpServers": {"github": {"command": "gh-mcp"}, "db": {"command": "db-mcp"}},
+            }
+        )
     )
     monkeypatch.setenv("HOME", str(home))
     return home
@@ -57,10 +68,31 @@ def test_the_config_the_agent_writes_back_to_is_a_copy(home: Path, run_dir: Path
 
     copy = synth.dir / ".claude.json"
     assert not copy.is_symlink()
-    assert json.loads(copy.read_text()) == json.loads(original)
+    assert json.loads(copy.read_text())["projects"] == json.loads(original)["projects"]
 
     copy.write_text('{"changed": true}')
     assert (home / ".claude.json").read_text() == original
+
+
+def test_the_copy_leaves_the_mcp_servers_behind(home: Path, run_dir: Path) -> None:
+    """A whole-file copy would carry every server in, and the whitelist is the only source."""
+    original = json.loads((home / ".claude.json").read_text())
+
+    synth = synth_config.build(Profile(mcp=["github"]), CLAUDE, run_dir)
+
+    copy = json.loads((synth.dir / ".claude.json").read_text())
+    assert "mcpServers" not in copy
+    assert copy == {key: value for key, value in original.items() if key != "mcpServers"}
+    assert mcp_config(synth) == {"mcpServers": {"github": {"command": "gh-mcp"}}}
+
+
+def test_a_copy_with_no_mcp_servers_is_left_exactly_as_it_was(home: Path, run_dir: Path) -> None:
+    """Nothing to take out, so nothing is rewritten."""
+    (home / ".claude.json").write_text('{"numStartups":   7}\n')
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert (synth.dir / ".claude.json").read_text() == '{"numStartups":   7}\n'
 
 
 @pytest.mark.parametrize("name", [".claude.json", ".claude/.credentials.json"])
@@ -75,6 +107,97 @@ def test_a_credential_file_the_host_does_not_have_is_left_out(
     left_out = synth.dir / Path(name).name
     assert not left_out.exists()
     assert not left_out.is_symlink()
+
+
+# --- the keychain fallback -------------------------------------------------
+
+
+def test_the_token_is_read_from_the_login_keychain(
+    home: Path, run_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claude Code keeps its token there, not in a file, when it logs in on macOS."""
+    (home / ".claude" / ".credentials.json").unlink()
+    calls: list[list[str]] = []
+
+    def security(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, TOKEN + "\n", "")
+
+    monkeypatch.setattr(subprocess, "run", security)
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert calls == [["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"]]
+    assert json.loads((synth.dir / ".credentials.json").read_text()) == json.loads(TOKEN)
+
+
+def test_the_exported_token_is_a_file_only_its_owner_can_read(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """It is a token on disk, so the run dir is the only place it goes, at 0600."""
+    (home / ".claude" / ".credentials.json").unlink()
+    keychain["Claude Code-credentials"] = TOKEN
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    exported = synth.dir / ".credentials.json"
+    assert not exported.is_symlink()
+    assert stat.S_IMODE(exported.stat().st_mode) == 0o600
+
+
+def test_the_real_file_wins_over_the_keychain(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """The keychain is a fallback source: with a file, nothing is copied onto disk."""
+    keychain["Claude Code-credentials"] = TOKEN
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert (synth.dir / ".credentials.json").readlink() == home / ".claude/.credentials.json"
+
+
+def test_an_empty_keychain_leaves_the_config_dir_without_a_token(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """Nothing to export on Linux, or where the user never logged in that way."""
+    (home / ".claude" / ".credentials.json").unlink()
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert not (synth.dir / ".credentials.json").exists()
+    assert keychain == {}
+
+
+def test_an_agent_with_no_keychain_entry_of_its_own_asks_for_nothing(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """Only Claude Code names a Keychain service; the export is not a general mechanism."""
+    keychain["Claude Code-credentials"] = TOKEN
+
+    synth = synth_config.build(Profile(agent="codex"), CODEX, run_dir)
+
+    assert synth.dir is None
+
+
+def test_a_collected_session_loses_its_exported_token(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """The run dir outlives the session, and a token must not (SPEC §8)."""
+    (home / ".claude" / ".credentials.json").unlink()
+    keychain["Claude Code-credentials"] = TOKEN
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    synth_config.discard_credentials(run_dir)
+
+    assert not (synth.dir / ".credentials.json").exists()
+    assert (synth.dir / ".mcp.json").is_file()
+
+
+def test_discarding_credentials_from_a_run_dir_without_any_is_not_an_error(
+    run_dir: Path,
+) -> None:
+    """An agent with no redirection has no config dir under the run dir at all."""
+    synth_config.discard_credentials(run_dir)
 
 
 # --- skills ----------------------------------------------------------------

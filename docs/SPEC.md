@@ -207,7 +207,8 @@ synthesized config dir, the scratch workdir when the profile shares no host
 directory, and a small `launch.json` — the command, workdir and environment, so a
 tab attaching later gets exactly what the first one got. `PADDOCK_STATE_DIR`
 overrides the state directory; tests point it at a temporary one. Nothing collects
-old run directories yet, including those of collected sessions (§8).
+old run directories yet, including those of collected sessions — only the
+credential file inside one goes with the session (§3.4, §8).
 
 **Invocation:**
 
@@ -367,7 +368,9 @@ Reattaching puts the user back where they were.
 **Lifecycle:** when the last tab closes, the session is neither destroyed nor
 leaked silently. A session with `keep_alive` set stays; every other one is
 dropped from the registry. Its run directory is left on disk — deleting a workdir
-would lose work (§8). The prompt that offers keep-alive arrives with the TUI.
+would lose work (§8) — except for the credential file in its config dir, which
+may be an exported token (§4.3) and does not outlive the session. The prompt that
+offers keep-alive arrives with the TUI.
 Both failure modes cost something real: a discarded microVM loses running state, a
 leaked one holds memory.
 
@@ -460,17 +463,26 @@ Everything else comes from the agent registry (§5): credentials from
 `config_write_paths`. The chooser offers the same set, so what it lists and what
 the sandbox gets are the same thing.
 
-The copy is a whole file, so whatever else it holds — for Claude Code, the MCP
-server definitions and the project list — travels into the sandbox with it. The
-whitelist still governs what the agent *loads* (§4.2), but "nothing to enumerate"
-is true of the skills and not yet of that file.
+The copy has its `mcpServers` key taken out, so the generated whitelist stays the
+only place a server can come from (§4.2). Everything else in the file — for Claude
+Code, the project list — travels into the sandbox with it, and a file with no
+servers in it is copied unchanged.
 
-**Redirecting the config dir loses a macOS Keychain login.** Claude Code keeps its
-token in the login Keychain when it uses the default config dir, and looks for
-`.credentials.json` inside the directory the variable names. Verified against the
-real binary: with `CLAUDE_CONFIG_DIR` set and no such file, `claude -p` answers
-`Not logged in · Please run /login`, sandbox or no sandbox. Layer 3 therefore
-authenticates only where the credentials are a file. §8 asks what to do about it.
+**A Keychain login is exported into the config dir when the run is built.** Claude
+Code keeps its token in the macOS login Keychain when it uses the default config
+dir, and looks for `.credentials.json` inside the directory `CLAUDE_CONFIG_DIR`
+names. Verified against the real binary: with the variable set and no such file,
+`claude -p` answers `Not logged in · Please run /login`, sandbox or no sandbox. So
+when the host has no `~/.claude/.credentials.json`, the launcher runs `security
+find-generic-password -s "Claude Code-credentials" -w` and writes what comes back
+to `<run dir>/config/.credentials.json`, mode 0600.
+
+Be clear about what that is: **a copy of the token on disk**, in a directory only
+its owner can read, for as long as the session lives. It is deleted when the
+session is collected (§3.4). A real credential file always wins — the Keychain is
+a fallback source, never a replacement. It is a macOS-only path: without
+`security`, or without that entry, no file is written and the agent asks the user
+to log in.
 
 **Only Claude Code has a config-dir variable today.** An agent without one is
 launched as before: no synthesized directory, and its real config dir stays
@@ -590,12 +602,9 @@ no sandbox present.
   malformed profile cannot widen it?
 - How should a pane show what permissions it actually got? A written manifest in
   the workdir is the current favourite.
-- How should layer 3 authenticate an agent whose credentials are in the macOS
-  Keychain rather than a file (§4.3)? Exporting the token into the synthesized
-  config dir would work and would put a token on disk. Skipping the redirection on
-  those machines would work and would give up layer 3.
-- What happens to an srt session's workdir when the session is collected?
-  Deleting loses work; keeping it leaks disk.
+- What happens to an srt session's run directory when the session is collected?
+  The credential file goes, because it may be an exported token (§4.3). The rest
+  stays: deleting a workdir loses work, keeping it leaks disk.
 - Can a tab move between sessions after creation, or is detach-and-relaunch the
   honest answer, given that srt cannot migrate a running process tree?
 - Is v2 per-binary blocking (§4.1) worth the enumeration cost, or is the honest

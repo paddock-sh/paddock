@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from paddock import herdr_client, state_dir
+from paddock import herdr_client, state_dir, synth_config
 from paddock.backends import srt
 from paddock.profiles import Profile
 
@@ -127,16 +127,19 @@ def remove_pane(pane_id: str) -> None:
         live = list_sessions()
         if not any(pane_id in session.pane_ids for session in live):
             return
-        kept = []
+        kept, collected = [], []
         for session in live:
             if pane_id in session.pane_ids:
                 session.pane_ids.remove(pane_id)
-                # The run dir stays on disk either way — deleting a workdir would lose work
-                # (SPEC §8).
                 if not session.pane_ids and not session.keep_alive:
+                    collected.append(session)
                     continue
             kept.append(session)
         _save(kept)
+        for session in collected:
+            # The run dir stays on disk — deleting a workdir would lose work — but the
+            # token in it does not outlive the session (SPEC §8).
+            synth_config.discard_credentials(Path(session.run_dir))
 
 
 def launch_local(cwd: Path | None = None) -> str:
