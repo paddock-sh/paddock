@@ -47,8 +47,8 @@ New window:
 | Share a directory? | A host directory, read-write, or an isolated scratch workdir |
 | Which skills / MCP servers? | Only the ones you tick exist inside the sandbox |
 
-**Attach to an existing session** lists live sessions with their name, agent,
-profile and attached tabs.
+**Attach to an existing session** lists live sessions with their name, backend,
+agent, profile and attached tabs.
 
 Save any set of answers as a **profile** and reuse it next time. Plain new-tab
 moves to `prefix+shift+c`.

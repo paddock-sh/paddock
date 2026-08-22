@@ -332,6 +332,45 @@ def test_attach_goes_through_the_backend_the_session_names(
     assert sessions.get_session("demo").pane_ids == ["wA:p7"]
 
 
+def test_a_field_a_newer_paddock_wrote_survives_a_rewrite(
+    which: dict[str, str], client: FakeClient, state_dir: Path
+) -> None:
+    """One registry, two paddocks: writing it back must not strip what the newer one added."""
+    write_registry(
+        state_dir,
+        [record(session_id="newer", name="newer", backend="microsandbox", vm_handle="paddock-1")],
+    )
+
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    sessions.remove_pane(sessions.attach(session))
+
+    records = json.loads((state_dir / "sessions.json").read_text())
+    assert [entry.get("vm_handle") for entry in records] == ["paddock-1"]
+
+
+def test_a_field_written_while_a_tab_was_opening_is_kept(
+    which: dict[str, str], client: FakeClient, state_dir: Path
+) -> None:
+    """The other writer's key is merged back the way its panes are, not written over."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    write_registry(
+        state_dir,
+        [
+            record(
+                session_id=session.session_id,
+                name="demo",
+                run_dir=session.run_dir,
+                vm_handle="paddock-1",
+            )
+        ],
+    )
+
+    sessions.attach(session)
+
+    records = json.loads((state_dir / "sessions.json").read_text())
+    assert [entry.get("vm_handle") for entry in records] == ["paddock-1"]
+
+
 def test_a_new_session_is_prepared_by_the_registered_backend(
     which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

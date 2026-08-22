@@ -47,6 +47,12 @@ class Session:
     # A record written before there was a second backend is an srt session (SPEC §3.4).
     backend: str = DEFAULT_BACKEND
 
+    def __post_init__(self) -> None:
+        # Keys from the record that this paddock has no field for. A newer one may have
+        # written them, so they ride along and are written back (SPEC §3.4). Not a field:
+        # they are carried, never read, and the record shape stays what the SPEC says.
+        self._unknown: dict[str, object] = {}
+
 
 def backend_for(name: str) -> ModuleType:
     """The module that runs sessions on this backend. An unknown name is a message, not a crash."""
@@ -189,6 +195,8 @@ def _record(session: Session) -> None:
         for index, other in enumerate(live):
             if other.session_id == session.session_id:
                 session.pane_ids = list(dict.fromkeys(other.pane_ids + session.pane_ids))
+                # Same reason: a key the other writer added is not this one's to drop.
+                session._unknown = {**other._unknown, **session._unknown}
                 live[index] = session
                 break
         else:
@@ -204,18 +212,24 @@ def _save(sessions: list[Session]) -> None:
     handle, temp = tempfile.mkstemp(dir=path.parent, prefix=".sessions-", suffix=".tmp")
     try:
         with os.fdopen(handle, "w") as file:
-            file.write(json.dumps([asdict(session) for session in sessions], indent=2) + "\n")
+            file.write(json.dumps([_as_record(session) for session in sessions], indent=2) + "\n")
         os.replace(temp, path)
     except OSError:
         Path(temp).unlink(missing_ok=True)
         raise
 
 
+def _as_record(session: Session) -> dict:
+    """One record: the session's own fields, and any a newer paddock wrote around them."""
+    return {**session._unknown, **asdict(session)}
+
+
 def _session(record: object) -> Session | None:
     """One session from one record, or None if it cannot be used as written."""
     if not isinstance(record, dict):
         return None
-    shape = vars(Session("", "", "", "", "", "", False, []))  # field names and their types
+    # Field names and their types. asdict, not vars: a session carries more than its fields.
+    shape = asdict(Session("", "", "", "", "", "", False, []))
     values = {key: value for key, value in record.items() if key in shape}
     # The one field with a default: a record written before it existed is still a session.
     values.setdefault("backend", DEFAULT_BACKEND)
@@ -227,7 +241,9 @@ def _session(record: object) -> Session | None:
             return None
         if isinstance(value, list) and not all(isinstance(item, str) for item in value):
             return None
-    return Session(**values)
+    session = Session(**values)
+    session._unknown = {key: value for key, value in record.items() if key not in shape}
+    return session
 
 
 def _generate_name(profile_name: str, taken: set[str]) -> str:

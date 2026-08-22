@@ -309,8 +309,8 @@ The same profile maps across:
 
 That is why the agent registry has an `image` field now (§5): profiles written
 for `srt` port over without a schema change. A dev server in a sandbox is
-reached by port forwarding, `msb -p <host>:<guest>`, which binds loopback on the
-host. A per-sandbox `<name>.localhost` URL is a portless feature paddock would
+reached by port forwarding, the `-p <host port>:<guest port>` flag on `msb
+create`, which binds loopback on the host. A per-sandbox `<name>.localhost` URL is a portless feature paddock would
 have to build (see [ROADMAP](ROADMAP.md)), not something `msb` provides.
 
 Two constraints the spike settled. **Memory, not boot time, caps how many VM
@@ -419,7 +419,10 @@ Two popups are two processes, so every write takes an exclusive lock on
 `<state>/sessions.lock` and re-reads the registry inside it. The file is written
 whole and swapped in, so a crash mid-write leaves the previous registry rather
 than half of one. A file that will not parse is reported and treated as empty,
-and a record of the wrong shape is dropped rather than half-applied.
+and a record of the wrong shape is dropped rather than half-applied. Keys a
+record carries that this paddock has no field for are kept on the session and
+written back, so a registry shared with a newer paddock does not lose what that
+one added.
 
 `backend` is what `sessions.attach` dispatches on: a small dict maps the name to
 the module that runs it, and a name this paddock does not have is a message at
