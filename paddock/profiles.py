@@ -25,6 +25,11 @@ LOCAL_SERVICES_CONSEQUENCE = "every service listening on this machine's loopback
 # How loopback can be written. Naming any of these is what turns the grant on (SPEC §2.1).
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
+# The other entry that is not a domain group: no allowlist at all. It names no domains
+# because there is no pattern that means "every domain" — srt has none, and msb wants a
+# default rather than a rule (SPEC §2.1). A backend reads the sentinel, not a list.
+NETWORK_ALL = "everything"
+
 # Named domain groups for the network checklist.
 NETWORK_PRESETS: dict[str, list[str]] = {
     "anthropic": ["api.anthropic.com", "*.anthropic.com"],
@@ -47,6 +52,8 @@ NETWORK_PRESETS: dict[str, list[str]] = {
     # A local model server, a dev server, a database on this machine. Never ticked by
     # default: what it opens is every loopback port, not the one port anyone meant.
     LOCAL_SERVICES: ["localhost", "127.0.0.1"],
+    # No allowlist at all. Empty on purpose: the backend reads the key, not the value.
+    NETWORK_ALL: [],
 }
 
 # Credential directories no agent gets unless the profile says so.
@@ -90,6 +97,15 @@ class Profile:
         own `api_domains` are the same declaration, so all three are read the same.
         """
         return any(_host(domain) in LOOPBACK_HOSTS for domain in self.allowed_domains())
+
+    def opens_every_domain(self) -> bool:
+        """Whether the profile asks for no allowlist at all (SPEC §2.1).
+
+        A sentinel rather than a value in `allowed_domains()`, because no string means
+        "every domain" to every backend: srt rejects the ones that try, and msb wants a
+        default instead of a rule. What the backends share is the question, not the answer.
+        """
+        return NETWORK_ALL in self.network_presets
 
 
 def profile_dir() -> Path:

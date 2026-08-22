@@ -71,6 +71,21 @@ class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
 
 
+class UnsupportedPolicy(RuntimeError):
+    """The profile asks for something srt has no way to enforce."""
+
+
+# What `network_presets = ["everything"]` would need, and srt 0.0.73 has no form of.
+# `allowedDomains` is a required key whose every entry must be a host or a wildcard with
+# at least two labels after the `*.`; a bare `*` and even `*.com` are refused by name.
+NO_ALLOW_ALL = (
+    "srt cannot allow every domain: network.allowedDomains is a required key, and it "
+    "refuses a bare * as an overly broad pattern, so no settings file means unrestricted "
+    "egress. Name the domains this session needs, or run it on the msb backend, which "
+    "takes --net-default allow."
+)
+
+
 @dataclass
 class Run:
     """One prepared sandbox: the settings and workdir every attached tab shares."""
@@ -127,6 +142,10 @@ def build_settings(
     srt validates this against a schema and refuses to start if a key is missing, so
     every key is written even when its list is empty.
     """
+    if profile.opens_every_domain():
+        # Writing the named domains instead would enforce an allowlist nobody chose, and
+        # the sandbox would deny the traffic the profile said to allow (SPEC §2.1).
+        raise UnsupportedPolicy(NO_ALLOW_ALL)
     # /tmp and /private/tmp are one directory under two names on macOS; srt matches the
     # path as written. /dev/null is here so discarded output works.
     allow_write = [workdir, Path("/tmp"), Path("/private/tmp"), Path("/dev/null")]
@@ -230,6 +249,10 @@ def prepare(profile: Profile) -> Run:
     agent = load_agents().get(profile.agent)
     if agent is None:
         raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
+    if profile.opens_every_domain():
+        # `build_settings` refuses this too, but that is three directories later: a policy
+        # srt cannot enforce should leave nothing on disk behind it.
+        raise UnsupportedPolicy(NO_ALLOW_ALL)
 
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)

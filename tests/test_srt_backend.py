@@ -12,7 +12,7 @@ import pytest
 from paddock import backends
 from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
-from paddock.profiles import LOCAL_SERVICES, Profile
+from paddock.profiles import LOCAL_SERVICES, NETWORK_ALL, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
 
@@ -287,6 +287,52 @@ def test_the_local_grant_leaves_every_other_key_alone(tmp_path: Path) -> None:
     assert granted["allowPty"] == plain["allowPty"]
     assert str(HOME / ".ssh") in granted["filesystem"]["denyRead"]
     assert granted["network"]["deniedDomains"] == []
+
+
+# --- allow-all, which srt cannot express -----------------------------------
+
+
+def test_srt_refuses_a_profile_that_asks_for_every_domain(tmp_path: Path) -> None:
+    """Measured against srt 0.0.73: there is no allow-all, so there is no settings file
+    to write. Emitting the named domains instead would enforce a policy nobody chose."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    with pytest.raises(srt.UnsupportedPolicy) as raised:
+        srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert "allowedDomains" in str(raised.value)
+
+
+def test_the_refusal_names_the_backend_that_can_do_it(tmp_path: Path) -> None:
+    """A dead end with no way out is a worse message than a dead end with one."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    with pytest.raises(srt.UnsupportedPolicy) as raised:
+        srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert "msb" in str(raised.value)
+
+
+def test_prepare_refuses_before_it_writes_anything(
+    which: dict[str, str], fake_home: Path, state_dir: Path, client: FakeClient
+) -> None:
+    """A policy srt cannot enforce should leave no run dir and no tab behind it."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    with pytest.raises(srt.UnsupportedPolicy):
+        srt.prepare(profile)
+
+    assert client.tabs == []
+    assert not list((state_dir / "runs").glob("*"))
+
+
+def test_every_other_profile_still_gets_its_settings(tmp_path: Path) -> None:
+    """The refusal is scoped to the sentinel: nothing else about the policy changes."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowedDomains"] == Profile().allowed_domains()
+    assert str(HOME / ".ssh") in settings["filesystem"]["denyRead"]
+    assert settings["allowPty"] is True
 
 
 # --- the synthesized config dir in the settings ----------------------------

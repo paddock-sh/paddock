@@ -9,6 +9,7 @@ from paddock.agents import builtin_agents
 from paddock.profiles import (
     DEFAULT_DENY_READ,
     LOCAL_SERVICES,
+    NETWORK_ALL,
     NETWORK_PRESETS,
     Profile,
     builtin_profiles,
@@ -57,7 +58,32 @@ def test_network_presets_cover_the_spec_keys() -> None:
         "crates.io",
         "homebrew",
         LOCAL_SERVICES,
+        NETWORK_ALL,
     }
+
+
+def test_the_everything_preset_names_no_domains_of_its_own() -> None:
+    """It is a sentinel, not a group: what it asks for is "no allowlist at all"."""
+    assert NETWORK_PRESETS[NETWORK_ALL] == []
+
+
+def test_no_profile_ships_with_everything_ticked() -> None:
+    assert NETWORK_ALL not in Profile().network_presets
+    for profile in builtin_profiles().values():
+        assert NETWORK_ALL not in profile.network_presets
+
+
+def test_the_everything_preset_asks_for_every_domain() -> None:
+    assert Profile(network_presets=[NETWORK_ALL]).opens_every_domain() is True
+    assert Profile().opens_every_domain() is False
+
+
+def test_the_everything_preset_leaves_the_resolved_domains_alone() -> None:
+    """The sentinel is read by the backend, not folded into the list, so it adds nothing."""
+    profile = Profile(agent="claude", network_presets=["github", NETWORK_ALL])
+    named = Profile(agent="claude", network_presets=["github"])
+
+    assert profile.allowed_domains() == named.allowed_domains()
 
 
 def test_the_openai_preset_opens_what_codex_signs_in_and_talks_to() -> None:

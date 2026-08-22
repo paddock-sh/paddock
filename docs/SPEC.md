@@ -307,6 +307,40 @@ guest's own loopback on a port nothing is listening on, so an msb session tickin
 it gets no host service and no error saying why. The chooser should say so before
 that gap is closed.
 
+**There is no allow-all, and the profile says so rather than pretending.** The
+`everything` network preset is a sentinel: it names no domains, and a backend
+reads the key rather than a list, because no string means "every domain" to every
+backend. srt 0.0.73 has no form of it at all, measured against the real binary:
+
+| Settings written | srt |
+| --- | --- |
+| `allowedDomains: ["*"]` | refused: *Overly broad patterns like `"*.com"` or `"*"` are not allowed for security reasons* |
+| `allowedDomains: ["*.com"]` | refused, same message — a wildcard needs two labels after the `*.` |
+| `allowedDomains: ["*.co.uk"]` | accepted, which is as wide as a pattern gets |
+| `allowedDomains` omitted | refused: *network.allowedDomains: Required* |
+| `network` omitted | refused: *network: Required* |
+
+An omitted `allowedDomains` is exactly what would work — `needsNetworkRestriction`
+is `config?.network?.allowedDomains !== undefined`, so without it the Seatbelt
+profile gets a plain `(allow network*)` and no proxy starts — but srt's own schema
+requires the key and it will not load such a file, printing *Refusing to run with
+the default config*. The only route left is `network.httpProxyPort`, which points
+srt at an external proxy and skips its own; a permissive proxy there would be
+allow-all egress that still routes through a proxy. That means paddock owning and
+supervising an open proxy on loopback for the life of every session, so it is
+recorded here and deliberately not built.
+
+So `build_settings` **raises** `UnsupportedPolicy` for a profile that ticks
+`everything`, rather than writing the named domains — which would enforce an
+allowlist nobody chose and deny exactly the traffic the profile said to allow. The
+message names `msb` as the backend that can do it. On msb the equivalent is one
+default rather than a rule: `msb run --net-default allow` with no `--net-rule` at
+all, verified live on 0.6.13 — plain HTTP and HTTPS to arbitrary hosts both work,
+and DNS needs no `allow@dns` of its own. `net_rules()` (§2.2) does not do that yet;
+it maps every domain to `allow@<domain>:tcp:443` under `--net-default deny`, so the
+sentinel reaches it as two useless rules. That is the next step, and it is a
+change in the msb backend, not here.
+
 **srt checks the path an access resolves to**, not the path the agent typed. A
 symlink is therefore governed by its target: what the policy has to name is the
 real file, never the link. That is why the synthesized config dir (§4.3) works,
@@ -1056,7 +1090,7 @@ lossless.
 | `agent` | `str` | `"claude"` | Registry key |
 | `tools` | `list[str]` | `["git", "rg", "curl"]` | Binaries in the PATH shim dir |
 | `include_system_path` | `bool` | `true` | Append `/usr/bin:/bin` |
-| `network_presets` | `list[str]` | `["anthropic", "github"]` | Named domain groups (anthropic, github, npm, pypi/uv, go, crates.io, homebrew), plus `local services (localhost)`, which is not a domain group but the loopback grant of §2.1 |
+| `network_presets` | `list[str]` | `["anthropic", "github"]` | Named domain groups (anthropic, github, npm, pypi/uv, go, crates.io, homebrew), plus two entries that are not domain groups: `local services (localhost)`, the loopback grant of §2.1, and `everything`, the no-allowlist sentinel of §2.1 |
 | `extra_domains` | `list[str]` | `[]` | Extra allowed domains |
 | `shared_dir` | `str` | `""` | Host dir, read-write; **`""` means an isolated scratch workdir** |
 | `skills` | `list[str]` | `[]` | Skills put in the synth config dir |
@@ -1073,7 +1107,8 @@ Notes:
 - The effective allowlist is `network_presets` expanded, plus `extra_domains`,
   plus the agent's `api_domains`, deduplicated. Loopback appearing anywhere in
   that resolved set is what writes `allowLocalBinding` into the settings (§2.1);
-  no profile ships with it.
+  no profile ships with it. The `everything` preset is outside that sum: it adds
+  no domain and is read as a sentinel by the backend (§2.1).
 - Two profiles ship built in: `claude-default` (Claude Code with the usual dev
   tools and registries) and `offline-shell` (a plain shell, no network). A user
   file of the same name **replaces** the built-in whole: fields the file leaves
