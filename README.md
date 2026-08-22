@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.jpeg" alt="paddock — four horses at a fence" width="360"></p>
+<p align="center"><img src="assets/logo.png" alt="paddock — four horses at a fence" width="360"></p>
 
 # paddock
 

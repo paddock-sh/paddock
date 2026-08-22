@@ -1,8 +1,8 @@
 # paddock — Specification
 
 Status: **pre-alpha.** Section 7 is being built. Profiles, the agent registry, the
-herdr client, the srt backend, sessions and the synthesized config dir exist; the
-TUI and the CLI do not.
+herdr client, the srt backend, sessions, the synthesized config dir, the chooser
+TUI and the CLI all exist now; §7 says what each still owes.
 
 paddock takes over new-window creation in [herdr](https://herdr.dev) (a terminal
 multiplexer for AI coding agents, **v0.8.0**) and replaces it with a popup
@@ -20,7 +20,8 @@ see [CONTRIBUTING.md § Design principles](../CONTRIBUTING.md#design-principles)
 Diagrams: [`architecture.puml`](diagrams/architecture.puml),
 [`launch_sequence.puml`](diagrams/launch_sequence.puml),
 [`scoping_model.puml`](diagrams/scoping_model.puml),
-[`profiles_and_agents.puml`](diagrams/profiles_and_agents.puml).
+[`profiles_and_agents.puml`](diagrams/profiles_and_agents.puml),
+[`chooser_flow.puml`](diagrams/chooser_flow.puml).
 
 ---
 
@@ -512,7 +513,12 @@ Data-driven, not hardcoded branching. Built-ins:
 | `shell` | plain shell | `$SHELL` |
 
 Users add or override entries with JSON in `~/.config/paddock/agents/*.json`; a
-user file wins over a built-in of the same key. Each entry:
+user file wins over a built-in of the same key. The chooser writes one of these
+files when the user types a command instead of picking an agent, because a
+profile names a registry key, not a command. It refuses a key that already runs
+something else: a user file replaces an entry whole, so overwriting one would
+drop its domains and credential paths for every profile that names it. Each
+entry:
 
 | Field | Meaning |
 | --- | --- |
@@ -592,8 +598,8 @@ no v1.1 concern appears in any of them:
 | `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI — the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
-| `paddock/tui.py` | The questionary chooser | Not started |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `profiles`, `sessions` | Not started |
+| `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles` | Done |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
 `herdr`, and only the backend shells out to `srt`.** Everything else is pure

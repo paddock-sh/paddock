@@ -14,8 +14,8 @@ package "Herdr 0.8.0" {
 }
 
 package "paddock" {
-  [cli.py\nchoose | launch | profiles] as CLI
-  [tui.py\nquestionary chooser] as TUI
+  [cli.py\nchoose | launch | attach | profiles\n~--cwd, ~--dry-run] as CLI
+  [tui.py\nquestionary chooser\nanswers -> a plan] as TUI
   [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
   [agents.py\nagent registry\n+ layer-2 adapters] as Agents
@@ -39,15 +39,15 @@ package "Sandbox runtimes" {
 User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
+TUI --> CLI : one plan:\nlocal | attach | new session
 TUI --> Profiles : load / save profile
-TUI --> Agents : list agents
-TUI --> Sessions : list live sessions /\ncreate / attach
+TUI --> Agents : list agents, remember a typed command
+TUI --> Sessions : list live sessions
 Sessions ..> RunDir : registry survives\nHerdr restart
 Profiles ..> ConfigFiles : reads / writes
 Agents ..> ConfigFiles : reads user agents/*.json
 
-TUI --> Sessions : selected Profile
-CLI --> Sessions : launch <profile>
+CLI --> Sessions : launch_local | get_session + attach | launch\n(the only module that carries a plan out)
 BackendAPI <|.. SrtBackend
 BackendAPI <|.. MsbBackend
 
