@@ -1,11 +1,14 @@
 """The screens the chooser draws, and the keys that work on them.
 
-Four screens: the form of fields, a list to pick from, a checklist to tick, and a box to type
-in. Each is one prompt_toolkit Application over one body, with the same key map: enter takes
-what the cursor is on, escape backs out one level and keeps what was done, ctrl-c cancels the
-popup at any depth by raising KeyboardInterrupt, and `?` puts the key list over the screen.
-Filtering is a mode `/` opens, never something bare typing starts, which is what keeps every
-letter free as a shortcut.
+Five screens: the form of fields, a list to pick from, a checklist to tick, a box to type
+in, and the one a failed launch ends on. Each is one prompt_toolkit Application over one
+body, with the same key map: enter takes what the cursor is on, escape backs out one level
+and keeps what was done, ctrl-c cancels the popup at any depth by raising KeyboardInterrupt,
+and `?` puts the key list over the screen. Filtering is a mode `/` opens, never something
+bare typing starts, which is what keeps every letter free as a shortcut.
+
+`progress` is the exception and not an Application: the call it stands in front of blocks
+the whole process, so it is printed once and left on the screen rather than drawn.
 
 Nothing here knows about profiles, sessions or plans. A screen takes rows of text and hands
 back what the user picked, so the rest of the chooser stays plain functions over an answers
@@ -18,6 +21,7 @@ them and a line that counts wrong wraps and pushes the layout around.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 
 from prompt_toolkit.application import Application, get_app
@@ -53,6 +57,7 @@ BACK_KEY = "esc back (keeps your answers)"
 
 FORM_KEYS = ("enter edit", "^v move", "L launch", "s save", "esc cancel", "? keys")
 PICK_KEYS = ("enter choose", "^v move", BACK_KEY, "? keys")
+FAILED_KEYS = ("enter choose", "^v move", "esc back to the form")
 TICK_KEYS = ("space toggle", "a all", "n none", "enter done", BACK_KEY)
 BOX_KEYS = ("space toggle", "tab to the box", "enter done", BACK_KEY)
 TYPE_KEYS = ("enter done", "esc back (keeps what you typed)")
@@ -60,6 +65,15 @@ TYPE_KEYS = ("enter done", "esc back (keeps what you typed)")
 # The way back, drawn as the first row of every list and every checklist. Escape is the key
 # for it, and this is the row for everyone who has not learned the key.
 BACK_ROW = ("← Back", "One level back, keeping every answer. The same as esc.")
+
+# The screen a launch that never opened a pane ends on. The popup closes with the process,
+# so an error printed instead is written to a terminal nobody is left looking at (SPEC §1.1).
+FAILED_TITLE = "The launch failed"
+FAILED_BUTTONS = ("← Back to the form", "Cancel")
+
+# How many lines the message gets. Long enough for what a backend says about a guest that
+# would not install, short enough that the two ways on are still on the screen.
+FAILED_MESSAGE_ROWS = 12
 FILTER_KEYS = ("type to narrow", "enter keep", "esc clear")
 FILTER_KEY = "/ filter"
 
@@ -290,6 +304,37 @@ def type_lines(title: str, hint: str) -> list[str]:
     return [title, "", *wrapped(hint, 3), ""]
 
 
+def failed_lines(
+    message: str, log_path: str = "", cursor: int = 0, height: int = HEIGHT
+) -> list[str]:
+    """What a failed launch says: what went wrong, where the log is, and the two ways on.
+
+    The message is most of the screen, because this is the only place it is ever shown.
+    """
+    room = max(height - (6 if log_path else 4), 1)
+    body = wrapped(message, min(FAILED_MESSAGE_ROWS, room))
+    where = [f"  log: {cut(log_path, WIDTH - 7)}", ""] if log_path else []
+    return [FAILED_TITLE, "", *body, "", *where, _failed_buttons(cursor)]
+
+
+def progress_lines(title: str, steps: list[str]) -> list[str]:
+    """The static screen in front of a step that blocks: what is starting, and what it does.
+
+    Wrapped rather than cut: nothing is drawn under this, so a long step costs a row and
+    an ellipsis would cost the end of the sentence that says why the wait is about to fail.
+    """
+    return [title, *(f"  {part}" for step in steps for part in _wrap(step, WIDTH - 2))]
+
+
+def progress(title: str, steps: list[str]) -> None:
+    """Say what is happening before the call that blocks on it. Drawn once and left there.
+
+    On stderr, where every other line paddock says to a person goes, so the pane id a
+    launch prints is still the whole of its stdout.
+    """
+    print("\n".join(progress_lines(title, steps)), file=sys.stderr, flush=True)
+
+
 def matching(labels: list[str], text: str) -> list[int]:
     """The rows a filter leaves, as indexes into the whole list."""
     wanted = text.lower()
@@ -301,6 +346,12 @@ def _buttons(chosen: int) -> str:
     launch = ">" if chosen == 0 else " "
     cancel = ">" if chosen == 1 else " "
     return f"  {launch} [ Launch ]      {cancel} [ Cancel ]"
+
+
+def _failed_buttons(chosen: int) -> str:
+    back = ">" if chosen == 0 else " "
+    cancel = ">" if chosen == 1 else " "
+    return f"  {back} [ {FAILED_BUTTONS[0]} ]      {cancel} [ {FAILED_BUTTONS[1]} ]"
 
 
 def _label_room(labels: list[str]) -> int:
@@ -536,6 +587,41 @@ def tick(
         return _keys_or_filter(state, footer_line(BOX_KEYS if box else TICK_KEYS))
 
     return _run(body, foot, keys, state)
+
+
+def failed(message: str, log_path: str = "") -> bool:
+    """The screen a launch that never opened a pane ends on. True means back to the form.
+
+    Escape is the way back here as it is everywhere else, so the answers behind a launch
+    that failed are one key from being edited rather than typed again.
+    """
+    state: dict = {"cursor": 0, "keys": False}
+    keys = KeyBindings()
+
+    @keys.add("up")
+    @keys.add("k")
+    def _(event: object) -> None:
+        state["cursor"] = 0
+
+    @keys.add("down")
+    @keys.add("j")
+    def _(event: object) -> None:
+        state["cursor"] = 1
+
+    @keys.add("enter")
+    def _(event) -> None:
+        event.app.exit(result=state["cursor"] == 0)
+
+    @keys.add("escape")
+    def _(event) -> None:
+        event.app.exit(result=True)
+
+    _finish(keys, state)
+
+    def body(height: int) -> list[str]:
+        return failed_lines(message, log_path, state["cursor"], height)
+
+    return bool(_run(body, lambda: footer_line(FAILED_KEYS), keys, state))
 
 
 def type_in(

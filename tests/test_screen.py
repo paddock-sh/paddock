@@ -607,3 +607,74 @@ def test_the_error_goes_as_soon_as_the_answer_changes() -> None:
     assert state["error"] == ""
     assert screen.type_footer("not a path") == "not a path"
     assert screen.type_footer("") == screen.footer_line(screen.TYPE_KEYS)
+
+
+# --- the screen a failed launch ends on -------------------------------------
+
+
+def test_the_failure_screen_says_what_went_wrong_and_where_the_log_is() -> None:
+    lines = screen.failed_lines("the microVM would not install claude", "/state/paddock.log")
+
+    assert lines[0] == screen.FAILED_TITLE
+    assert "the microVM would not install claude" in "\n".join(lines)
+    assert "  log: /state/paddock.log" in lines
+    assert lines[-1].strip().startswith("> [ ← Back to the form ]")
+
+
+def test_a_failure_with_no_log_file_names_none() -> None:
+    """Nothing to read is better said by leaving the row out than by naming an empty path."""
+    lines = screen.failed_lines("no msb on PATH")
+
+    assert not [line for line in lines if line.startswith("  log:")]
+
+
+def test_a_long_failure_message_wraps_instead_of_running_off_the_screen() -> None:
+    lines = screen.failed_lines("word " * 60)
+
+    assert max(get_cwidth(line) for line in lines) <= screen.WIDTH
+
+
+def test_enter_on_back_returns_to_the_form_and_enter_on_cancel_does_not() -> None:
+    assert drive("\r", lambda: screen.failed("nope")) is True
+    assert drive(f"{DOWN}\r", lambda: screen.failed("nope")) is False
+
+
+def test_escape_off_the_failure_screen_is_the_way_back_like_everywhere_else() -> None:
+    assert drive(ESC * 2, lambda: screen.failed("nope")) is True
+
+
+def test_ctrl_c_cancels_the_popup_from_the_failure_screen_too() -> None:
+    with pytest.raises(KeyboardInterrupt):
+        drive(CTRL_C, lambda: screen.failed("nope"))
+
+
+def test_the_failure_message_is_on_the_screen_that_was_drawn() -> None:
+    assert "would not install" in drawn(f"{DOWN}\r", lambda: screen.failed("would not install"))
+
+
+# --- the screen in front of a step that blocks ------------------------------
+
+
+def test_the_progress_screen_is_the_title_and_the_steps_under_it() -> None:
+    lines = screen.progress_lines("Starting review", ["pulling the image", "installing claude"])
+
+    assert lines == ["Starting review", "  pulling the image", "  installing claude"]
+
+
+def test_a_long_step_wraps_rather_than_losing_its_end() -> None:
+    """Nothing is drawn under it, so a row is cheaper than an ellipsis on the reason."""
+    lines = screen.progress_lines("t", ["word " * 40])
+
+    assert len(lines) > 2
+    assert max(get_cwidth(line) for line in lines) <= screen.WIDTH
+    assert "".join(lines[1:]).split() == ["word"] * 40
+
+
+def test_the_progress_screen_goes_to_stderr_so_stdout_stays_the_pane_id(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    screen.progress("Starting review", ["pulling the image"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Starting review\n  pulling the image\n"
