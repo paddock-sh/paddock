@@ -65,7 +65,9 @@ note right
 
   Picking a local tab or a session greys out every
   field below Open: no sandbox, so there is nothing
-  to permit. Nothing is hidden and nothing moves.
+  to permit. Nothing is hidden and nothing moves. A
+  session that ended between the list and the form
+  says so, rather than reading as a new sandbox.
 
   Landing in steps (docs/design/chooser-redesign.md).
   The fields, words and rules are in tui.py now; the

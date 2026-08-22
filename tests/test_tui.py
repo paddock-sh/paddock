@@ -628,10 +628,56 @@ def test_the_edit_list_offers_the_questions_that_were_asked() -> None:
     """A question the chooser skipped is not one to go back and change."""
     answers = {"name": "review", "agent": "codex", "profile": tui.CUSTOM}
 
-    choices = tui.edit_choices(answers)
+    choices = tui.edit_choices(answers, Profile())
 
-    assert [value for _, value in choices] == ["profile", "agent", "name"]
-    assert [title for title, _ in choices] == ["Start from", "Agent", "Session name"]
+    assert [value for _, value in choices] == [
+        "profile",
+        "agent",
+        "tools",
+        "network",
+        "domains",
+        "skills",
+        "share",
+        "name",
+        "save_as",
+    ]
+    assert choices[0] == ("Start from", "profile")
+
+
+def test_a_typed_command_is_editable_and_a_picked_agent_is_not() -> None:
+    """The command and the key it is saved under only exist when one was typed."""
+    typed = [value for _, value in tui.edit_choices({"agent": tui.CUSTOM}, Profile())]
+    picked = [value for _, value in tui.edit_choices({"agent": "codex"}, Profile())]
+
+    assert "command" in typed and "remember_as" in typed
+    assert "command" not in picked and "remember_as" not in picked
+
+
+def test_the_directory_is_editable_only_when_something_is_shared() -> None:
+    shared = [value for _, value in tui.edit_choices({"share": True}, Profile())]
+    isolated = [value for _, value in tui.edit_choices({}, Profile())]
+    from_profile = [value for _, value in tui.edit_choices({}, Profile(shared_dir="/work/repo"))]
+
+    assert "directory" in shared
+    assert "directory" not in isolated
+    assert "directory" in from_profile
+
+
+def test_the_agent_is_still_editable_after_a_profile_swap() -> None:
+    """The swap forgets the old answer, so the list has to offer what the profile now says."""
+    settled = tui.settle({"profile": "hardened", "agent": "claude"}, "profile")
+
+    assert "agent" in [value for _, value in tui.edit_choices(settled, Profile())]
+
+
+def test_swapping_the_base_profile_takes_its_agent(config_dir: Path) -> None:
+    """Another profile means starting over from it, and its agent is one of its answers."""
+    save_profile(Profile(name="hardened", agent="codex"))
+    settled = tui.settle({"profile": "hardened", "agent": "claude"}, "profile")
+
+    plan = tui.build_session(tui.base_profile(load_profiles(), settled), settled)
+
+    assert plan.profile.agent == "codex"
 
 
 # --- the form's fields ------------------------------------------------------
@@ -664,10 +710,62 @@ def test_a_hint_says_what_the_value_means_not_what_the_question_is() -> None:
     assert "not a boundary" in tui.FIELD_HINTS["tools"]  # the honest trust model, in the UI
 
 
+def test_the_profile_hint_quotes_the_title_the_form_will_show() -> None:
+    base = builtin_profiles()["claude-default"]
+
+    assert "+ changes" in tui.FIELD_HINTS["profile"]
+    assert tui.form_title({"profile": "claude-default", "tools": []}, base).endswith("+ changes")
+
+
+def test_every_box_inside_an_editor_carries_its_own_line() -> None:
+    """The boxes the merges swallowed: they lost their screen, not their explanation."""
+    assert "the sandbox can reach" in tui.EDITOR_HINTS["command"]
+    assert "example.com" in tui.EDITOR_HINTS["also_allow"]
+    assert "sbx:" in tui.EDITOR_HINTS["name"]
+    assert "one pick next time" in tui.EDITOR_HINTS["save_as"]
+
+
+def test_a_key_clash_is_worded_as_a_clash() -> None:
+    """The key is never asked for, so the one time it is, it says why."""
+    assert tui.key_clash("codex") == "codex already runs something else. Call this one:"
+
+
+def test_a_profile_on_the_list_says_what_it_is_not_what_it_is_called() -> None:
+    saved = {
+        "review": Profile(
+            name="review",
+            agent="claude",
+            tools=["git", "rg", "fd"],
+            network_presets=["github"],
+            shared_dir="~/dev",
+        ),
+        "offline": Profile(name="offline", agent="shell", tools=["git"], network_presets=[]),
+    }
+    registry = load_agents()
+
+    assert tui.profile_hint("review", saved, registry) == (
+        "Claude Code, 3 tools, github only, shares ~/dev"
+    )
+    assert tui.profile_hint("offline", saved, registry) == "Shell, 1 tool, no network"
+    assert tui.profile_hint(tui.CUSTOM, saved, registry) == (
+        "Starts from paddock's own defaults, not from nothing."
+    )
+
+
+def test_an_agent_on_the_list_says_what_it_reaches_whatever_you_tick() -> None:
+    registry = load_agents()
+
+    assert tui.agent_hint("claude", registry) == (
+        "Runs claude in the sandbox. Reaches api.anthropic.com, *.anthropic.com "
+        "whatever you tick."
+    )
+    assert "remembers it" in tui.agent_hint(tui.CUSTOM, registry)
+
+
 def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers() -> None:
     base = builtin_profiles()["claude-default"]
 
-    rows = tui.form_rows({"profile": "claude-default"}, base, load_agents())
+    rows = tui.form_rows({"profile": "claude-default"}, base, load_agents(), [])
 
     assert [label for label, _, _ in rows] == [tui.FIELD_LABELS[field] for field in tui.FIELDS]
     assert dict((label, value) for label, value, _ in rows) == {
@@ -685,7 +783,7 @@ def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers() -> Non
 def test_a_shared_directory_and_a_session_name_show_on_the_form() -> None:
     answers = {"share": True, "directory": "/work/repo", "name": "review"}
 
-    rows = dict((label, value) for label, value, _ in tui.form_rows(answers, Profile(), {}))
+    rows = dict((label, value) for label, value, _ in tui.form_rows(answers, Profile(), {}, []))
 
     assert rows["Files"] == "/work/repo"
     assert rows["Advanced"] == "review"
@@ -693,7 +791,7 @@ def test_a_shared_directory_and_a_session_name_show_on_the_form() -> None:
 
 def test_a_local_tab_greys_out_everything_the_sandbox_decides() -> None:
     """Nothing is hidden and nothing moves, so the screen never rearranges under you."""
-    rows = tui.form_rows({"open": "local"}, Profile(), load_agents(), cwd="/dev/paddock")
+    rows = tui.form_rows({"open": "local"}, Profile(), load_agents(), [], cwd="/dev/paddock")
     values = dict((label, value) for label, value, _ in rows)
     hints = dict((label, hint) for label, _, hint in rows)
 
@@ -713,6 +811,13 @@ def test_attaching_names_the_session_and_keeps_its_workdir() -> None:
 
     assert rows["Open"] == "Attach: review"
     assert rows["Files"] == "the session's own workdir"
+
+
+def test_a_session_that_is_gone_says_so() -> None:
+    """The registry can lose a session between listing it and drawing the form."""
+    shown = tui.form_rows({"open": "s9"}, Profile(), {}, [])
+
+    assert dict((label, value) for label, value, _ in shown)["Open"] == "session is gone: s9"
 
 
 def test_the_title_names_the_profile_the_answers_stand_on() -> None:
@@ -790,6 +895,22 @@ def test_sharing_nothing_drops_the_directory() -> None:
     assert tui.settle(shared, "files") == shared
 
 
+def test_a_typed_directory_is_a_shared_one_even_with_nothing_else_answered() -> None:
+    """The Files field is one answer: a directory is what "shared" means."""
+    typed = {"directory": "/work/repo"}
+
+    assert tui.settle(typed, "files", Profile()) == typed
+    assert tui.build_session(Profile(), typed).profile.shared_dir == "/work/repo"
+
+
+def test_an_unanswered_files_field_leaves_the_profiles_directory_alone() -> None:
+    """Two questions became one field, so with neither answered the profile still stands."""
+    base = Profile(shared_dir="/work/repo")
+
+    assert tui.build_session(base, {}).profile.shared_dir == "/work/repo"
+    assert tui.build_session(base, {"share": False}).profile.shared_dir == ""
+
+
 def test_a_field_that_decides_nothing_else_settles_nothing() -> None:
     answers = {"tools": ["git"], "skills": ["reviewer"]}
 
@@ -823,6 +944,17 @@ def test_the_confirm_expands_the_presets_into_domains() -> None:
     assert lines["can reach"].startswith("12 domains: ")
     assert "api.anthropic.com" in lines["can reach"]
     assert "pypi/uv" not in lines["can reach"]
+
+
+def test_a_long_domain_list_is_cut_short_with_a_count() -> None:
+    """Nine and a count fit the line. The whole list does not, and wrapping moves the layout."""
+    base = builtin_profiles()["claude-default"]
+
+    reach = dict(tui.confirm_lines({"profile": "claude-default"}, base, load_agents()))["can reach"]
+    shown = reach.split(": ", 1)[1].split(", ")
+
+    assert len(shown) == 10
+    assert shown[-1] == "+3"
 
 
 def test_the_confirm_folds_in_the_agents_own_domains() -> None:
@@ -878,6 +1010,15 @@ def test_the_confirm_says_the_session_name_and_the_typed_command() -> None:
     assert generated["session"] == "generated at launch"
     assert typed["session"] == "review"
     assert typed["agent"] == "wrapped, running npx claude-code"
+
+
+def test_a_command_with_no_key_yet_still_reads_as_a_sentence() -> None:
+    """The key is derived, so the confirm can be drawn before there is one."""
+    answers = {"agent": tui.CUSTOM, "command": "npx claude-code"}
+
+    lines = dict(tui.confirm_lines(answers, Profile(), load_agents()))
+
+    assert lines["agent"] == "running npx claude-code"
 
 
 def test_the_confirm_says_whether_the_answers_still_match_the_profile() -> None:
