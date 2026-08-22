@@ -61,9 +61,9 @@ def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
     linked, copied = [], []
     for path in agent.auth_read_paths:
         source = Path(path).expanduser()
-        taken = _take(source, config / source.name, copy=source.name in redirect.copied)
-        if taken:
-            (copied if source.name in redirect.copied else linked).append(source)
+        by_copy = source.name in redirect.copied
+        if _take(source, config / source.name, copy=by_copy):
+            (copied if by_copy else linked).append(source)
     sources, missing = _link_skills(skill_dirs(agent), config / "skills", profile.skills)
 
     servers, unknown = _whitelisted_servers(agent, profile.mcp)
