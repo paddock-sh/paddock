@@ -38,22 +38,28 @@ WIDTH, HEIGHT = 80, 24
 # A list longer than this says so in its key line (section 4.3).
 FILTER_FROM = 5
 
+# The narrowest a list's labels column gets. A longer label widens it rather than being cut,
+# because a truncated label can make two rows read as one.
+LABEL_ROOM = 18
+
 # How long a lone escape waits to be sure it is not the start of an arrow key. Escape has to
 # feel instant, and a terminal that splits an arrow key over 100ms is broken anyway.
 ESCAPE_WAIT = 0.1
 
 # The key lines. `esc` is on every one of them, which is the cheapest usability win there is.
-FORM_KEYS = ("enter edit", "^v move", "L launch", "s save", "esc close", "? keys")
-PICK_KEYS = ("enter choose", "^v move", "esc back", "? keys")
-TICK_KEYS = (
-    "space toggle",
-    "a all",
-    "n none",
-    "/ filter",
-    "enter done",
-    "esc back (keeps ticks)",
-)
+# What escape does, said as what it keeps rather than as what it is. The form has no back,
+# because there is nothing before it, so its own key line says cancel.
+BACK_KEY = "esc back (keeps your answers)"
+
+FORM_KEYS = ("enter edit", "^v move", "L launch", "s save", "esc cancel", "? keys")
+PICK_KEYS = ("enter choose", "^v move", BACK_KEY, "? keys")
+TICK_KEYS = ("space toggle", "a all", "n none", "enter done", BACK_KEY)
+BOX_KEYS = ("space toggle", "tab to the box", "enter done", BACK_KEY)
 TYPE_KEYS = ("enter done", "esc back (keeps what you typed)")
+
+# The way back, drawn as the first row of every list and every checklist. Escape is the key
+# for it, and this is the row for everyone who has not learned the key.
+BACK_ROW = ("← Back", "One level back, keeping every answer. The same as esc.")
 FILTER_KEYS = ("type to narrow", "enter keep", "esc clear")
 FILTER_KEY = "/ filter"
 
@@ -61,10 +67,11 @@ FILTER_KEY = "/ filter"
 KEY_LIST = (
     ("up down, k j", "move between fields, or between items"),
     ("enter", "open the field, take the item, press the button"),
-    ("esc", "back out one level, keeping every answer"),
+    ("esc", "back out one level, keeping every answer, as the Back row does"),
     ("ctrl-c", "cancel the popup, at any depth"),
     ("a digit", "jump straight to that field, on the form"),
     ("space", "tick, in a checklist"),
+    ("tab", "to the box under a checklist, and back to the list"),
     ("/", "filter a long list"),
     ("a n", "tick all, tick none, in a checklist"),
     ("L", "launch"),
@@ -141,6 +148,13 @@ def pick_footer(size: int) -> str:
     if size > FILTER_FROM:
         parts.insert(0, FILTER_KEY)
     return footer_line(parts)
+
+
+def list_footer(error: str, filtering: bool, size: int) -> str:
+    """A list's key line, unless something is wrong, which takes the row instead."""
+    if error:
+        return cut(error, WIDTH)
+    return footer_line(FILTER_KEYS) if filtering else pick_footer(size)
 
 
 def type_footer(error: str) -> str:
@@ -222,12 +236,13 @@ def list_lines(
     that to say what it is.
     """
     rows, place_of_cursor = [], 0
+    room = _label_room([choices[index][0] for index in shown])
     for place, index in enumerate(shown):
         label, hint = choices[index]
         mark = ">" if place == cursor else " "
         if place == cursor:
             place_of_cursor = len(rows)
-        rows.append(cut(f"  {mark} {pad(label, 18)} {_beside(hint)}", WIDTH))
+        rows.append(cut(f"  {mark} {_widen(label, room)} {_beside(hint)}", WIDTH))
         if index == rule_after:
             rows.append("    " + "-" * (WIDTH - 6))
     echo = _filter_lines(filter_text, filtering)
@@ -245,17 +260,26 @@ def tick_lines(
     cursor: int,
     filter_text: str = "",
     filtering: bool = False,
+    box: tuple[str, str, str] | None = None,
+    in_box: bool = False,
     height: int = HEIGHT,
 ) -> list[str]:
-    """A checklist in two columns, with a count of what is ticked in the header."""
+    """A checklist in two columns, with a count of what is ticked in the header.
+
+    The first cell is the way back, so `cursor` counts from it and `shown` does not.
+
+    A box under the list is for what the checklist cannot hold, such as a domain no group
+    names. It is on this screen because it is the same question, and a second screen for it
+    was one of the questions this design set out to kill.
+    """
     ticked = sum(1 for _, on in rows if on)
-    cells = []
-    for place, index in enumerate(shown):
+    cells = [f"{'>' if cursor == 0 else ' '}     {BACK_ROW[0]}"]
+    for place, index in enumerate(shown, start=1):
         label, on = rows[index]
         cells.append(f"{'>' if place == cursor else ' '} [{'x' if on else ' '}] {label}")
     lines = columns(cells)
     half = (len(cells) + 1) // 2
-    echo = _filter_lines(filter_text, filtering)
+    echo = _filter_lines(filter_text, filtering) + _box_lines(box, in_box)
     top = [spread(title, f"{ticked} of {len(rows)} ticked"), "", *wrapped(hint, 3), ""]
     room = height - (len(top) + len(echo))
     return top + window(lines, room, cursor if cursor < half else cursor - half) + echo
@@ -277,6 +301,16 @@ def _buttons(chosen: int) -> str:
     launch = ">" if chosen == 0 else " "
     cancel = ">" if chosen == 1 else " "
     return f"  {launch} [ Launch ]      {cancel} [ Cancel ]"
+
+
+def _label_room(labels: list[str]) -> int:
+    """How wide the labels column is. What a row is called wins over what it says about itself."""
+    return max([LABEL_ROOM, *(get_cwidth(label) for label in labels)])
+
+
+def _widen(label: str, room: int) -> str:
+    """Pad a label out to the column without ever cutting it: two rows have to read as two."""
+    return label + " " * max(room - get_cwidth(label), 0)
 
 
 def _beside(hint: object) -> str:
@@ -301,6 +335,15 @@ def _nothing(filter_text: str) -> str:
 
 def _filter_lines(filter_text: str, filtering: bool) -> list[str]:
     return ["", f"  /{filter_text}"] if filtering or filter_text else []
+
+
+def _box_lines(box: tuple[str, str, str] | None, in_box: bool) -> list[str]:
+    """The box under a checklist: its label, what it holds, and what belongs in it."""
+    if box is None:
+        return []
+    label, text, hint = box
+    cursor = "_" if in_box else " "
+    return ["", f"  {pad(label, 12)}[ {pad(text + cursor, WIDTH - 20)} ]", f"  {' ' * 12}{hint}"]
 
 
 # --- the screens ------------------------------------------------------------
@@ -370,29 +413,41 @@ def pick(
     cursor: int = 0,
     rule_after: int = -1,
     hint_rows: int = 3,
+    refused: dict[int, str] | None = None,
 ) -> int | None:
     """A list. The index chosen, or None when the user backed out without choosing.
 
     Backing out is not cancelling. The caller keeps whatever value it had.
+
+    `refused` says which rows cannot be chosen here and why. Taking one puts the reason on
+    the key line rather than quietly doing nothing, and it goes when the cursor moves on.
+
+    The first row is always the way back, so escape has something on screen saying what it
+    does. `cursor`, `rule_after` and `refused` all count the caller's own rows, not that one.
     """
     state: dict = {
-        "cursor": min(max(cursor, 0), max(len(choices) - 1, 0)),
+        "cursor": min(max(cursor, 0), max(len(choices) - 1, 0)) + 1,  # the Back row is first
         "filter": "",
         "filtering": False,
         "keys": False,
+        "error": "",
     }
+    drawn = [BACK_ROW, *choices]
     labels = [label for label, _ in choices]
+    why = {index + 1: reason for index, reason in (refused or {}).items()}
 
     def shown() -> list[int]:
-        return matching(labels, state["filter"])
+        return [0, *(index + 1 for index in matching(labels, state["filter"]))]
 
     keys = _list_keys(state, shown)
 
     @keys.add("enter", filter=~_typing(state))
     def _(event) -> None:
-        rows = shown()
-        if rows:
-            event.app.exit(result=rows[state["cursor"]])
+        index = shown()[state["cursor"]]
+        state["error"] = why.get(index, "")
+        if state["error"]:
+            return
+        event.app.exit(result=None if index == 0 else index - 1)
 
     @keys.add("escape", filter=~_typing(state))
     def _(event) -> None:
@@ -402,23 +457,36 @@ def pick(
 
     def body(height: int) -> list[str]:
         return list_lines(
-            title, note, choices, shown(), state["cursor"], state["filter"],
-            state["filtering"], rule_after, hint_rows, height,
+            title, note, drawn, shown(), state["cursor"], state["filter"],
+            state["filtering"], rule_after + 1, hint_rows, height,
         )
 
-    return _run(body, lambda: _keys_or_filter(state, pick_footer(len(choices))), keys, state)
+    def foot() -> str:
+        return list_footer(state["error"], state["filtering"], len(choices))
+
+    return _run(body, foot, keys, state)
 
 
-def tick(title: str, rows: list[tuple[str, bool]], hint: str = "") -> list[int]:
-    """A checklist. What is ticked, whether it was left with enter or with escape.
+def tick(
+    title: str,
+    rows: list[tuple[str, bool]],
+    hint: str = "",
+    box: tuple[str, str, str] | None = None,
+) -> list[int] | tuple[list[int], str]:
+    """A checklist. What is ticked, whether it was left with enter, escape or the Back row.
 
     Escape keeps the ticks, because escape never loses an answer: the ticks are the answer.
+
+    With a `box` of (label, value, hint) under the list, tab moves between the two and the
+    answer is both: the ticks and what the box holds.
     """
     state: dict = {
-        "cursor": 0,
+        "cursor": 1,  # the Back row is first, so the first thing to tick is second
         "filter": "",
         "filtering": False,
         "keys": False,
+        "in_box": False,
+        "typed": box[1] if box else "",
         "ticked": {index for index, (_, on) in enumerate(rows) if on},
     }
     labels = [label for label, _ in rows]
@@ -429,37 +497,45 @@ def tick(title: str, rows: list[tuple[str, bool]], hint: str = "") -> list[int]:
     def marked() -> list[tuple[str, bool]]:
         return [(label, index in state["ticked"]) for index, label in enumerate(labels)]
 
-    keys = _list_keys(state, shown)
-    typing = _typing(state)
+    keys = _list_keys(state, shown, extra=1)  # the Back row is one more place to be
+    on_list = _on_list(state)
 
-    @keys.add("space", filter=~typing)
+    @keys.add("space", filter=on_list)
     def _(event: object) -> None:
         places = shown()
-        if places:
-            state["ticked"] ^= {places[state["cursor"]]}
+        if state["cursor"] and places:  # the Back row has nothing to tick
+            state["ticked"] ^= {places[state["cursor"] - 1]}
 
-    @keys.add("a", filter=~typing)
+    @keys.add("a", filter=on_list)
     def _(event: object) -> None:
         state["ticked"] |= set(shown())  # all of what is on screen, so a filter narrows it
 
-    @keys.add("n", filter=~typing)
+    @keys.add("n", filter=on_list)
     def _(event: object) -> None:
         state["ticked"] -= set(shown())
 
-    @keys.add("enter", filter=~typing)
-    @keys.add("escape", filter=~typing)
+    if box is not None:
+        _box_keys(keys, state)
+
+    @keys.add("enter", filter=~_typing(state))
+    @keys.add("escape", filter=~_typing(state))
     def _(event) -> None:
-        event.app.exit(result=sorted(state["ticked"]))
+        ticked = sorted(state["ticked"])
+        event.app.exit(result=(ticked, state["typed"].strip()) if box else ticked)
 
     _finish(keys, state)
 
     def body(height: int) -> list[str]:
+        showing = (box[0], state["typed"], box[2]) if box else None
         return tick_lines(
             title, hint, marked(), shown(), state["cursor"], state["filter"],
-            state["filtering"], height,
+            state["filtering"], showing, state["in_box"], height,
         )
 
-    return _run(body, lambda: _keys_or_filter(state, footer_line(TICK_KEYS)), keys, state)
+    def foot() -> str:
+        return _keys_or_filter(state, footer_line(BOX_KEYS if box else TICK_KEYS))
+
+    return _run(body, foot, keys, state)
 
 
 def type_in(
@@ -471,6 +547,17 @@ def type_in(
     open, and it goes as soon as the answer changes. Escape gives back what was typed without
     running the check, so the caller validates whatever it gets from here.
     """
+    return typed_in(title, value, hint, check)[0]
+
+
+def typed_in(
+    title: str, value: str = "", hint: str = "", check: Callable[[str], str] | None = None
+) -> tuple[str, bool]:
+    """The same box, and whether escape is what closed it.
+
+    A field drawn over two screens needs that: escape backs out one level, to the screen the
+    box was opened from, not all the way to the form.
+    """
     state: dict = {"error": "", "keys": False}
     box = TextArea(text=value, multiline=False)
     forget_error(box, state)
@@ -481,11 +568,11 @@ def type_in(
         typed = box.text.strip()
         state["error"] = check(typed) if check else ""
         if not state["error"]:
-            event.app.exit(result=typed)
+            event.app.exit(result=(typed, False))
 
     @keys.add("escape")
     def _(event) -> None:
-        event.app.exit(result=box.text.strip())
+        event.app.exit(result=(box.text.strip(), True))
 
     _finish(keys, state, help_key=False)
     above = type_lines(title, hint)
@@ -515,35 +602,66 @@ def _typing(state: dict) -> Condition:
     return Condition(lambda: bool(state.get("filtering")))
 
 
-def _list_keys(state: dict, shown: Callable[[], list[int]]) -> KeyBindings:
+def _on_list(state: dict) -> Condition:
+    """True while the keys belong to the list, rather than to the filter or to a box."""
+    return Condition(lambda: not state.get("filtering") and not state.get("in_box"))
+
+
+def _box_keys(keys: KeyBindings, state: dict) -> None:
+    """Tab to the box and back. What is typed there is text, the same as inside a filter."""
+    in_box = Condition(lambda: bool(state["in_box"]))
+
+    @keys.add("tab")
+    def _(event: object) -> None:
+        state["in_box"] = not state["in_box"]
+
+    @keys.add("<any>", filter=in_box)
+    def _(event) -> None:
+        if event.data and event.data.isprintable():
+            state["typed"] += event.data
+
+    @keys.add("backspace", filter=in_box)
+    def _(event: object) -> None:
+        state["typed"] = state["typed"][:-1]
+
+
+def _list_keys(state: dict, shown: Callable[[], list[int]], extra: int = 0) -> KeyBindings:
     """Moving and filtering, which a list and a checklist do the same way."""
     keys = KeyBindings()
     typing = _typing(state)
+    on_list = _on_list(state)
 
-    @keys.add("up", filter=~typing)
-    @keys.add("k", filter=~typing)
+    @keys.add("up", filter=on_list)
+    @keys.add("k", filter=on_list)
     def _(event: object) -> None:
         state["cursor"] = max(state["cursor"] - 1, 0)
+        state["error"] = ""
 
-    @keys.add("down", filter=~typing)
-    @keys.add("j", filter=~typing)
+    @keys.add("down", filter=on_list)
+    @keys.add("j", filter=on_list)
     def _(event: object) -> None:
-        state["cursor"] = min(state["cursor"] + 1, max(len(shown()) - 1, 0))
+        state["cursor"] = min(state["cursor"] + 1, max(len(shown()) - 1 + extra, 0))
+        state["error"] = ""
 
-    @keys.add("/", filter=~typing)
+    @keys.add("/", filter=on_list)
     def _(event: object) -> None:
         state["filtering"] = True
+        state["error"] = ""
+
+    def onto_the_first_match() -> None:
+        """Narrowing moves the cursor to what is left, never onto the Back row."""
+        state["cursor"] = min(1, max(len(shown()) - 1 + extra, 0))
 
     @keys.add("<any>", filter=typing)
     def _(event) -> None:
         if event.data and event.data.isprintable():
             state["filter"] += event.data
-            state["cursor"] = 0
+            onto_the_first_match()
 
     @keys.add("backspace", filter=typing)
     def _(event: object) -> None:
         state["filter"] = state["filter"][:-1]
-        state["cursor"] = 0
+        onto_the_first_match()
 
     @keys.add("enter", filter=typing)
     def _(event: object) -> None:
@@ -551,7 +669,8 @@ def _list_keys(state: dict, shown: Callable[[], list[int]]) -> KeyBindings:
 
     @keys.add("escape", filter=typing)
     def _(event: object) -> None:
-        state.update(filtering=False, filter="", cursor=0)
+        state.update(filtering=False, filter="")
+        onto_the_first_match()
 
     return keys
 
@@ -603,6 +722,13 @@ def _run(
 
 
 def _wait(app: Application) -> object:
-    """Run one screen. Escape answers in `ESCAPE_WAIT`, not in prompt_toolkit's half second."""
+    """Run one screen, with both waits that stand between escape and an answer shortened.
+
+    `ttimeoutlen` is the wait for the rest of an escape sequence, such as an arrow key.
+    `timeoutlen` is the wait for the rest of a key sequence, which is what a focused box does
+    to escape while it wonders whether a meta key is coming. Escape has to feel instant on
+    every screen, and a terminal that splits either over 100ms is broken anyway.
+    """
     app.ttimeoutlen = ESCAPE_WAIT
+    app.timeoutlen = ESCAPE_WAIT
     return app.run()

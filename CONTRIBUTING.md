@@ -150,11 +150,9 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
 - **Small modules, plain functions.** Prefer a function to a class and a class to
   a hierarchy. Most of this code should take a `Profile` and return a string or a
   dict, which is also what makes it testable without a sandbox.
-- **Few dependencies.** Two runtime ones, and only while the chooser is being
-  rebuilt: `prompt_toolkit`, which the screens are written against, and
-  `questionary`, which goes when the last one-question-at-a-time screen does.
-  Argue for another one in the PR. The standard library covers JSON, paths,
-  subprocess and dataclasses.
+- **Few dependencies.** `prompt_toolkit` is the only runtime dependency, and the
+  chooser's screens are written against it directly. Argue for a second one in
+  the PR. The standard library covers JSON, paths, subprocess and dataclasses.
 
 **Documentation is concise and plain English.**
 

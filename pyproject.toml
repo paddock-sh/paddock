@@ -4,10 +4,8 @@ version = "0.1.0"
 description = "Sandboxed agent sessions for herdr: per-pane tool, network, and filesystem permissions"
 requires-python = ">=3.10"
 dependencies = [
-    # The screens are prompt_toolkit Applications of our own. questionary goes when the
-    # chooser stops asking questions one at a time, leaving this as the only runtime one.
+    # The screens are prompt_toolkit Applications of our own, and it is the only one.
     "prompt-toolkit>=3.0",
-    "questionary>=2.0",
 ]
 
 [project.scripts]

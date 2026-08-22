@@ -7,6 +7,7 @@ read back.
 """
 
 import io
+import time
 from collections.abc import Callable
 
 import pytest
@@ -247,17 +248,18 @@ def test_a_short_terminal_keeps_the_filter_echo_on_a_list() -> None:
 def test_a_checklist_counts_what_is_ticked() -> None:
     hint = "Ticked binaries are on the PATH."
 
-    lines = screen.tick_lines("Tools it can run", hint, TOOLS, [0, 1, 2, 3, 4], 0)
+    lines = screen.tick_lines("Tools it can run", hint, TOOLS, [0, 1, 2, 3, 4], 1)
 
     assert lines[0] == screen.spread("Tools it can run", "3 of 5 ticked")
-    assert "> [x] git" in lines[6]
+    assert "> [x] git" in lines[7]
     assert any("[ ] fd" in line for line in lines)
+    assert any(screen.BACK_ROW[0] in line for line in lines)
 
 
 def test_a_short_terminal_scrolls_a_checklist_around_the_cursor() -> None:
     rows = [(f"tool{index}", False) for index in range(20)]
 
-    lines = screen.tick_lines("Tools", "hint", rows, list(range(20)), 12, height=12)
+    lines = screen.tick_lines("Tools", "hint", rows, list(range(20)), 13, height=12)
 
     assert len(lines) <= 12
     assert any("tool12" in line for line in lines)
@@ -337,7 +339,7 @@ def test_a_short_terminal_still_draws_the_buttons_and_the_key_line() -> None:
     shown = drawn(f"{DOWN}\r", lambda: screen.form("p", "", FIELDS), rows=16)
 
     assert "[ Launch ]" in shown
-    assert "esc close" in shown
+    assert "esc cancel" in shown  # the form has nothing before it, so back would be a lie
 
 
 def test_ctrl_c_cancels_from_any_screen() -> None:
@@ -405,9 +407,44 @@ def test_a_filter_that_matches_nothing_takes_nothing() -> None:
     assert drive(f"/zzz\r\r{ESC}{ESC}", lambda: screen.pick("Profile", PROFILES)) is None
 
 
+def test_a_row_that_cannot_be_chosen_is_not_chosen() -> None:
+    why = {1: "msb is not installed"}
+
+    assert drive(f"{DOWN}\r{UP}\r", lambda: screen.pick("Backend", MENU, refused=why)) == 0
+    assert drive(f"{DOWN}\r{ESC}{ESC}", lambda: screen.pick("Backend", MENU, refused=why)) is None
+
+
+def test_a_refused_row_says_why_on_the_key_line() -> None:
+    """Greying a row without saying why is the questionnaire's habit, not this one's."""
+    assert screen.list_footer("msb is not installed", False, 3) == "msb is not installed"
+    assert screen.list_footer("", False, 3) == screen.pick_footer(3)
+    assert screen.list_footer("", True, 9) == screen.footer_line(screen.FILTER_KEYS)
+
+
 def test_the_filter_key_is_advertised_only_on_a_list_worth_filtering() -> None:
     assert screen.FILTER_KEY not in screen.pick_footer(3)
     assert screen.FILTER_KEY in screen.pick_footer(9)
+
+
+def test_the_way_back_is_the_first_row_of_a_list() -> None:
+    """Escape is the key, and the row is for everyone who has not learned the key."""
+    lines = screen.list_lines("Profile", "", [screen.BACK_ROW, *PROFILES], [0, 1, 2, 3], 0)
+
+    assert screen.BACK_ROW[0] in lines[2]
+    assert drive(f"{UP}\r", lambda: screen.pick("Profile", PROFILES)) is None
+    assert drive("\r", lambda: screen.pick("Profile", PROFILES)) == 0
+
+
+def test_the_back_row_and_escape_are_the_same_answer() -> None:
+    assert drive(f"{UP}{UP}\r", lambda: screen.pick("Profile", PROFILES, cursor=1)) is None
+    assert drive(ESC * 2, lambda: screen.pick("Profile", PROFILES, cursor=1)) is None
+
+
+def test_a_refused_row_still_counts_from_the_callers_own_rows() -> None:
+    """The Back row is the screen's, so what a caller says about row 1 is about its row 1."""
+    why = {1: "msb is not installed"}
+
+    assert drive(f"{DOWN}\r{UP}\r", lambda: screen.pick("Backend", MENU, refused=why)) == 0
 
 
 # --- the checklist ----------------------------------------------------------
@@ -420,6 +457,12 @@ def test_space_ticks_and_enter_is_done() -> None:
 def test_escape_from_a_checklist_keeps_the_ticks() -> None:
     """The promise: escape closes what is open and never loses an answer."""
     assert drive(f" {ESC}{ESC}", lambda: screen.tick("Tools", TOOLS)) == [1, 4]
+
+
+def test_the_way_back_is_the_first_row_of_a_checklist_too() -> None:
+    """Taking it is what escape does: back one level, with the ticks as they now stand."""
+    assert drive(f" {UP}\r", lambda: screen.tick("Tools", TOOLS)) == [1, 4]
+    assert drive(f"{UP} \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 4]
 
 
 def test_all_and_none_are_one_key_each() -> None:
@@ -442,6 +485,83 @@ def test_a_filtered_checklist_ticks_the_row_it_shows() -> None:
     assert drive("/fd\r \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 4]
 
 
+def test_the_key_line_says_how_to_reach_the_box() -> None:
+    """A composite nobody can find is a composite nobody has: tab has to be on the line."""
+    line = screen.footer_line(screen.BOX_KEYS)
+
+    assert "tab to the box" in line
+    assert get_cwidth(line) <= screen.WIDTH
+    assert any("tab" in key for key, _ in screen.KEY_LIST)
+
+
+def test_escape_answers_at_once_from_a_box_as_well_as_a_list() -> None:
+    """A box that hangs for a second on escape reads as a screen that ignored the key."""
+    started = time.monotonic()
+    drive(f"review{ESC}{ESC}", lambda: screen.type_in("Name", ""))
+    box = time.monotonic() - started
+
+    started = time.monotonic()
+    drive(ESC * 2, lambda: screen.pick("Profile", PROFILES))
+    listed = time.monotonic() - started
+
+    assert box < 0.5  # a tenth of a second is the wait, and the rest is the machine
+    assert listed < 0.5
+
+
+def test_two_sessions_with_long_names_are_two_different_rows() -> None:
+    """The label column gives way to what tells one row from another."""
+    choices = [
+        ("review-of-the-parser: claude / claude-default, 2 tabs", "one"),
+        ("review-of-the-backend: claude / claude-default, 1 tab", "two"),
+    ]
+
+    lines = screen.list_lines("Open", "", choices, [0, 1], 0)
+
+    assert lines[2] != lines[3]
+    assert "review-of-the-parser" in lines[2]
+    assert "review-of-the-backend" in lines[3]
+
+
+def test_a_checklist_can_carry_a_box_under_it() -> None:
+    """Section 5.5 puts the groups and the extra domains on one screen, which kills a question."""
+    box = ("Also allow", "", "space separated")
+
+    ticked, typed = drive(
+        "\texample.com\r", lambda: screen.tick("Network", TOOLS, box=box)
+    )
+
+    assert ticked == [0, 1, 4]
+    assert typed == "example.com"
+
+
+def test_tab_goes_to_the_box_and_back_to_the_list() -> None:
+    ticked, typed = drive(
+        "\texample.com\t \r", lambda: screen.tick("Network", TOOLS, box=("Also allow", "", ""))
+    )
+
+    assert ticked == [1, 4]  # the space came back to the list and unticked the first row
+    assert typed == "example.com"
+
+
+def test_letters_inside_the_box_stay_text() -> None:
+    """`a` and `n` are keys on the list and text in the box, the same as inside the filter."""
+    ticked, typed = drive(
+        "\tan\r", lambda: screen.tick("Network", TOOLS, box=("Also allow", "", ""))
+    )
+
+    assert ticked == [0, 1, 4]
+    assert typed == "an"
+
+
+def test_the_box_and_its_line_are_drawn_under_the_list() -> None:
+    lines = screen.tick_lines(
+        "Network", "hint", TOOLS, [0, 1, 2, 3, 4], 0, box=("Also allow", "a.com", "space separated")
+    )
+
+    assert any("Also allow" in line and "a.com" in line for line in lines)
+    assert any("space separated" in line for line in lines)
+
+
 # --- the text box -----------------------------------------------------------
 
 
@@ -457,6 +577,12 @@ def test_the_box_starts_on_the_value_it_was_given() -> None:
 
 def test_escape_from_a_box_keeps_what_was_typed() -> None:
     assert drive(f"review{ESC}{ESC}", lambda: screen.type_in("Name", "")) == "review"
+
+
+def test_a_box_says_whether_escape_was_what_closed_it() -> None:
+    """Two screens for one field, so the inner one has to back out to the outer one."""
+    assert drive("review\r", lambda: screen.typed_in("Name", "")) == ("review", False)
+    assert drive(f"review{ESC}{ESC}", lambda: screen.typed_in("Name", "")) == ("review", True)
 
 
 def test_a_bad_answer_is_reported_on_the_key_line_and_the_box_stays_open() -> None:

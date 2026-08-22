@@ -26,35 +26,51 @@ it two keystrokes. Per-session VPNs, isolated IPs, and microVMs are on the
 
 ## The chooser
 
-`prefix+c` opens a popup instead of creating a window:
+`prefix+c` opens a popup with one screen on it:
 
 ```
-New window:
-  > Local namespace (no sandbox)
-    New sandbox session
-    Attach to an existing session
+paddock                          claude-default            in ~/dev/paddock
+
+   1 Open       New sandbox
+ > 2 Profile    claude-default
+   3 Backend    srt (instant, a policy sandbox)
+   4 Agent      Claude Code (claude)
+   5 Tools      git rg fd jq curl node npm npx uv python3               (10)
+   6 Network    anthropic, github, npm, pypi/uv                (12 domains)
+   7 Files      an isolated scratch directory
+   8 Skills     none
+   9 Advanced   name, save as profile, MCP
+
+ Fills in everything below. Change anything and the title says "+ changes",
+ because the session will then not be what the profile says.
+
+   [ Launch ]        [ Cancel ]
+
+enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys
 ```
 
-**Local namespace** makes an ordinary herdr tab in the current directory.
+The form is filled in already, so the ordinary case is one key press: `L`. Every
+field is one arrow key or one digit away, and enter opens it. Escape closes what
+it opened without losing what you did there, and every list and checklist draws a
+**← Back** row that does the same thing for anyone who would rather see it than
+know it. Escape on the form itself cancels, because nothing is before it. Ctrl-c
+cancels from any depth, and nothing has been launched or written by then.
 
-**New sandbox session** asks what this sandbox may do, then asks for a name:
-
-| Question | What it controls |
+| Field | What it decides |
 | --- | --- |
-| Which agent? | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or any command you type |
-| Which tools? | The binaries on the sandbox `PATH` |
-| Which network? | The domain allowlist. Everything else is refused |
-| Share a directory? | A host directory, read-write, or an isolated scratch workdir |
-| Which skills / MCP servers? | Only the ones you tick exist inside the sandbox |
+| `Open` | A new sandbox, an ordinary local tab, or a second tab on a session already running |
+| `Profile` | What everything below starts from. Change anything and the session runs as "the profile + changes", never under its name |
+| `Backend` | `srt`, a policy sandbox around the process, or `msb`, a microVM that starts slower and shares less |
+| `Agent` | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or a command you type |
+| `Tools` | The binaries on the sandbox `PATH`. An absolute path still runs anything, so this is convenience, not a boundary |
+| `Network` | The domain allowlist, by group, plus any domain you add. Everything else is refused by the OS |
+| `Files` | An isolated scratch directory, or the one host directory the sandbox may change |
+| `Skills` | Only the ticked ones exist inside the sandbox at all |
+| `Advanced` | The session name, and saving these answers as a profile |
 
-A wrong answer is not a restart: every list question has a **← Back** entry, and
-the last screen is a summary of the answers you can edit before it launches.
-
-**Attach to an existing session** lists live sessions with their name, agent,
-profile and attached tabs.
-
-Save any set of answers as a **profile** and reuse it next time. Plain new-tab
-moves to `prefix+shift+c`.
+`s` saves the answers as a profile, which makes them one pick next time. It is
+for a sandbox: a local tab and an attached one have no permissions of their own
+to save. Plain new-tab moves to `prefix+shift+c`.
 
 ## Sessions
 
