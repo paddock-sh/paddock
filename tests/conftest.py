@@ -102,6 +102,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
 @pytest.fixture
 def which(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Control what the code finds on the host PATH."""
-    found = {"srt": "/opt/bin/srt", "npx": "/opt/bin/npx", "git": "/usr/bin/git"}
+    found = {
+        "srt": "/opt/bin/srt",
+        "npx": "/opt/bin/npx",
+        "msb": "/opt/bin/msb",
+        "git": "/usr/bin/git",
+    }
     monkeypatch.setattr(shutil, "which", found.get)
     return found

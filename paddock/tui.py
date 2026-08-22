@@ -25,6 +25,7 @@ from paddock.profiles import (
     load_profiles,
     save_profile,
 )
+from paddock.sessions import DEFAULT_BACKEND
 
 # The "none of the saved ones" entry in the profile and agent lists. It is not a
 # name anyone would give a file, so it cannot collide with a real key.
@@ -58,6 +59,8 @@ class NewSession:
     save_as: str = ""
     # A command the user typed instead of picking an agent, remembered as `profile.agent`.
     agent_command: str = ""
+    # Which backend runs it. The chooser does not ask yet, so only `paddock launch` sets this.
+    backend: str = DEFAULT_BACKEND
 
 
 Plan = Local | Attach | NewSession

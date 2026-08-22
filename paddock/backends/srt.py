@@ -16,13 +16,18 @@ import os
 import shlex
 import shutil
 import sys
-import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, state_dir, synth_config
+from paddock import herdr_client, synth_config
 from paddock.agents import AgentSpec, load_agents
+from paddock.backends import (
+    LAUNCH_FILE,
+    RunNotFound,
+    launch_line,
+    new_run_dir,
+    write_launch_script,
+)
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
 
@@ -56,19 +61,9 @@ PROXY_ENV = (
     "GIT_SSH_COMMAND",
 )
 
-# The prepared run, written into the run dir so a later tab can attach to the same policy.
-LAUNCH_FILE = "launch.json"
-
-# The same command as a script, because the pane is sent a line, not a file (see launch_line).
-LAUNCH_SCRIPT = "launch.sh"
-
 
 class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
-
-
-class RunNotFound(RuntimeError):
-    """The run dir holds no usable launch record, so nothing can attach to it."""
 
 
 @dataclass
@@ -88,13 +83,6 @@ def find_srt() -> list[str]:
     if shutil.which("npx"):
         return ["npx", "-y", "@anthropic-ai/sandbox-runtime"]
     raise SrtNotFound(f"srt not found, and no npx to run it. Install it with: {INSTALL_COMMAND}")
-
-
-def new_run_dir() -> Path:
-    """A fresh directory for this launch: its shim dir, settings file and scratch workdir."""
-    runs = state_dir() / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-"), dir=runs))
 
 
 def workdir_for(profile: Profile, run_dir: Path) -> Path:
@@ -197,28 +185,6 @@ def pane_command(
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
 
 
-def write_launch_script(run_dir: Path, command: str) -> Path:
-    """Put the composed command in the run dir, where the pane can run it by name.
-
-    The run dir is not writable from inside the sandbox, so the agent cannot rewrite
-    the script that launched it.
-    """
-    script = run_dir / LAUNCH_SCRIPT
-    script.write_text(f"#!/bin/sh\n{command}\n")
-    script.chmod(0o700)
-    return script
-
-
-def launch_line(run_dir: Path) -> str:
-    """What `herdr pane run` is sent: short on purpose.
-
-    herdr types the line into the pane's shell, and a tty in canonical mode drops
-    everything past 1024 bytes, which the composed command passes easily. `exec`
-    replaces that shell, so closing the agent closes the pane.
-    """
-    return f"exec /bin/sh {shlex.quote(str(run_dir / LAUNCH_SCRIPT))}"
-
-
 def prepare(profile: Profile) -> Run:
     """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
 
@@ -267,6 +233,10 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
     herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
     return pane_id
+
+
+def collect(run_dir: Path) -> None:
+    """Nothing is left running: an srt session is a settings file and a workdir (SPEC §3.2)."""
 
 
 def _expand(path: str) -> Path:

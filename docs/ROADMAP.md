@@ -6,9 +6,11 @@ stubbed in the code until it is built.
 
 ## Stronger isolation
 
-- **A `microsandbox` backend.** Each session runs in its own libkrun microVM
-  instead of a filtered view of the host: hardware isolation, an OCI image per
-  agent, and volume mounts where a session shares a host directory.
+- **Agents inside the microVM.** The `msb` backend runs shell sessions today
+  ([SPEC §2.2](SPEC.md#22-microsandbox-msb-registered-as-msb)): its own libkrun
+  microVM per session, an OCI image, and a volume mount where a session shares a
+  host directory. What is left is provisioning an agent in the guest, which needs
+  an image per agent and the config dir mounted in.
 - **Workspace-scoped sessions.** One persistent microVM per workspace, with every
   tab exec'ing into the same guest, so tabs in a group share processes and not
   just files.

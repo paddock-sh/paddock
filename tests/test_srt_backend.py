@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from paddock import backends
 from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
 from paddock.profiles import Profile
@@ -505,7 +506,7 @@ def test_no_srt_and_no_npx_names_the_install_command(which: dict[str, str]) -> N
 
 
 def test_each_launch_gets_its_own_timestamped_run_dir(state_dir: Path) -> None:
-    first, second = srt.new_run_dir(), srt.new_run_dir()
+    first, second = backends.new_run_dir(), backends.new_run_dir()
 
     assert first != second
     assert first.parent == state_dir / "runs"
@@ -693,7 +694,7 @@ def test_the_pane_line_is_a_short_exec_of_the_script(
     """`herdr pane run` types this into the pane's tty, which drops it past 1024 bytes."""
     run = srt.prepare(Profile(tools=[]))
 
-    line = srt.launch_line(run.run_dir)
+    line = backends.launch_line(run.run_dir)
 
     assert line == f"exec /bin/sh {run.run_dir}/launch.sh"
     assert len(line) < 512
@@ -702,7 +703,7 @@ def test_the_pane_line_is_a_short_exec_of_the_script(
 def test_a_run_dir_with_a_space_is_still_one_argument(tmp_path: Path) -> None:
     run_dir = tmp_path / "run dir"
 
-    assert shlex.split(srt.launch_line(run_dir))[2] == str(run_dir / "launch.sh")
+    assert shlex.split(backends.launch_line(run_dir))[2] == str(run_dir / "launch.sh")
 
 
 def test_the_script_reaches_srt_with_everything_intact(
@@ -720,8 +721,9 @@ def test_the_script_reaches_srt_with_everything_intact(
     command = srt.pane_command(
         Profile(), CLAUDE, tmp_path / "s.json", tmp_path / "shim dir", NO_REDIRECT
     )
-    srt.write_launch_script(tmp_path, command)
-    result = subprocess.run(srt.launch_line(tmp_path), shell=True, capture_output=True, text=True)
+    backends.write_launch_script(tmp_path, command)
+    line = backends.launch_line(tmp_path)
+    result = subprocess.run(line, shell=True, capture_output=True, text=True)
 
     assert result.returncode == 0
     argv = result.stdout.splitlines()
@@ -743,7 +745,7 @@ def test_a_prepared_run_reads_back_the_same(which: dict[str, str], fake_home: Pa
 
 
 def test_a_run_dir_with_no_launch_record_is_a_clear_error(tmp_path: Path) -> None:
-    with pytest.raises(srt.RunNotFound, match=str(tmp_path)):
+    with pytest.raises(backends.RunNotFound, match=str(tmp_path)):
         srt.load_run(tmp_path)
 
 

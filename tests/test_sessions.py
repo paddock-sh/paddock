@@ -9,25 +9,28 @@ from pathlib import Path
 import pytest
 
 from paddock import sessions
+from paddock.backends import microsandbox, srt
 from paddock.profiles import Profile
 from tests.conftest import FakeClient
 
 
 @dataclass
 class FakeRun:
-    """What a backend hands back: sessions only ever reads the run dir off it."""
+    """What a backend hands back: sessions reads the run dir, and a VM handle if there is one."""
 
     run_dir: Path
+    vm_handle: str = ""
 
 
 class FakeBackend:
     """A backend that is not srt, so dispatch is tested on the name and not on one module."""
 
-    def __init__(self, run_dir: str = "/state/runs/fake") -> None:
-        self.run = FakeRun(Path(run_dir))
+    def __init__(self, run_dir: str = "/state/runs/fake", vm_handle: str = "") -> None:
+        self.run = FakeRun(Path(run_dir), vm_handle)
         self.prepared: list[Profile] = []
         self.loaded: list[Path] = []
         self.opened: list[tuple[object, str, Path | None]] = []
+        self.collected: list[Path] = []
 
     def prepare(self, profile: Profile) -> FakeRun:
         self.prepared.append(profile)
@@ -40,6 +43,9 @@ class FakeBackend:
     def open_pane(self, run: FakeRun, label: str = "", cwd: Path | None = None) -> str:
         self.opened.append((run, label, cwd))
         return "wA:p7"
+
+    def collect(self, run_dir: Path) -> None:
+        self.collected.append(run_dir)
 
 
 @pytest.fixture(autouse=True)
@@ -278,6 +284,10 @@ def test_launch_creates_a_session_and_attaches_to_it(
 # --- backends --------------------------------------------------------------
 
 
+def test_both_backends_are_registered_under_the_names_records_carry() -> None:
+    assert sessions.BACKENDS == {"srt": srt, "msb": microsandbox}
+
+
 def test_a_new_session_says_which_backend_it_runs_on(
     which: dict[str, str], client: FakeClient, state_dir: Path
 ) -> None:
@@ -338,14 +348,14 @@ def test_a_field_a_newer_paddock_wrote_survives_a_rewrite(
     """One registry, two paddocks: writing it back must not strip what the newer one added."""
     write_registry(
         state_dir,
-        [record(session_id="newer", name="newer", backend="microsandbox", vm_handle="paddock-1")],
+        [record(session_id="newer", name="newer", backend="future", shard="b")],
     )
 
     session = sessions.create_session(Profile(tools=[]), name="demo")
     sessions.remove_pane(sessions.attach(session))
 
     records = json.loads((state_dir / "sessions.json").read_text())
-    assert [entry.get("vm_handle") for entry in records] == ["paddock-1"]
+    assert [entry.get("shard") for entry in records] == ["b"]
 
 
 def test_a_field_written_while_a_tab_was_opening_is_kept(
@@ -360,7 +370,7 @@ def test_a_field_written_while_a_tab_was_opening_is_kept(
                 session_id=session.session_id,
                 name="demo",
                 run_dir=session.run_dir,
-                vm_handle="paddock-1",
+                shard="b",
             )
         ],
     )
@@ -368,7 +378,7 @@ def test_a_field_written_while_a_tab_was_opening_is_kept(
     sessions.attach(session)
 
     records = json.loads((state_dir / "sessions.json").read_text())
-    assert [entry.get("vm_handle") for entry in records] == ["paddock-1"]
+    assert [entry.get("shard") for entry in records] == ["b"]
 
 
 def test_a_new_session_is_prepared_by_the_registered_backend(
@@ -382,6 +392,73 @@ def test_a_new_session_is_prepared_by_the_registered_backend(
 
     assert fake.prepared == [profile]
     assert session.run_dir == "/state/runs/fake"
+
+
+def test_a_new_session_can_be_asked_for_on_another_backend(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch, state_dir: Path
+) -> None:
+    """Two backends exist now, so the caller says which one, and the record keeps the answer."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+
+    assert session.backend == "fake"
+    assert fake.prepared == [Profile(tools=[])]
+    assert json.loads((state_dir / "sessions.json").read_text())[0]["backend"] == "fake"
+
+
+def test_a_backend_this_paddock_lacks_prepares_nothing(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    with pytest.raises(ValueError, match="nope"):
+        sessions.create_session(Profile(tools=[]), name="demo", backend="nope")
+
+    assert sessions.list_sessions() == []
+
+
+def test_launch_can_name_the_backend_too(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    session, pane_id = sessions.launch(Profile(tools=[]), name="demo", backend="fake")
+
+    assert session.backend == "fake"
+    assert pane_id == "wA:p7"
+
+
+# --- the VM a session runs in ----------------------------------------------
+
+
+def test_a_session_on_a_vm_records_its_handle(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch, state_dir: Path
+) -> None:
+    """The handle every msb subcommand takes, kept where the registry can be reconciled."""
+    fake = FakeBackend(vm_handle="paddock-1")
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+
+    assert session.vm_handle == "paddock-1"
+    assert sessions.get_session("demo").vm_handle == "paddock-1"
+    assert json.loads((state_dir / "sessions.json").read_text())[0]["vm_handle"] == "paddock-1"
+
+
+def test_a_session_with_no_vm_names_none(which: dict[str, str], client: FakeClient) -> None:
+    """An srt session is a settings file and a workdir, so there is no handle to keep."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+
+    assert session.vm_handle == ""
+
+
+def test_a_record_written_before_the_vm_handle_field_is_still_a_session(state_dir: Path) -> None:
+    legacy = record()
+    legacy.pop("vm_handle")
+    write_registry(state_dir, [legacy])
+
+    assert [session.vm_handle for session in sessions.list_sessions()] == [""]
 
 
 # --- lifecycle -------------------------------------------------------------
@@ -450,6 +527,44 @@ def test_a_session_that_survives_keeps_its_token(
     sessions.remove_pane(pane_id)
 
     assert (Path(session.run_dir) / "config" / ".credentials.json").is_file()
+
+
+def test_collecting_a_session_lets_its_backend_tear_the_run_down(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This is where a microVM is destroyed: nothing else knows the session ended."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+
+    sessions.remove_pane(sessions.attach(session))
+
+    assert fake.collected == [Path(session.run_dir)]
+
+
+def test_a_session_that_survives_its_last_pane_is_not_torn_down(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+    session.keep_alive = True
+
+    sessions.remove_pane(sessions.attach(session))
+
+    assert fake.collected == []
+
+
+def test_collecting_a_session_on_a_backend_this_paddock_lacks_says_so(
+    state_dir: Path, client: FakeClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A newer paddock's session leaves the registry here; only its own can tear it down."""
+    write_registry(state_dir, [record(backend="future", pane_ids=["wA:p3"])])
+
+    sessions.remove_pane("wA:p3")
+
+    assert sessions.list_sessions() == []
+    assert "future" in capsys.readouterr().err
 
 
 def test_a_pane_nobody_registered_changes_nothing(

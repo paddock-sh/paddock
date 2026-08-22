@@ -17,25 +17,26 @@ package "paddock" {
   [cli.py\nchoose | launch | attach | profiles | init\n~--cwd, ~--dry-run] as CLI
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
   [tui.py\nquestionary chooser\nanswers -> a plan] as TUI
-  [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
+  [sessions.py\nsession registry\ncreate | attach | remove_pane\n(collect on the last pane)] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
   [agents.py\nagent registry\n+ layer-2 adapters] as Agents
   [synth_config.py\nsynthesized config dir\n(credentials + ticked skills\n+ MCP whitelist)] as SynthConfig
-  interface "Backend\nprepare(profile) -> run\nload_run(run_dir) -> run\nopen_pane(run, label)\n-> pane id" as BackendAPI
+  interface "Backend\nprepare(profile) -> run\nload_run(run_dir) -> run\nopen_pane(run, label)\n-> pane id\ncollect(run_dir)" as BackendAPI
   [sessions.BACKENDS\nbackend name -> the module\nthat runs it] as BackendRegistry
-  [backends/srt.py\nv1\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
-  [backends/microsandbox.py\nv1.1 (planned)] as MsbBackend
+  [backends/srt.py\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
+  [backends/__init__.py\nthe run dir both share:\nlaunch.json + launch.sh] as RunContract
+  [backends/microsandbox.py\nmsb create / exec --tty / rm -f\nprepare / open_pane / collect\n(shell sessions; agents in the\nguest are the next feature)] as MsbBackend
   [herdr_client.py\ncreate_tab / run_in_pane\ncheck_config / reload_config\n(mockable seam)] as HerdrClient
 }
 
 package "Host configuration" {
   database "~/.config/paddock/\n(override: $PADDOCK_CONFIG_DIR)\nprofiles/*.json\nagents/*.json" as ConfigFiles
-  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ bin/ + srt-settings.json +\nconfig/ + work/ + launch.json + launch.sh\nsessions.json (registry: backend, run_dir,\npane ids per session)\nworkspace default bindings (planned)" as RunDir
+  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ launch.json + launch.sh +\nwork/ (when the profile shares no dir),\nplus for srt: bin/ + srt-settings.json + config/\nsessions.json (registry: backend, vm_handle,\nrun_dir, pane ids per session)\nworkspace default bindings (planned)" as RunDir
 }
 
 package "Sandbox runtimes" {
   [srt\nSeatbelt (macOS)\nbubblewrap (Linux)] as Srt
-  [msb\nlibkrun microVM\nOCI images] as Msb
+  [msb\nlibkrun microVM from an OCI image\nno daemon: one process per VM] as Msb
 }
 
 User --> CLI : runs `paddock init` once, after installing
@@ -58,26 +59,29 @@ BackendAPI <|.. SrtBackend
 BackendAPI <|.. MsbBackend
 
 SrtBackend --> RunDir : writes PATH shim dir, srt-settings.json,\nconfig dir, scratch workdir, launch.json, launch.sh
-Sessions --> BackendRegistry : backend_for(session.backend):\nprepare on create,\nload_run + open_pane on attach
+MsbBackend --> RunDir : writes launch.json (vm_handle, workdir)\nand launch.sh (`msb exec --tty <handle>`)
+SrtBackend ..> RunContract : launch.sh + the pane line
+MsbBackend ..> RunContract : launch.sh + the pane line
+Sessions --> BackendRegistry : backend_for(session.backend):\nprepare on create,\nload_run + open_pane on attach,\ncollect when the last pane goes
 BackendRegistry --> SrtBackend : "srt"
-BackendRegistry ..> MsbBackend : "microsandbox"\nplanned (v1.1)
+BackendRegistry --> MsbBackend : "msb"
 Sessions --> HerdrClient : launch_local: a plain tab,\nno session, no sandbox
 SrtBackend ..> SynthConfig : build config dir
-MsbBackend ..> SynthConfig : build config dir (skills copied:\na host skill path is outside the mount)
+MsbBackend ..> SynthConfig : planned: mount run_dir/config into the guest\n(skills copied: a host skill path is outside the mount)
 Agents --> SynthConfig : credentials + whitelisted skills
 
 SrtBackend --> HerdrClient : pane command + env
-MsbBackend ..> HerdrClient : pane command
+MsbBackend --> HerdrClient : pane command (no env: the guest\ngets its own with `msb create -e`)
 HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> `exec /bin/sh <run_dir>/launch.sh`\nherdr config check | herdr server reload-config
 HerdrCLI --> HerdrUI : creates tab, returns\nresult.root_pane.pane_id
-HerdrUI --> Srt : sandboxed pane process (v1)
-HerdrUI ..> Msb : sandboxed pane process (v1.1)
+HerdrUI --> Srt : sandboxed pane process
+HerdrUI --> Msb : `msb exec --tty` into the session VM
 
 note right of BackendAPI
   A backend works the whole launch out as
   plain functions, then opens the pane through
   herdr_client. That client is the seam every
-  test mocks, so CI needs no herdr and no srt.
+  test mocks, so CI needs no herdr, no srt and no msb.
 
   Each session record names its backend.
   A name that is not in sessions.BACKENDS

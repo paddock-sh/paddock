@@ -1,7 +1,7 @@
 # Spike: the microsandbox (`msb`) backend
 
 Feasibility spike for the v1.1 `microsandbox` backend in
-[SPEC.md §2.2](../SPEC.md#22-v11-microsandbox-design-record-not-stubbed-in-v1).
+[SPEC.md §2.2](../SPEC.md#22-microsandbox-msb-registered-as-msb).
 Everything below was measured on this machine. No number is estimated.
 
 **Verdict: GO WITH CAVEATS.** `msb` does what §2.2 needs, and does it better than
