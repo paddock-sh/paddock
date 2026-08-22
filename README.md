@@ -5,19 +5,24 @@
 A paddock for your herd: sandboxed agent environments for
 [Herdr](https://herdr.dev).
 
-Herdr is a terminal multiplexer for AI coding agents. paddock takes over
-new-window creation: press `prefix+c` and choose a plain local tab or a named
-sandbox session. For each sandbox you pick the agent (Claude Code, Codex,
-OpenCode, Aider, Gemini, or any command), the tools on its `PATH`, the network
-domains it may reach (everything else is refused), the skills and MCP servers
-it can see, and an optional shared read-write directory. Saved profiles make
-it two keystrokes. Isolation is enforced at the OS level: Seatbelt on macOS,
-bubblewrap on Linux. Per-session VPNs, isolated per-session IPs, and microVM
-isolation are on the [roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
+Press `prefix+c` in [Herdr](https://herdr.dev). Pick a plain local tab, or an
+agent in a sandbox.
+
+You choose what each sandbox gets:
+
+- **Agent**: Claude Code, Codex, OpenCode, Aider, Gemini, or any command
+- **Tools**: only the binaries you tick are on its `PATH`
+- **Network**: a domain allowlist; everything else is refused
+- **Skills and MCP servers**: unticked ones do not exist inside the sandbox
+- **Files**: writes denied by default, plus one optional shared directory
+
+Enforced by the OS: Seatbelt on macOS, bubblewrap on Linux. Saved profiles make
+it two keystrokes. Per-session VPNs, isolated IPs, and microVMs are on the
+[roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
 
 > **Status:** the v1 launcher works end to end. It has had no outside security
 > review, so read the [trust model](#trust-model) before you point it at anything
-> valuable. Where this is going: [docs/ROADMAP.md](docs/ROADMAP.md).
+> valuable.
 
 ## The chooser
 
