@@ -10,6 +10,8 @@ import pytest
 from paddock import recent, sessions, tui
 from paddock.agents import AgentSpec, builtin_agents, load_agents
 from paddock.profiles import (
+    LOCAL_SERVICES,
+    LOCAL_SERVICES_CONSEQUENCE,
     NETWORK_PRESETS,
     Profile,
     builtin_profiles,
@@ -684,6 +686,21 @@ def test_the_confirm_says_an_offline_sandbox_is_offline() -> None:
     lines = dict(tui.confirm_lines({}, profile, load_agents()))
 
     assert lines["can reach"] == "nothing, this sandbox is offline"
+
+
+def test_the_confirm_says_what_the_local_grant_really_opens() -> None:
+    """Two domain names understate it: the grant is not port-scoped, so the line has to say so."""
+    profile = Profile(agent="shell", network_presets=[LOCAL_SERVICES])
+
+    lines = dict(tui.confirm_lines({}, profile, load_agents()))
+
+    assert LOCAL_SERVICES_CONSEQUENCE in lines["can reach"]
+
+
+def test_a_sandbox_without_the_local_grant_does_not_claim_it() -> None:
+    lines = dict(tui.confirm_lines({}, Profile(), load_agents()))
+
+    assert LOCAL_SERVICES_CONSEQUENCE not in lines["can reach"]
 
 
 def test_the_confirm_names_the_only_writable_path_of_yours() -> None:

@@ -8,6 +8,8 @@ import pytest
 from paddock.agents import builtin_agents
 from paddock.profiles import (
     DEFAULT_DENY_READ,
+    LOCAL_SERVICES,
+    NETWORK_ALL,
     NETWORK_PRESETS,
     Profile,
     builtin_profiles,
@@ -55,12 +57,87 @@ def test_network_presets_cover_the_spec_keys() -> None:
         "go",
         "crates.io",
         "homebrew",
+        LOCAL_SERVICES,
+        NETWORK_ALL,
     }
+
+
+def test_the_everything_preset_names_no_domains_of_its_own() -> None:
+    """It is a sentinel, not a group: what it asks for is "no allowlist at all"."""
+    assert NETWORK_PRESETS[NETWORK_ALL] == []
+
+
+def test_no_profile_ships_with_everything_ticked() -> None:
+    assert NETWORK_ALL not in Profile().network_presets
+    for profile in builtin_profiles().values():
+        assert NETWORK_ALL not in profile.network_presets
+
+
+def test_the_everything_preset_asks_for_every_domain() -> None:
+    assert Profile(network_presets=[NETWORK_ALL]).opens_every_domain() is True
+    assert Profile().opens_every_domain() is False
+
+
+def test_the_everything_preset_leaves_the_resolved_domains_alone() -> None:
+    """The sentinel is read by the backend, not folded into the list, so it adds nothing."""
+    profile = Profile(agent="claude", network_presets=["github", NETWORK_ALL])
+    named = Profile(agent="claude", network_presets=["github"])
+
+    assert profile.allowed_domains() == named.allowed_domains()
 
 
 def test_the_openai_preset_opens_what_codex_signs_in_and_talks_to() -> None:
     """Codex reaches these whatever is ticked. The preset is how any other agent can."""
     assert NETWORK_PRESETS["openai"] == builtin_agents()["codex"].api_domains
+
+
+def test_the_local_services_preset_names_loopback_and_nothing_else() -> None:
+    """It is not a domain group: what it names is this machine, under both its names."""
+    assert NETWORK_PRESETS[LOCAL_SERVICES] == ["localhost", "127.0.0.1"]
+
+
+def test_no_profile_ships_with_local_services_ticked() -> None:
+    """Reaching every local server is a grant, so it is never on unless someone ticks it."""
+    assert LOCAL_SERVICES not in Profile().network_presets
+    for profile in builtin_profiles().values():
+        assert LOCAL_SERVICES not in profile.network_presets
+
+
+def test_the_local_services_preset_opens_loopback() -> None:
+    assert Profile(network_presets=[LOCAL_SERVICES]).opens_local_services() is True
+
+
+def test_a_profile_without_it_opens_no_loopback() -> None:
+    remote = Profile(network_presets=[], extra_domains=["example.com"])
+
+    assert Profile().opens_local_services() is False
+    assert remote.opens_local_services() is False
+
+
+@pytest.mark.parametrize(
+    "domain", ["localhost", "127.0.0.1", "::1", "[::1]", "localhost:11434", "[::1]:11434"]
+)
+def test_any_way_of_writing_loopback_opens_it(domain: str) -> None:
+    """A typed-in domain is the same grant as the preset, port suffix or not."""
+    profile = Profile(network_presets=[], extra_domains=[domain])
+
+    assert profile.opens_local_services() is True
+
+
+@pytest.mark.parametrize("domain", ["my.localhost.dev", "notlocalhost", "127.0.0.1.example.com"])
+def test_a_domain_that_merely_looks_like_loopback_does_not_open_it(domain: str) -> None:
+    assert Profile(network_presets=[], extra_domains=[domain]).opens_local_services() is False
+
+
+def test_an_agent_that_names_loopback_opens_it_for_its_profile(config_dir: Path) -> None:
+    """A local-model agent declares 127.0.0.1 as its API. That declaration is the choice."""
+    agents = config_dir / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "ollama.json").write_text(
+        json.dumps({"command": "ollama", "api_domains": ["localhost", "127.0.0.1"]})
+    )
+
+    assert Profile(agent="ollama", network_presets=[]).opens_local_services() is True
 
 
 def test_save_then_load_round_trips_every_field(config_dir: Path) -> None:

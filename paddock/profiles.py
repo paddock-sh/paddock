@@ -15,6 +15,21 @@ TOOL_CANDIDATES = [
     "go", "cargo", "make", "cmake", "gh", "docker", "psql", "sqlite3",
 ]
 
+# The one checklist entry that is not a domain group: it names this machine (SPEC §2.1).
+LOCAL_SERVICES = "local services (localhost)"
+
+# What ticking it opens, which the domain names alone understate. Seatbelt's loopback rule
+# takes no port, so the grant is every listening port, not the ones anyone had in mind.
+LOCAL_SERVICES_CONSEQUENCE = "every service listening on this machine's loopback, whatever port"
+
+# How loopback can be written. Naming any of these is what turns the grant on (SPEC §2.1).
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+# The other entry that is not a domain group: no allowlist at all. It names no domains
+# because there is no pattern that means "every domain" — srt has none, and msb wants a
+# default rather than a rule (SPEC §2.1). A backend reads the sentinel, not a list.
+NETWORK_ALL = "everything"
+
 # Named domain groups for the network checklist.
 NETWORK_PRESETS: dict[str, list[str]] = {
     "anthropic": ["api.anthropic.com", "*.anthropic.com"],
@@ -34,6 +49,11 @@ NETWORK_PRESETS: dict[str, list[str]] = {
         "ghcr.io",
         "pkg-containers.githubusercontent.com",
     ],
+    # A local model server, a dev server, a database on this machine. Never ticked by
+    # default: what it opens is every loopback port, not the one port anyone meant.
+    LOCAL_SERVICES: ["localhost", "127.0.0.1"],
+    # No allowlist at all. Empty on purpose: the backend reads the key, not the value.
+    NETWORK_ALL: [],
 }
 
 # Credential directories no agent gets unless the profile says so.
@@ -69,6 +89,23 @@ class Profile:
         if agent is not None:
             domains += agent.api_domains
         return sorted(set(domains))
+
+    def opens_local_services(self) -> bool:
+        """Whether the resolved domains name loopback, which is what grants it (SPEC §2.1).
+
+        The preset is the usual way in, but a typed-in domain and a local-model agent's
+        own `api_domains` are the same declaration, so all three are read the same.
+        """
+        return any(_host(domain) in LOOPBACK_HOSTS for domain in self.allowed_domains())
+
+    def opens_every_domain(self) -> bool:
+        """Whether the profile asks for no allowlist at all (SPEC §2.1).
+
+        A sentinel rather than a value in `allowed_domains()`, because no string means
+        "every domain" to every backend: srt rejects the ones that try, and msb wants a
+        default instead of a rule. What the backends share is the question, not the answer.
+        """
+        return NETWORK_ALL in self.network_presets
 
 
 def profile_dir() -> Path:
@@ -110,6 +147,19 @@ def save_profile(profile: Profile) -> Path:
     path = profile_dir() / f"{name}.json"
     path.write_text(json.dumps(asdict(profile), indent=2) + "\n")
     return path
+
+
+def _host(domain: str) -> str:
+    """A domain entry without srt's optional `:port` suffix.
+
+    A bare IPv6 literal is all colons, so only a bracketed host or one with no colon at
+    all can lose a trailing number: `::1` keeps its `1`, `[::1]:443` does not.
+    """
+    host, separator, port = domain.rpartition(":")
+    if not separator or not port.isdigit():
+        return domain
+    bracketed = host.startswith("[") and host.endswith("]")
+    return host if bracketed or ":" not in host else domain
 
 
 def _read(path: Path) -> Profile | None:

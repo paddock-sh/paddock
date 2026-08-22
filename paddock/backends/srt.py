@@ -71,6 +71,21 @@ class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
 
 
+class UnsupportedPolicy(RuntimeError):
+    """The profile asks for something srt has no way to enforce."""
+
+
+# What `network_presets = ["everything"]` would need, and srt 0.0.73 has no form of.
+# `allowedDomains` is a required key whose every entry must be a host or a wildcard with
+# at least two labels after the `*.`; a bare `*` and even `*.com` are refused by name.
+NO_ALLOW_ALL = (
+    "srt cannot allow every domain: network.allowedDomains is a required key, and it "
+    "refuses a bare * as an overly broad pattern, so no settings file means unrestricted "
+    "egress. Name the domains this session needs, or run it on the msb backend, which "
+    "takes --net-default allow."
+)
+
+
 @dataclass
 class Run:
     """One prepared sandbox: the settings and workdir every attached tab shares."""
@@ -127,6 +142,10 @@ def build_settings(
     srt validates this against a schema and refuses to start if a key is missing, so
     every key is written even when its list is empty.
     """
+    if profile.opens_every_domain():
+        # Writing the named domains instead would enforce an allowlist nobody chose, and
+        # the sandbox would deny the traffic the profile said to allow (SPEC §2.1).
+        raise UnsupportedPolicy(NO_ALLOW_ALL)
     # /tmp and /private/tmp are one directory under two names on macOS; srt matches the
     # path as written. /dev/null is here so discarded output works.
     allow_write = [workdir, Path("/tmp"), Path("/private/tmp"), Path("/dev/null")]
@@ -159,11 +178,19 @@ def build_settings(
         # path an access resolves to. Allowing those by name re-opens exactly them.
         allow_read = [path for source in synth.linked for path in _both_names(source)]
     allow_write += [_expand(path) for path in profile.extra_allow_write]
+    network: dict = {
+        "allowedDomains": profile.allowed_domains(),
+        "deniedDomains": [],
+    }
+    if profile.opens_local_services():
+        # srt sends loopback past its proxy (its own NO_PROXY names 127.0.0.1), so the
+        # connect is direct and Seatbelt refuses it with EPERM unless this key is set. It
+        # is written only for a profile that named loopback, because the rule it compiles
+        # to takes no port: it reaches every local server, not the one that was meant
+        # (SPEC §2.1).
+        network["allowLocalBinding"] = True
     return {
-        "network": {
-            "allowedDomains": profile.allowed_domains(),
-            "deniedDomains": [],
-        },
+        "network": network,
         "filesystem": {
             "denyRead": _as_strings(deny_read),
             "allowRead": _as_strings(allow_read),
@@ -222,6 +249,10 @@ def prepare(profile: Profile) -> Run:
     agent = load_agents().get(profile.agent)
     if agent is None:
         raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
+    if profile.opens_every_domain():
+        # `build_settings` refuses this too, but that is three directories later: a policy
+        # srt cannot enforce should leave nothing on disk behind it.
+        raise UnsupportedPolicy(NO_ALLOW_ALL)
 
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)

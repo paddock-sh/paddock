@@ -22,6 +22,7 @@ from paddock import recent, screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
     DEFAULT_DENY_READ,
+    LOCAL_SERVICES_CONSEQUENCE,
     NETWORK_PRESETS,
     TOOL_CANDIDATES,
     Profile,
@@ -854,7 +855,12 @@ def _reachable(profile: Profile) -> str:
     domains = profile.allowed_domains()
     if not domains:
         return "nothing, this sandbox is offline"
-    return f"{_counted(domains)}: {', '.join(domains)}"
+    line = f"{_counted(domains)}: {', '.join(domains)}"
+    if not profile.opens_local_services():
+        return line
+    # Two names on the list understate the grant: the OS rule behind them takes no port,
+    # so the count is not what this sandbox can reach (SPEC §2.1).
+    return f"{line}. Plus {LOCAL_SERVICES_CONSEQUENCE}"
 
 
 def _runnable(profile: Profile, registry: dict[str, AgentSpec], backend: str = SRT) -> str:

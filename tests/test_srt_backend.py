@@ -12,7 +12,7 @@ import pytest
 from paddock import backends
 from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
-from paddock.profiles import Profile
+from paddock.profiles import LOCAL_SERVICES, NETWORK_ALL, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
 
@@ -229,6 +229,110 @@ def test_no_domain_is_denied_by_name(tmp_path: Path) -> None:
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
 
     assert settings["network"]["deniedDomains"] == []
+
+
+# --- the local-network grant -----------------------------------------------
+
+
+def test_a_profile_that_does_not_name_loopback_gets_no_local_grant(tmp_path: Path) -> None:
+    """The measured denial, pinned: without the key Seatbelt refuses the loopback connect
+    with EPERM, which is `dial tcp 127.0.0.1:11434: connect: operation not permitted`."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert "allowLocalBinding" not in settings["network"]
+
+
+def test_the_local_services_preset_grants_the_local_network(tmp_path: Path) -> None:
+    profile = Profile(network_presets=[LOCAL_SERVICES])
+
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+    assert "localhost" in settings["network"]["allowedDomains"]
+
+
+def test_a_typed_in_loopback_domain_grants_it_too(tmp_path: Path) -> None:
+    """The grant follows the resolved domains, not the preset name, so typing it counts."""
+    profile = Profile(network_presets=[], extra_domains=["127.0.0.1"])
+
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+
+
+def test_an_agent_that_names_loopback_grants_it_for_its_profile(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    """The local-model case: the agent entry declares 127.0.0.1 as the API it calls."""
+    agents = config_dir / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "ollama.json").write_text(
+        json.dumps({"command": "ollama", "api_domains": ["localhost", "127.0.0.1"]})
+    )
+    profile = Profile(agent="ollama", network_presets=[])
+
+    settings = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+
+
+def test_the_local_grant_leaves_every_other_key_alone(tmp_path: Path) -> None:
+    """It widens the network only. A denied read stays denied and the allowlist still holds."""
+    profile = Profile(network_presets=[LOCAL_SERVICES])
+
+    granted = srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+    plain = srt.build_settings(Profile(network_presets=[]), CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert granted["filesystem"] == plain["filesystem"]
+    assert granted["allowPty"] == plain["allowPty"]
+    assert str(HOME / ".ssh") in granted["filesystem"]["denyRead"]
+    assert granted["network"]["deniedDomains"] == []
+
+
+# --- allow-all, which srt cannot express -----------------------------------
+
+
+def test_srt_refuses_a_profile_that_asks_for_every_domain(tmp_path: Path) -> None:
+    """Measured against srt 0.0.73: there is no allow-all, so there is no settings file
+    to write. Emitting the named domains instead would enforce a policy nobody chose."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    with pytest.raises(srt.UnsupportedPolicy) as raised:
+        srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert "allowedDomains" in str(raised.value)
+
+
+def test_the_refusal_names_the_backend_that_can_do_it(tmp_path: Path) -> None:
+    """A dead end with no way out is a worse message than a dead end with one."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    with pytest.raises(srt.UnsupportedPolicy) as raised:
+        srt.build_settings(profile, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert "msb" in str(raised.value)
+
+
+def test_prepare_refuses_before_it_writes_anything(
+    which: dict[str, str], fake_home: Path, state_dir: Path, client: FakeClient
+) -> None:
+    """A policy srt cannot enforce should leave no run dir and no tab behind it."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    with pytest.raises(srt.UnsupportedPolicy):
+        srt.prepare(profile)
+
+    assert client.tabs == []
+    assert not list((state_dir / "runs").glob("*"))
+
+
+def test_every_other_profile_still_gets_its_settings(tmp_path: Path) -> None:
+    """The refusal is scoped to the sentinel: nothing else about the policy changes."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowedDomains"] == Profile().allowed_domains()
+    assert str(HOME / ".ssh") in settings["filesystem"]["denyRead"]
+    assert settings["allowPty"] is True
 
 
 # --- the synthesized config dir in the settings ----------------------------
