@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from paddock.herdr_client import HerdrError, create_tab, reload_config, run_in_pane
+from paddock.herdr_client import (
+    HerdrError,
+    HerdrMissing,
+    check_config,
+    create_tab,
+    reload_config,
+    run_in_pane,
+)
 
 PANE_JSON = json.dumps({"result": {"root_pane": {"pane_id": "wA:p2"}}})
 
@@ -60,7 +67,7 @@ def test_create_tab_uses_the_workspace_herdr_exported(
 
 
 def test_create_tab_omits_the_workspace_outside_herdr(herdr: FakeHerdr, tmp_path: Path) -> None:
-    """Run outside herdr — during development, say — the launcher still creates a tab."""
+    """Run outside herdr (during development, say), the launcher still creates a tab."""
     create_tab(tmp_path)
 
     assert "--workspace" not in herdr.argv
@@ -128,11 +135,33 @@ def test_a_reload_with_no_server_running_is_an_error_the_caller_can_catch(
         reload_config()
 
 
+def test_check_config_asks_herdr_whether_the_config_is_usable(herdr: FakeHerdr) -> None:
+    check_config()
+
+    assert herdr.argv == ["herdr", "config", "check"]
+
+
+def test_a_config_herdr_will_not_have_is_an_error_the_caller_can_catch(herdr: FakeHerdr) -> None:
+    herdr.returncode = 1
+    herdr.stderr = "unknown key `popup`\n"
+
+    with pytest.raises(HerdrError, match="unknown key"):
+        check_config()
+
+
 def test_a_missing_herdr_binary_is_a_clear_error(herdr: FakeHerdr, tmp_path: Path) -> None:
     herdr.error = FileNotFoundError(2, "No such file or directory")
 
     with pytest.raises(HerdrError, match="herdr"):
         create_tab(tmp_path)
+
+
+def test_a_missing_binary_is_told_apart_from_a_refusal(herdr: FakeHerdr) -> None:
+    """A caller that can carry on without herdr still has to know a real refusal."""
+    herdr.error = FileNotFoundError(2, "No such file or directory")
+
+    with pytest.raises(HerdrMissing):
+        check_config()
 
 
 def test_a_failing_herdr_command_reports_its_stderr(herdr: FakeHerdr, tmp_path: Path) -> None:

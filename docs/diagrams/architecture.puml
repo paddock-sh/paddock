@@ -1,5 +1,5 @@
 @startuml architecture
-title paddock — component architecture
+title paddock: component architecture
 
 skinparam componentStyle rectangle
 skinparam shadowing false
@@ -23,8 +23,8 @@ package "paddock" {
   [synth_config.py\nsynthesized config dir\n(credentials + ticked skills\n+ MCP whitelist)] as SynthConfig
   interface "Backend\nprepare(profile) -> run\nopen_pane(run, label)\n-> pane id" as BackendAPI
   [backends/srt.py\nv1\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
-  [backends/microsandbox.py\nv1.1 — planned] as MsbBackend
-  [herdr_client.py\ncreate_tab / run_in_pane\n(mockable seam)] as HerdrClient
+  [backends/microsandbox.py\nv1.1 (planned)] as MsbBackend
+  [herdr_client.py\ncreate_tab / run_in_pane\ncheck_config / reload_config\n(mockable seam)] as HerdrClient
 }
 
 package "Host configuration" {
@@ -40,7 +40,7 @@ package "Sandbox runtimes" {
 User --> CLI : runs `paddock init` once, after installing
 CLI --> Init : init (backs the config up first)
 Init --> Keybinding : writes the popup block\nand moves new_tab to prefix+shift+c
-Init --> HerdrClient : herdr server reload-config\n(a failure is a message: herdr may not be running)
+Init --> HerdrClient : herdr config check, then reload-config\n(a refused config is put back;\nno herdr to ask is only a message)
 User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
@@ -65,7 +65,7 @@ Agents --> SynthConfig : credentials + whitelisted skills
 
 SrtBackend --> HerdrClient : pane command + env
 MsbBackend ..> HerdrClient : pane command
-HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> <command>\nherdr server reload-config
+HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> <command>\nherdr config check | herdr server reload-config
 HerdrCLI --> HerdrUI : creates tab, returns\nresult.root_pane.pane_id
 HerdrUI --> Srt : sandboxed pane process (v1)
 HerdrUI ..> Msb : sandboxed pane process (v1.1)

@@ -343,14 +343,18 @@ def test_init_hands_its_flags_to_the_init_module(
     assert fake_sessions.calls == []
 
 
-def test_init_without_a_herdr_config_says_why(
+def test_init_that_will_not_touch_a_config_says_why(
     fake_sessions, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """An init that refuses reaches the user as a message, not a traceback."""
     monkeypatch.setenv("HOME", str(tmp_path))
+    config = tmp_path / ".config" / "herdr" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('keys.new_tab = "prefix+c"\n')
 
     assert cli.main(["init"]) == 1
-    assert "run herdr once" in capsys.readouterr().err
+    assert "[keys] table" in capsys.readouterr().err
 
 
 # --- listing profiles ------------------------------------------------------

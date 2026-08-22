@@ -1,4 +1,4 @@
-"""Subprocess wrapper over the herdr CLI — the one module that shells out to `herdr`."""
+"""Subprocess wrapper over the herdr CLI: the one module that shells out to `herdr`."""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ from pathlib import Path
 
 class HerdrError(RuntimeError):
     """herdr is missing, refused the command, or answered with something unusable."""
+
+
+class HerdrMissing(HerdrError):
+    """No herdr on PATH at all, told apart from a refusal, which says something is wrong."""
 
 
 def create_tab(cwd: Path, label: str = "", env: dict[str, str] | None = None) -> str:
@@ -45,11 +49,16 @@ def reload_config() -> None:
     _run("server", "reload-config")
 
 
+def check_config() -> str:
+    """Ask herdr whether the config on disk is one it can use. Raises when it is not."""
+    return _run("config", "check")
+
+
 def _run(*args: str) -> str:
     try:
         completed = subprocess.run(["herdr", *args], capture_output=True, text=True, check=True)
     except FileNotFoundError as error:
-        raise HerdrError("herdr not found on PATH — paddock needs herdr 0.8.0") from error
+        raise HerdrMissing("herdr not found on PATH: paddock needs herdr 0.8.0") from error
     except subprocess.CalledProcessError as error:
         reason = (error.stderr or "").strip()
         raise HerdrError(f"herdr {' '.join(args)} failed: {reason}") from error

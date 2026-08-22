@@ -1,4 +1,4 @@
-# paddock — Specification
+# paddock specification
 
 Status: **pre-alpha.** Section 7 is built. Profiles, the agent registry, the
 herdr client, the srt backend, sessions, the synthesized config dir, the chooser
@@ -6,15 +6,15 @@ TUI, the CLI and `paddock init` all exist now; §7 says what each still owes.
 
 paddock takes over new-window creation in [herdr](https://herdr.dev) (a terminal
 multiplexer for AI coding agents, **v0.8.0**) and replaces it with a popup
-chooser. Per window, the user picks a plain local tab or an agent in a sandbox —
-and for a sandbox, which agent, tools, network, files, skills and MCP servers it
+chooser. Per window, the user picks a plain local tab or an agent in a sandbox,
+and for a sandbox: which agent, tools, network, files, skills and MCP servers it
 gets.
 
 The rule behind the design: **every permission is an active choice.** No "allow
 everything" default, no authority inherited from the host shell.
 
 Sections marked v1.1 say where the design is going, so v1 decisions are made with
-the destination in view. They are not a build list and are not stubbed in code —
+the destination in view. They are not a build list and are not stubbed in code:
 see [CONTRIBUTING.md § Design principles](../CONTRIBUTING.md#design-principles).
 
 Diagrams: [`architecture.puml`](diagrams/architecture.puml),
@@ -51,16 +51,27 @@ TUI draws. Plain new-tab moves to `prefix+shift+c`.
 
 The popup is transient: it asks, it creates the pane, it exits.
 
-`paddock init` splices both into the config the user already has. It edits the
-text, not a parsed document, because a TOML round-trip drops comments: the
-`[[keys.command]]` block sits between `# --- paddock (managed) ---` markers, so a
-second run replaces it rather than repeating it, and the `new_tab` line is
-inserted or rewritten on its own. Everything else in the file stays byte for
-byte. The old config is copied to `config.toml.paddock-backup-<timestamp>` first,
-and `herdr server reload-config` runs after — herdr may not be running, which is
-a message, not a failure. `--dry-run` prints the diff and touches nothing;
-`--undo` restores the newest backup. A `new_tab` the user has bound to something
-of their own is left alone and reported: paddock still takes `prefix+c`.
+`paddock init` splices both into the config, and writes the file when herdr has
+not written one yet. It edits the text, not a parsed document, because a TOML
+round trip drops comments: the `[[keys.command]]` block sits between
+`# --- paddock (managed) ---` markers, so a second run replaces it rather than
+repeating it, and the `new_tab` line is inserted or rewritten on its own.
+Everything else in the file stays byte for byte, line endings included.
+
+Three things stand between that splice and the user's config. The result is
+parsed as TOML before anything is written, and a result that will not parse is
+reported and dropped. The old config is copied to
+`config.toml.paddock-backup-<timestamp>` first. `herdr config check` then runs on
+what was written, and a config herdr refuses is put straight back.
+`herdr server reload-config` runs last: herdr may not be running, which is a
+message, not a failure.
+
+`--dry-run` prints the diff and touches nothing. `--undo` restores the newest
+backup, keeping what it replaces as `config.toml.paddock-undone-<timestamp>`, so
+edits made since the last init are not lost. A `new_tab` the user has bound to
+something of their own is left alone and reported: paddock still takes
+`prefix+c`. A config that sets `keys` outside a `[keys]` table, as a dotted key
+or an inline table, is refused rather than edited.
 
 ### 1.2 Environment in the popup
 
@@ -72,7 +83,7 @@ Herdr exports these, and they are how the chooser knows where it was invoked:
 | `HERDR_ACTIVE_WORKSPACE_ID` | Workspace to create the tab in |
 | `HERDR_ACTIVE_PANE_ID` | Pane the popup was launched over |
 
-Treat all three as optional. Run outside herdr — during development, say — the
+Treat all three as optional. Run outside herdr (during development, say), the
 launcher omits `--workspace` rather than failing.
 
 ### 1.3 Launching panes
@@ -111,12 +122,12 @@ Creation and execution are separate on purpose. The tab exists with the right cw
 and label before anything starts, so a failed launch leaves a usable pane instead
 of no window.
 
-### 1.4 v1.1 — packaging as a herdr plugin (design record, not stubbed in v1)
+### 1.4 v1.1: packaging as a herdr plugin (design record, not stubbed in v1)
 
 Herdr 0.8.0 has a plugin system (`herdr plugin install|link|enable|list`,
 `herdr plugin action`, `herdr plugin pane`). A later milestone adds a
-`herdr-plugin.toml` manifest so paddock installs as a plugin — `herdr plugin
-link` in development, `herdr plugin install` for users — instead of the
+`herdr-plugin.toml` manifest so paddock installs as a plugin (`herdr plugin
+link` in development, `herdr plugin install` for users) instead of the
 keybinding `paddock init` writes. The keybinding keeps working; the manifest is
 sugar over it. No manifest is written in v1.
 
@@ -139,11 +150,11 @@ sandbox. Sessions (§3) drive both calls; a backend knows nothing about the
 registry.
 
 The interface exists because v1 needs it, to keep srt's settings and invocation
-out of the chooser — not in anticipation of a second backend.
+out of the chooser, not in anticipation of a second backend.
 `backends/microsandbox.py` is described below and is not created until it is
 built.
 
-### 2.1 v1 — `srt` (Anthropic sandbox-runtime)
+### 2.1 v1: `srt` (Anthropic sandbox-runtime)
 
 Package `@anthropic-ai/sandbox-runtime`, CLI `srt`. Resolution order:
 
@@ -180,13 +191,13 @@ Three defaults shape everything else:
   agent can read them. `allowRead` holds the selected agent's own credentials, so
   a broad `deny_read` cannot lock the agent out of itself.
 - **Writes are denied by default.** `allowWrite` gets the workdir, the shared
-  directory if there is one, `/tmp` and `/private/tmp` — one directory under two
-  names on macOS, and srt matches the path as written — and `/dev/null`, so
+  directory if there is one, `/tmp` and `/private/tmp` (one directory under two
+  names on macOS, and srt matches the path as written), and `/dev/null`, so
   discarded output works. `$TMPDIR` joins them when the host sets one, resolved
   through its symlinks, because the sandbox keeps that variable and tools write
   where it points. The run directory itself is **not** writable: it holds
   the settings file and the shim dir, which the sandbox only reads. Its `config/`
-  and, for an isolated profile, its `work/` subdirectory are the exceptions —
+  and, for an isolated profile, its `work/` subdirectory are the exceptions:
   the synthesized config dir (§4.3) and the workdir. srt matches paths as
   written, so allowing a subdirectory does not allow its parent. `denyWrite`
   mirrors `denyRead`, so a denied path is off limits both ways.
@@ -195,11 +206,11 @@ Three defaults shape everything else:
 
 **srt checks the path an access resolves to**, not the path the agent typed. A
 symlink is therefore governed by its target: what the policy has to name is the
-real file, never the link. That is why the synthesized config dir (§4.3) works —
+real file, never the link. That is why the synthesized config dir (§4.3) works,
 and why the settings have to allow its targets by name.
 
 **The agent's config directory** depends on whether layer 3 can redirect it
-(§4.3). When it can — Claude Code today — the real directory is denied for reading
+(§4.3). When it can, as Claude Code does today, the real directory is denied for reading
 and writing, and the synthesized one under the run dir is writable instead. What
 that directory *links* to is allowed back by name, because srt sees the target:
 the agent's key, and the real directories of the skills the user ticked. What it
@@ -210,7 +221,7 @@ written. When the agent cannot be redirected, `allowWrite` gets its
 agent. That is a **known gap** for those agents, and it closes when they get a
 redirection.
 
-Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expands
+Paths are stored as written: `~/.ssh`, not `/Users/me/.ssh`. The backend expands
 `~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
 `config_write_paths`, `shared_dir`, `extra_allow_write`) when it generates the
 settings file, so profiles stay portable between machines.
@@ -218,10 +229,10 @@ settings file, so profiles stay portable between machines.
 Each session gets its own timestamped directory under
 `~/.local/state/paddock/runs/`, holding the settings file, the PATH shim dir, the
 synthesized config dir, the scratch workdir when the profile shares no host
-directory, and a small `launch.json` — the command, workdir and environment, so a
+directory, and a small `launch.json` holding the command, workdir and environment, so a
 tab attaching later gets exactly what the first one got. `PADDOCK_STATE_DIR`
 overrides the state directory; tests point it at a temporary one. Nothing collects
-old run directories yet, including those of collected sessions — only the
+old run directories yet, including those of collected sessions: only the
 credential file inside one goes with the session (§3.4, §8).
 
 **Invocation:**
@@ -244,28 +255,28 @@ env -i HOME=... USER=... LOGNAME=... SHELL=... TERM=... LANG=... LC_ALL=... \
        <agent> <layer-2 flags>
 ```
 
-The keep list is deliberately short. Everything the popup inherited — API tokens
-above all — stays outside the sandbox. `PATH` points at the shim dir (§4.1). The
+The keep list is deliberately short. Everything the popup inherited, API tokens
+above all, stays outside the sandbox. `PATH` points at the shim dir (§4.1). The
 config dir variable and the flags after the agent come from layer 3 (§4.3); an
 agent with neither gets the line as it was.
 
 **The proxy variables are the exception, and they are passed by name, not by
 value.** srt sets its own proxy environment in the shell it spawns, per
-invocation — `http_proxy`, `HTTP_PROXY`, `https_proxy`, `HTTPS_PROXY`,
+invocation: `http_proxy`, `HTTP_PROXY`, `https_proxy`, `HTTPS_PROXY`,
 `all_proxy`, `ALL_PROXY`, `no_proxy`, `NO_PROXY`, `ftp_proxy`, `FTP_PROXY`,
 `grpc_proxy`, `GRPC_PROXY`, `RSYNC_PROXY`, `DOCKER_HTTP_PROXY`,
 `DOCKER_HTTPS_PROXY`, `npm_config_noproxy`, `SANDBOX_RUNTIME`,
-`GIT_CONFIG_PARAMETERS`, `GIT_SSH_COMMAND` —
+`GIT_CONFIG_PARAMETERS`, `GIT_SSH_COMMAND`,
 and that proxy is the sandbox's only way out. `env -i` wipes them, and then the
 agent resolves no name at all. So each one is written into the command as
 `VAR="$VAR"`, unquoted, for srt's shell to expand. No value is ever read from the
 popup's own environment.
 
-### 2.2 v1.1 — `microsandbox` (design record, not stubbed in v1)
+### 2.2 v1.1: `microsandbox` (design record, not stubbed in v1)
 
 `msb` runs workloads in libkrun microVMs from OCI images, with volume mounts and
-a host/port network policy. A harder boundary than Seatbelt — its own kernel
-rather than a filtered view of the host's — at the cost of an image per agent and
+a host/port network policy. A harder boundary than Seatbelt (its own kernel
+rather than a filtered view of the host's) at the cost of an image per agent and
 a heavier, still sub-second, start.
 
 The same profile maps across:
@@ -300,12 +311,12 @@ Tabs attach to a **session**: one running sandbox with a name.
 Every tab attaches to one session or to none. That one rule covers every layout
 that would otherwise need its own mode:
 
-- **Whole workspace** — every tab on one session, via the workspace default
+- **Whole workspace**: every tab on one session, via the workspace default
   binding (§3.3).
-- **Tab group** — some tabs on one session, their siblings local or on another.
-- **Side by side** — several sessions in one workspace, each with its own name,
+- **Tab group**: some tabs on one session, their siblings local or on another.
+- **Side by side**: several sessions in one workspace, each with its own name,
   backend and profile.
-- **Local orchestration** — an unsandboxed tab driving the sandboxed ones through
+- **Local orchestration**: an unsandboxed tab driving the sandboxed ones through
   the herdr CLI. The orchestrator keeps host access; the agents it supervises do
   not.
 
@@ -331,19 +342,19 @@ This is why the session list shows the backend:
 | | `srt` (v1) | `microsandbox` (v1.1) |
 | --- | --- | --- |
 | Attaching | New process under the same settings file and workdir | Execs a shell or agent into the same guest |
-| Filesystem | Shared — one workdir on the host | Shared — one guest filesystem |
+| Filesystem | Shared: one workdir on the host | Shared: one guest filesystem |
 | Processes | **Separate trees**; tabs cannot see each other's | Shared namespace |
 | Long-running state | Only what is on disk | Lives in the VM, outlives any tab |
 
 So tab groups already work in v1 with `srt`: attached tabs share policy and
 files, which is most of why people want a group. Shared *runtime* arrives with
 `msb`. Seatbelt and bubblewrap wrap a process tree and have no guest for a second
-process to join — srt can share policy and files, never a runtime. The UI must
+process to join, so srt can share policy and files, never a runtime. The UI must
 not imply otherwise.
 
 ### 3.3 Workspace default binding
 
-An optional binding — *new tabs in workspace W attach to session S* — stored in
+An optional binding (*new tabs in workspace W attach to session S*) stored in
 the plugin state dir, set and unset per workspace. It saves re-asking in a
 workspace dedicated to one sandbox.
 
@@ -383,8 +394,8 @@ Reattaching puts the user back where they were.
 
 **Lifecycle:** when the last tab closes, the session is neither destroyed nor
 leaked silently. A session with `keep_alive` set stays; every other one is
-dropped from the registry. Its run directory is left on disk — deleting a workdir
-would lose work (§8) — except for the credential file in its config dir, which
+dropped from the registry. Its run directory is left on disk, because deleting a workdir
+would lose work (§8), except for the credential file in its config dir, which
 may be an exported token (§4.3) and does not outlive the session. The prompt that
 offers keep-alive arrives with the TUI.
 Both failure modes cost something real: a discarded microVM loses running state, a
@@ -400,16 +411,16 @@ unlabelled tab is local: no session, no sandbox.
 ## 4. Three enforcement layers
 
 The layers are not equivalent. Layers 1 and 3 are enforced outside the agent.
-Layer 2 is enforced by the agent on itself — defence in depth, not a boundary.
+Layer 2 is enforced by the agent on itself: defence in depth, not a boundary.
 Conflating them is the easiest way to make this tool dangerous.
 
-### 4.1 Layer 1 — OS-level (hard)
+### 4.1 Layer 1: OS-level (hard)
 
 The kernel sandbox enforces:
 
-- **Write paths** — `allowWrite` / `denyWrite`.
-- **Read denials** — `denyRead`, for credential directories.
-- **Network domains** — `allowedDomains`. Everything else is refused at the
+- **Write paths**: `allowWrite` / `denyWrite`.
+- **Read denials**: `denyRead`, for credential directories.
+- **Network domains**: `allowedDomains`. Everything else is refused at the
   network layer.
 
 **Tool selection is the weak part, and is a soft allowlist.** The launcher builds
@@ -426,7 +437,7 @@ and coreutils work).
 > binary on a dev machine is expensive and brittle, and getting it wrong breaks
 > the shell silently.
 
-### 4.2 Layer 2 — Agent config (agent-enforced)
+### 4.2 Layer 2: agent config (agent-enforced)
 
 Each adapter generates that agent's own permission config at launch, so the
 agent's prompts agree with the sandbox instead of fighting it. This prevents
@@ -445,15 +456,15 @@ config from user and project scopes and the whitelist leaks. It is passed with
 loads no servers at all.
 
 v1 generates the MCP whitelist. The server definitions are read from the agent's
-own config files — whichever of its `auth_read_paths` holds an `mcpServers`
-object, which for Claude Code is `~/.claude.json` — and filtered to the names the
+own config files (whichever of its `auth_read_paths` holds an `mcpServers`
+object, which for Claude Code is `~/.claude.json`) and filtered to the names the
 profile ticked. An empty list means an empty whitelist, not an absent one. The
 `permissions` block is not generated yet.
 
-### 4.3 Layer 3 — Synthesized config dir (hard)
+### 4.3 Layer 3: synthesized config dir (hard)
 
-The launcher builds a fresh agent config directory per session — `run_dir/config`
-— holding only:
+The launcher builds a fresh agent config directory per session, `run_dir/config`,
+holding only:
 
 - the credentials that agent needs, by filename. A file it only reads is a
   symlink. A file it writes back to is a **copy**, so the agent keeps working and
@@ -463,8 +474,8 @@ The launcher builds a fresh agent config directory per session — `run_dir/conf
   cannot follow them), and
 - the generated MCP whitelist (§4.2).
 
-The agent is pointed at it — for Claude Code via `CLAUDE_CONFIG_DIR`, passed
-through `herdr tab create --env` and written into the sandbox command (§1.3) — and
+The agent is pointed at it, for Claude Code via `CLAUDE_CONFIG_DIR` passed
+through `herdr tab create --env` and written into the sandbox command (§1.3), and
 its real config dir is denied for reading and writing. The symlinks stay
 readable because the settings allow their targets by name (§2.1); denying the
 directory and allowing those few paths is what leaves nothing else in it.
@@ -481,7 +492,7 @@ the sandbox gets are the same thing.
 
 The copy has every `mcpServers` key taken out, at the top level and inside each
 project scope, so the generated whitelist stays the only place a server can come
-from (§4.2). Everything else in the file — for Claude Code, the project list —
+from (§4.2). Everything else in the file, for Claude Code the project list,
 travels into the sandbox with it, and a file with no servers in it is copied
 unchanged.
 
@@ -501,7 +512,7 @@ those servers, so their tokens have no business in the run dir: the file gets th
 
 Be clear about what that is: **a copy of the token on disk**, in a directory only
 its owner can read, for as long as the session lives. It is deleted when the
-session is collected (§3.4). A real credential file always wins — the Keychain is
+session is collected (§3.4). A real credential file always wins: the Keychain is
 a fallback source, never a replacement. It is a macOS-only path: without
 `security`, without that entry, or with an entry of a shape the launcher does not
 recognise, no file is written and the agent asks the user to log in.
@@ -540,13 +551,13 @@ entry:
 | `api_domains` | Domains the agent needs; merged into the allowlist when selected |
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
-| `image` | *Future* — OCI image for the microsandbox backend |
+| `image` | *Future*: OCI image for the microsandbox backend |
 
 ### Auth policy
 
 **Only the selected agent's own config directory is auto-allowed.** Choosing
 `claude` grants nothing to Codex's credentials, and no agent gets `~/.ssh`,
-`~/.aws`, `~/.gnupg` or `~/.config/gh` — those are denied by default (§6) and
+`~/.aws`, `~/.gnupg` or `~/.config/gh`. Those are denied by default (§6) and
 stay denied unless the user says otherwise.
 
 The reasoning: an agent needs its own key to work at all, so auto-allowing it is
@@ -590,7 +601,7 @@ Notes:
   out fall back to the defaults in the table above, not to the built-in's values.
 - The filename is the profile name, so a saved profile writes back to the file it
   came from. A profile file that will not parse, or that has a field of the wrong
-  type — including a list holding anything but strings — is skipped whole, never
+  type, including a list holding anything but strings, is skipped whole, never
   half-applied.
 - `PADDOCK_CONFIG_DIR` overrides `~/.config/paddock`, for both `profiles/` and
   `agents/`. Tests point it at a temporary directory.
@@ -600,7 +611,7 @@ Notes:
 ## 7. Module plan
 
 The first epic (`sandbox_core_launcher`) builds these as separate feature PRs,
-tests first. Each should be small — mostly plain functions over a `Profile` — and
+tests first. Each should be small, mostly plain functions over a `Profile`, and
 no v1.1 concern appears in any of them:
 
 | Module | Responsibility | Status |
@@ -609,7 +620,7 @@ no v1.1 concern appears in any of them:
 | `paddock/profiles.py` | `Profile` dataclass, network presets, tool candidates, load/save | Done |
 | `paddock/agents.py` | Agent registry and per-agent layer-2 config | Registry done; the layer-2 `permissions` block is not generated yet |
 | `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |
-| `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI — the one seam tests mock | Done |
+| `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
 | `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
