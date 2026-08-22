@@ -635,15 +635,16 @@ def test_the_confirm_expands_the_presets_into_domains() -> None:
     assert "pypi/uv" not in lines["can reach"]
 
 
-def test_a_long_domain_list_is_cut_short_with_a_count() -> None:
-    """Nine and a count fit the line. The whole list does not, and wrapping moves the layout."""
+def test_the_confirm_names_every_domain_it_is_about_to_open() -> None:
+    """The count is what cannot be cut, and the screen elides only when the popup makes it."""
     base = builtin_profiles()["claude-default"]
 
     reach = dict(tui.confirm_lines({"profile": "claude-default"}, base, load_agents()))["can reach"]
     shown = reach.split(": ", 1)[1].split(", ")
 
-    assert len(shown) == 10
-    assert shown[-1] == "+3"
+    assert reach.startswith("12 domains: ")
+    assert len(shown) == 12
+    assert "registry.npmjs.org" in shown
 
 
 def test_the_confirm_folds_in_the_agents_own_domains() -> None:
@@ -718,7 +719,7 @@ def test_the_confirm_says_whether_the_answers_still_match_the_profile() -> None:
     changed = dict(tui.confirm_lines({**kept, "tools": ["git"]}, base, load_agents()))
 
     assert unchanged["profile"] == "claude-default, unchanged"
-    assert changed["profile"] == "claude-default + changes"
+    assert changed["profile"] == "claude-default + changes. Press s to save these answers"
 
 
 
@@ -736,6 +737,10 @@ OPEN_FIELD, PROFILE, BACKEND, AGENT = "1\r", "2\r", "3\r", "4\r"
 TOOLS, NETWORK, FILES, SKILLS, ADVANCED = "5\r", "6\r", "7\r", "8\r", "9\r"
 # Launch, and then enter on the confirm, which is what a sandbox ends on.
 GO = "L\r"
+# Advanced keeps its list open after an editor, so a sequence through it has to leave the
+# list. One escape does that: the byte after it flushes it, and a list, unlike a box, hands
+# that byte on to the screen it goes back to.
+LEAVE = ESC
 
 
 def test_launching_what_the_form_already_says_is_one_key_press(
@@ -744,7 +749,7 @@ def test_launching_what_the_form_already_says_is_one_key_press(
     """The common case: the answers are already there, so Launch is the whole interaction."""
     plan = press(GO, lambda: tui.choose(tmp_path))
 
-    assert plan == tui.NewSession(profile=Profile(), backend="srt")
+    assert plan == tui.NewSession(profile=Profile(), backend="srt", started_from=tui.CUSTOM)
     assert fake_sessions.calls == [("list_sessions",)]  # it read the sessions and did nothing
 
 
@@ -913,7 +918,7 @@ def test_the_skills_are_ticked_off_the_agents_own_list(
 
 
 def test_the_session_name_lives_under_advanced(press, fake_sessions, tmp_path: Path) -> None:
-    plan = press(f"{ADVANCED}\rreview\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{ADVANCED}\rreview\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.name == "review"
 
@@ -935,7 +940,7 @@ def test_the_whole_form_becomes_one_plan(
         f"{TOOLS} \r"  # untick git
         f"{NETWORK} {TAB}example.com\r"  # github only, plus a domain
         f"{FILES}{DOWN}\r\r"  # share this directory
-        f"{ADVANCED}\rreview\r"  # name it
+        f"{ADVANCED}\rreview\r{LEAVE}"  # name it, and leave Advanced
         "sreview-profile\r"  # save the answers
         f"{GO}"
     )
@@ -953,6 +958,7 @@ def test_the_whole_form_becomes_one_plan(
         name="review",
         save_as="review-profile",
         backend="srt",
+        started_from=tui.CUSTOM,
     )
 
 
@@ -1067,7 +1073,7 @@ def test_a_sandbox_is_launched_from_the_confirm_and_nowhere_else(
     """Every permission is an active choice, so the thing that grants them says so out loud."""
     plan = press(GO, lambda: tui.choose(tmp_path))
 
-    assert plan == tui.NewSession(profile=Profile(), backend="srt")
+    assert plan == tui.NewSession(profile=Profile(), backend="srt", started_from=tui.CUSTOM)
 
 
 def test_the_confirm_can_send_you_back_to_the_form_with_every_answer_on_it(
@@ -1114,7 +1120,7 @@ def test_keeping_a_session_running_is_asked_about_here_and_only_here(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """SPEC 3.4's field, whose prompt was waiting for the TUI to have somewhere to put it."""
-    plan = press(f"{ADVANCED}{DOWN}{DOWN}\r{DOWN}\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{ADVANCED}{DOWN}{DOWN}\r{DOWN}\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.keep_alive is True
     assert tui.build_session(Profile(), {}).keep_alive is False
@@ -1123,7 +1129,9 @@ def test_keeping_a_session_running_is_asked_about_here_and_only_here(
 def test_the_mcp_servers_are_named_under_advanced(
     press, fake_sessions, tmp_path: Path
 ) -> None:
-    plan = press(f"{ADVANCED}{DOWN * 3}\rplaywright fetch\r{GO}", lambda: tui.choose(tmp_path))
+    keys = f"{ADVANCED}{DOWN * 3}\rplaywright fetch\r{LEAVE}{GO}"
+
+    plan = press(keys, lambda: tui.choose(tmp_path))
 
     assert plan.profile.mcp == ["playwright", "fetch"]
 
@@ -1131,7 +1139,7 @@ def test_the_mcp_servers_are_named_under_advanced(
 def test_the_extra_writable_paths_are_named_under_advanced(
     press, fake_sessions, tmp_path: Path
 ) -> None:
-    plan = press(f"{ADVANCED}{DOWN * 4}\r/var/tmp\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{ADVANCED}{DOWN * 4}\r/var/tmp\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.extra_allow_write == ["/var/tmp"]
 
@@ -1141,14 +1149,14 @@ def test_the_denied_reads_can_be_changed_and_say_what_they_are(
 ) -> None:
     """A profile that wants a credential directory readable has to say so, and here is where."""
     # ctrl-u clears the box, which opens on what the profile denies now.
-    plan = press(f"{ADVANCED}{DOWN * 5}\r\x15~/.ssh\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{ADVANCED}{DOWN * 5}\r\x15~/.ssh\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.deny_read == ["~/.ssh"]
     assert tui.advanced_value("deny_read", {}, Profile()).startswith("~/.ssh ~/.aws")
 
 
 def test_the_system_path_is_a_yes_or_a_no(press, fake_sessions, tmp_path: Path) -> None:
-    plan = press(f"{ADVANCED}{DOWN * 6}\r{DOWN}\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{ADVANCED}{DOWN * 6}\r{DOWN}\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.include_system_path is False
 
@@ -1159,7 +1167,7 @@ def test_an_advanced_answer_makes_the_session_custom(
     """A session that says it runs a profile has to be the permissions that profile describes."""
     save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
 
-    keys = f"{PROFILE}{UP}{UP}\r{ADVANCED}{DOWN * 4}\r/var/tmp\r{GO}"
+    keys = f"{PROFILE}{UP}{UP}\r{ADVANCED}{DOWN * 4}\r/var/tmp\r{LEAVE}{GO}"
 
     plan = press(keys, lambda: tui.choose(tmp_path))
 
@@ -1187,3 +1195,53 @@ def test_a_remembered_profile_that_is_gone_is_no_answer(
     plan = press(GO, lambda: tui.choose(tmp_path))
 
     assert plan.profile == Profile()
+
+
+def test_a_path_typed_under_advanced_shows_up_on_the_confirm(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """What the screen says it is granting has to be what was typed, and all of it."""
+    answers = {"extra_allow_write": ["/var/tmp/a path, with a comma"]}
+
+    lines = dict(tui.confirm_lines(answers, Profile(), load_agents()))
+
+    assert "/var/tmp/a path, with a comma" in lines["can write"]
+
+
+def test_typed_paths_are_split_on_spaces_and_never_on_commas() -> None:
+    """A comma is part of a path, where a domain never has one."""
+    assert tui.parse_paths("/var/tmp /work/repo") == ["/var/tmp", "/work/repo"]
+    assert tui.parse_paths("/tmp/one,two") == ["/tmp/one,two"]
+    assert tui.parse_paths("  ") == []
+    assert tui.parse_domains("a.com, b.com") == ["a.com", "b.com"]  # domains still split on both
+
+
+def test_the_advanced_row_says_when_it_holds_a_grant(press, fake_sessions, tmp_path: Path) -> None:
+    """A row reading as untouched while it holds new write grants is the one lie it may not tell."""
+    plain = tui.build_session(Profile(), {})
+    granted = tui.build_session(Profile(), {"extra_allow_write": ["/var/tmp"]})
+    opened = tui.build_session(Profile(), {"deny_read": []})
+
+    assert tui._advanced_value(plain) == "name, save as profile, keep running, MCP"
+    assert tui._advanced_value(granted).startswith("1 writable path")
+    assert "denied reads changed" in tui._advanced_value(opened)
+
+
+def test_the_confirm_can_save_the_answers_it_is_about_to_launch(
+    press, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """Section 5.7 puts the offer here, because here is where the answers are worth keeping."""
+    plan = press(f"{TOOLS} \rLsreview-profile\r\r", lambda: tui.choose(tmp_path))
+
+    assert plan.save_as == "review-profile"
+    assert plan.profile.tools == ["rg", "curl"]
+
+
+def test_advanced_comes_back_where_it_was_left(press, fake_sessions, tmp_path: Path) -> None:
+    """Escape backs out one level: the editor to the list, and the list to the form."""
+    # The list comes back on the row that was edited, and the box on what it holds.
+    keys = f"{ADVANCED}{DOWN * 3}\rplaywright\r\r fetch\r{LEAVE}{GO}"
+
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan.profile.mcp == ["playwright", "fetch"]

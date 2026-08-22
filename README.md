@@ -49,8 +49,11 @@ paddock                          claude-default            in ~/dev/paddock
 enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys
 ```
 
-The form is filled in already, so the ordinary case is one key press: `L`. Every
-field is one arrow key or one digit away, and enter opens it. Escape closes what
+The form is filled in already, so the ordinary case is two key presses: `L`, then
+enter on the confirm. The confirm stays even for a repeat launch, because it is
+the whole promise of the tool: the thing that grants the permissions says out
+loud what it is granting. Every field is one arrow key or one digit away, and
+enter opens it. Escape closes what
 it opened without losing what you did there, and every list and checklist draws a
 **← Back** row that does the same thing for anyone who would rather see it than
 know it. Escape on the form itself cancels, because nothing is before it. Ctrl-c
@@ -74,12 +77,14 @@ Back to the form and Cancel on it. A local tab has no policy, so it has no
 confirm.
 
 The form opens on the profile that workspace launched last, so the ordinary run
-is the same sandbox as yesterday's, unchanged, in one key press. `s` saves the
+is the same sandbox as yesterday's, unchanged, in those two presses. `s` saves the
 answers as a profile, which makes them one pick anywhere. Plain new-tab moves to
 `prefix+shift+c`.
 
-The screens are drawn to fit an 80 by 24 terminal and grow into a wider popup,
-centred, up to a line length that is still comfortable to read.
+The popup herdr opens is smaller than the terminal it is in, so the screens are
+built for a small one: they scroll their rows, they pin what must never scroll
+off, such as the confirm's buttons, and they grow into a bigger popup up to a
+line length that is still comfortable to read.
 
 ## Sessions
 

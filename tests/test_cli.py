@@ -10,7 +10,7 @@ import pytest
 from paddock import cli, recent, sessions, tui
 from paddock.backends.srt import SrtNotFound
 from paddock.herdr_client import HerdrError
-from paddock.profiles import Profile, load_profiles
+from paddock.profiles import Profile, load_profiles, save_profile
 from tests import fake_sessions as fake_sessions_module
 from tests.fake_sessions import Session
 
@@ -370,12 +370,34 @@ def test_the_backend_the_chooser_named_is_what_the_session_runs_on(
 
 
 def test_a_launch_is_what_the_chooser_opens_on_next_time(
-    fake_sessions, chooser, state_dir: Path
+    fake_sessions, chooser, config_dir: Path, state_dir: Path
 ) -> None:
-    chooser(tui.NewSession(profile=Profile(name="hardened")))
+    """The profile the answers stood on, so a changed launch still opens on the one it began as."""
+    save_profile(Profile(name="hardened"))
+    changed = Profile(name="hardened+custom", tools=["git"])
+    chooser(tui.NewSession(profile=changed, started_from="hardened"))
 
     assert cli.main(["choose"]) == 0
     assert recent.last_profile() == "hardened"
+
+
+def test_answers_that_stand_on_nothing_saved_are_not_opened_on(
+    fake_sessions, chooser, state_dir: Path
+) -> None:
+    """Custom is not a profile anyone can come back to, so it is not remembered as one."""
+    chooser(tui.NewSession(profile=Profile(), started_from=tui.CUSTOM))
+
+    assert cli.main(["choose"]) == 0
+    assert recent.last_profile() == ""
+
+
+def test_saving_the_answers_is_what_the_next_popup_opens_on(
+    fake_sessions, chooser, config_dir: Path, state_dir: Path
+) -> None:
+    chooser(tui.NewSession(profile=Profile(), save_as="review", started_from=tui.CUSTOM))
+
+    assert cli.main(["choose"]) == 0
+    assert recent.last_profile() == "review"
 
 
 def test_a_session_told_to_keep_running_is_written_down_as_keeping_running(

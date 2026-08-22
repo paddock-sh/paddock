@@ -167,6 +167,10 @@ def _record(session: Session) -> None:
     """Store the session, keeping the panes another tab registered since it was loaded.
 
     `keep_alive` comes from the caller: it is the one field a caller sets on purpose.
+
+    A session that is no longer registered was collected while this caller held it, so it is
+    left collected. Writing it back would bring a dead session round again, with a run dir
+    whose credentials have already been discarded.
     """
     with _locked():
         live = list_sessions()
@@ -174,10 +178,13 @@ def _record(session: Session) -> None:
             if other.session_id == session.session_id:
                 session.pane_ids = list(dict.fromkeys(other.pane_ids + session.pane_ids))
                 live[index] = session
-                break
-        else:
-            live.append(session)
-        _save(live)
+                _save(live)
+                return
+        print(
+            f"paddock: session {session.name!r} was collected while it was being used, "
+            "so it is not being registered again",
+            file=sys.stderr,
+        )
 
 
 def _save(sessions: list[Session]) -> None:

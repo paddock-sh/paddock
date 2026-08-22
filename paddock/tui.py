@@ -20,6 +20,7 @@ from pathlib import Path
 from paddock import recent, screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
+    DEFAULT_DENY_READ,
     NETWORK_PRESETS,
     TOOL_CANDIDATES,
     Profile,
@@ -166,9 +167,6 @@ CONFIRM_TITLE = "Launch this sandbox?"
 # The line under a field a local or attached tab greys out.
 NO_SANDBOX = "No sandbox, so there is nothing to permit."
 
-# How many domains the confirm screen names before it falls back to counting them (section 5.7).
-SHOWN_DOMAINS = 9
-
 # One line per entry on the Open list.
 OPEN_HINTS = {
     NEW: "An agent under the OS sandbox, with the permissions below. Seatbelt on macOS, "
@@ -222,6 +220,8 @@ class NewSession:
     backend: str = SRT
     # Whether the session outlives its last tab (SPEC 3.4).
     keep_alive: bool = False
+    # The saved profile the answers stand on, which is what the chooser opens on next time.
+    started_from: str = ""
 
 
 Plan = Local | Attach | NewSession
@@ -248,7 +248,12 @@ def choose(cwd: Path) -> Plan | None:
             plan = plan_from(answers, base, cwd)
             if not isinstance(plan, NewSession):
                 return plan  # a local or an attached tab permits nothing, so there is no policy
-            said = screen.confirm(CONFIRM_TITLE, confirm_lines(answers, base, registry))
+            while True:
+                said = screen.confirm(CONFIRM_TITLE, confirm_lines(answers, base, registry))
+                if said != screen.SAVE:
+                    break
+                answers = _edit_save_as(answers)  # the offer section 5.7 puts on this screen
+                plan = plan_from(answers, base, cwd)
             if said == screen.CANCEL:
                 return None
             if said == screen.LAUNCH:
@@ -422,18 +427,25 @@ def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -
 
 
 def _edit_advanced(answers: dict, base: Profile) -> dict:
-    rows = advanced_choices(answers, base)
-    index = screen.pick(FIELD_TITLES["advanced"], [(label, hint) for label, hint, _ in rows])
-    if index is None:
-        return answers
-    label, _, step = rows[index]
-    if step in ADVANCED_FLAGS:
-        return _edit_flag(answers, base, label, step)
-    hint = EDITOR_HINTS[step]
-    if step in ADVANCED_LISTS:
-        typed = screen.type_in(label, " ".join(advanced_list(step, answers, base)), hint)
-        return dict(answers, **{step: parse_domains(typed)})
-    return dict(answers, **{step: screen.type_in(label, str(answers.get(step, "")), hint)})
+    """The list of rows, and the editor for one of them. Escape backs out one at a time."""
+    cursor = 0
+    while True:
+        rows = advanced_choices(answers, base)
+        shown = [(label, hint) for label, hint, _ in rows]
+        index = screen.pick(FIELD_TITLES["advanced"], shown, cursor=cursor)
+        if index is None:
+            return answers
+        label, _, step = rows[index]
+        cursor = index  # the list comes back where it was left
+        if step in ADVANCED_FLAGS:
+            answers = _edit_flag(answers, base, label, step)
+            continue
+        hint = EDITOR_HINTS[step]
+        if step in ADVANCED_LISTS:
+            typed = screen.type_in(label, " ".join(advanced_list(step, answers, base)), hint)
+            answers = dict(answers, **{step: parse_paths(typed)})
+            continue
+        answers = dict(answers, **{step: screen.type_in(label, str(answers.get(step, "")), hint)})
 
 
 def _edit_flag(answers: dict, base: Profile, label: str, step: str) -> dict:
@@ -681,13 +693,21 @@ def _files_value(opened: str, profile: Profile, cwd: str) -> str:
 
 
 def _advanced_value(plan: NewSession) -> str:
-    """What has been set under Advanced, or what lives there when nothing has."""
+    """What has been set under Advanced, or what lives there when nothing has.
+
+    The two that hand out access say so first: a row reading as untouched while it holds new
+    write grants or fewer denied reads would be the one lie this form may not tell.
+    """
+    profile = plan.profile
+    writable = len(profile.extra_allow_write)
     set_here = [
+        f"{writable} writable path" + ("" if writable == 1 else "s") if writable else "",
+        "denied reads changed" if profile.deny_read != DEFAULT_DENY_READ else "",
+        "no system PATH" if not profile.include_system_path else "",
+        f"{len(profile.mcp)} MCP" if profile.mcp else "",
         plan.name,
         f"saved as {plan.save_as}" if plan.save_as else "",
         "keeps running" if plan.keep_alive else "",
-        f"{len(plan.profile.mcp)} MCP" if plan.profile.mcp else "",
-        "no system PATH" if not plan.profile.include_system_path else "",
     ]
     said = ", ".join(part for part in set_here if part)
     return said or "name, save as profile, keep running, MCP"
@@ -695,7 +715,11 @@ def _advanced_value(plan: NewSession) -> str:
 
 def _profile_line(answers: dict, base: Profile) -> str:
     title = form_title(answers, base)
-    return title if title.endswith("+ changes") else f"{title}, unchanged"
+    if not title.endswith("+ changes"):
+        return f"{title}, unchanged"
+    if answers.get("save_as"):
+        return f"{title}, saving as {answers['save_as']}"
+    return f"{title}. Press s to save these answers"
 
 
 def _writable(profile: Profile) -> str:
@@ -712,14 +736,11 @@ def _readable(profile: Profile) -> str:
 
 
 def _reachable(profile: Profile) -> str:
-    """The count, then as many domains as the line holds. The count is what cannot be cut."""
+    """The count and every domain it names. The screen elides only when the popup makes it."""
     domains = profile.allowed_domains()
     if not domains:
         return "nothing, this sandbox is offline"
-    shown = domains[:SHOWN_DOMAINS]
-    if len(domains) > SHOWN_DOMAINS:
-        shown = shown + [f"+{len(domains) - SHOWN_DOMAINS}"]
-    return f"{_counted(domains)}: {', '.join(shown)}"
+    return f"{_counted(domains)}: {', '.join(domains)}"
 
 
 def _runnable(profile: Profile) -> str:
@@ -920,6 +941,11 @@ def parse_domains(text: str) -> list[str]:
     return list(dict.fromkeys(text.replace(",", " ").split()))
 
 
+def parse_paths(text: str) -> list[str]:
+    """Typed-in paths: whitespace only, because a comma can be part of a path."""
+    return list(dict.fromkeys(text.split()))
+
+
 def resolve_shared_dir(answer: str, cwd: Path) -> str:
     """A typed directory as an absolute path. Blank means share nothing, not share here."""
     answer = answer.strip()
@@ -974,6 +1000,7 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         agent_command=str(answers.get("command", "")),
         backend=str(answers.get("backend", SRT)),
         keep_alive=advanced_flag("keep_alive", answers, base),
+        started_from=str(answers.get("profile", CUSTOM)),
     )
 
 

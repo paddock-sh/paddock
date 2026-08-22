@@ -327,6 +327,77 @@ def test_eighty_by_twenty_four_is_still_what_the_mockups_show() -> None:
     assert lines[-1].strip().startswith("[ Launch ]")
 
 
+# The popup herdr opens is 70% of the terminal minus its sidebar and border, so these are the
+# sizes people actually get: a 100 by 30 terminal gives about this, and 140 by 40 is needed
+# before it reaches the 80 by 24 the design is drawn to.
+POPUP = (18, 48)
+
+
+def test_the_confirm_keeps_its_buttons_on_an_ordinary_popup() -> None:
+    """A confirm whose buttons scrolled off would cancel the launch the user thought it made."""
+    policy = [("can reach", ", ".join(f"host{index}.example.com" for index in range(12)))]
+
+    for rows, width in ((16, 80), POPUP):
+        lines = screen.confirm_lines_drawn("Launch this sandbox?", policy, 0, width, rows)
+
+        assert len(lines) <= rows
+        assert lines[0] == "Launch this sandbox?"
+        assert "[ Launch ]" in lines[-1] or "[ Launch ]" in "".join(lines[-3:])
+        assert "[ Cancel ]" in "".join(lines[-3:])
+
+
+def test_the_confirm_says_how_much_it_had_to_leave_out() -> None:
+    policy = [("can reach", ", ".join(f"host{index}.example.com" for index in range(40)))]
+
+    lines = screen.confirm_lines_drawn("Launch?", policy, 0, POPUP[1], POPUP[0])
+
+    assert any("more lines" in line for line in lines)
+
+
+def test_the_confirm_never_cuts_a_path_it_is_granting() -> None:
+    """An ellipsis in the middle of a path would hide what is being handed over."""
+    granted = "/Users/someone/very/long/path/that/will/not/fit/on/one/line/of/a/small/popup"
+    policy = [("can write", f"its own workdir, plus {granted}")]
+
+    lines = screen.confirm_lines_drawn("Launch?", policy, 0, POPUP[1], 24)
+
+    assert "..." not in "".join(lines)
+    assert granted.replace("/", "") in "".join(lines).replace("/", "").replace(" ", "")
+
+
+def test_the_key_list_scrolls_on_a_small_popup_too() -> None:
+    lines = screen.key_lines(POPUP[1], POPUP[0])
+
+    assert len(lines) <= POPUP[0]
+    assert lines[0] == "The keys"
+
+
+def test_the_form_and_a_checklist_hold_up_at_the_size_a_popup_really_is() -> None:
+    form = screen.form_lines("claude-default", "in ~/dev", FIELDS, 4, POPUP[0], POPUP[1])
+    checklist = screen.tick_lines(
+        "Tools", "a hint", TOOLS, [0, 1, 2, 3, 4], 1, height=POPUP[0], width=POPUP[1]
+    )
+
+    assert len(form) <= POPUP[0]
+    assert "[ Launch ]" in form[-1]
+    assert any(line.startswith("  > 5 ") for line in form)  # the cursor is still on screen
+    assert len(checklist) <= POPUP[0]
+    assert [line for line in form + checklist if get_cwidth(line) > POPUP[1]] == []
+
+
+def test_the_checklist_key_line_says_it_can_be_filtered() -> None:
+    """The two longest lists in the chooser are the two this matters most for."""
+    line = screen.footer_line(screen.TICK_KEYS)
+
+    assert "/ filter" in line
+    assert get_cwidth(line) <= screen.WIDTH
+
+
+def test_the_confirm_offers_the_save_the_design_puts_on_it() -> None:
+    assert "s save" in screen.footer_line(screen.CONFIRM_KEYS)
+    assert drive("s", lambda: screen.confirm("Launch?", POLICY)) == screen.SAVE
+
+
 # --- the form ---------------------------------------------------------------
 
 

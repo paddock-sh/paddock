@@ -10,7 +10,7 @@ state Form : one field per decision, the hint for the\none the cursor is on, the
 state "List" as Pick : one row per choice, what it means beside it
 state "Checklist" as Tick : as many columns as the width holds,\nand a count in the header
 state "Box" as Type : one line to type, and what is wrong with it
-state Confirm : the resolved policy in full, over\nLaunch, Back to the form and Cancel
+state Confirm : the resolved policy in full, over\nLaunch, Back to the form and Cancel.\n`s` saves the answers from here
 
 Form --> Pick : enter on Open, Profile, Backend, Agent or Files
 Form --> Tick : enter on Tools, Network or Skills
@@ -30,10 +30,12 @@ note right of Tick
   a checklist can keep `a` for all and `n`
   for none while still narrowing.
 
-  A terminal too short for every row scrolls
-  them around the cursor rather than clipping
-  them, so the cursor, the hint, what you have
-  typed and the buttons are always on screen.
+  The popup is 70% of the terminal minus its
+  sidebar, so an ordinary one is about 48 by 18.
+  Every screen scrolls its rows rather than
+  clipping them, and pins what must never scroll
+  off: the cursor, the hint, what you have typed,
+  and the confirm's own three buttons.
 end note
 
 note right of Type

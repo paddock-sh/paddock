@@ -361,10 +361,13 @@ offering the last session as a zeroth option: every session is one field away.
 **Backend** is which sandbox runs it (§3.2). A backend this machine has no binary
 for stays on the list and says why it cannot be chosen, rather than vanishing.
 
-The screens are drawn to 80 by 24, which is the smallest terminal anyone has, and
-grow to fill a wider popup up to 110 columns, centred, because a line much past
-that is hard to read back. A checklist takes another column when the width holds
-one.
+The popup is 70% of the terminal minus herdr's sidebar and border, so an ordinary
+one is about 48 by 18 and only a large terminal gives the 80 by 24 the design is
+drawn to. Every screen scrolls its rows rather than clipping them, and pins what
+must never scroll off: the cursor, the hint, what has been typed, and the
+confirm's buttons. They grow to fill a bigger popup up to 110 columns, centred,
+because a line much past that is hard to read back, and a checklist takes another
+column when the width holds one.
 
 The keys match herdr's navigate mode: arrows with `hjkl` beside them, enter to
 take, escape to back out one level, and a digit to jump to a field. Every list

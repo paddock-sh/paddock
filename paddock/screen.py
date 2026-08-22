@@ -33,8 +33,10 @@ from prompt_toolkit.widgets import TextArea
 OPEN, LAUNCH, SAVE = "open", "launch", "save"
 BACK, CANCEL = "back", "cancel"
 
-# The budget from the design: 80 by 24. It is the smallest terminal anyone has, so every
-# screen is drawn to fit it, and a smaller one scrolls its rows rather than losing them.
+# What the design is drawn to. The popup herdr opens is 70% of a terminal minus its sidebar
+# and border, so an ordinary one is far smaller than this: a 100 by 30 terminal gives about
+# 48 by 18. Every screen scrolls its rows and pins what must never scroll off, so that the
+# small case works rather than merely fitting on paper.
 WIDTH, HEIGHT = 80, 24
 
 # The widest a block of text gets, however wide the popup is. Past about a hundred columns the
@@ -60,17 +62,19 @@ BACK_KEY = "esc back (keeps your answers)"
 
 FORM_KEYS = ("enter edit", "^v move", "L launch", "s save", "esc cancel", "? keys")
 PICK_KEYS = ("enter choose", "^v move", BACK_KEY, "? keys")
-TICK_KEYS = ("space toggle", "a all", "n none", "enter done", BACK_KEY)
+TICK_KEYS = ("space toggle", "/ filter", "enter done", BACK_KEY, "? keys")
 BOX_KEYS = ("space toggle", "tab to the box", "enter done", BACK_KEY)
 TYPE_KEYS = ("enter done", "esc back (keeps what you typed)")
-CONFIRM_KEYS = ("enter choose", "<> move", BACK_KEY, "? keys")
+CONFIRM_KEYS = ("enter choose", "<> move", "s save", BACK_KEY, "? keys")
 
 # The way back, drawn as the first row of every list and every checklist. Escape is the key
 # for it, and this is the row for everyone who has not learned the key.
 BACK_ROW = ("← Back", "One level back, keeping every answer. The same as esc.")
 
-# The confirm's three, in the order they are drawn. Cancel is last, as it is everywhere.
+# The confirm's three, in the order they are drawn, with a shorter way to say the middle one
+# when the popup is too narrow for all three. Cancel is last, as it is everywhere.
 CONFIRM_BUTTONS = ((LAUNCH, "Launch"), (BACK, "← Back to the form"), (CANCEL, "Cancel"))
+SHORT_BUTTONS = ((LAUNCH, "Launch"), (BACK, "← Back"), (CANCEL, "Cancel"))
 
 # How wide the labels column of the confirm is, so a long value wraps under itself.
 POLICY_ROOM = 12
@@ -134,18 +138,40 @@ def window(lines: list[str], room: int, cursor: int) -> list[str]:
     return lines[start : start + room]
 
 
-def _wrap(text: str, width: int) -> list[str]:
-    """Wrapping by column, because textwrap counts characters and a wide one is two columns."""
+def _wrap(text: str, width: int, split_long: bool = False) -> list[str]:
+    """Wrapping by column, because textwrap counts characters and a wide one is two columns.
+
+    `split_long` breaks a word wider than the line across lines instead of cutting it, which
+    is what a screen that names a path it is granting has to do.
+    """
     lines: list[str] = []
     line = ""
     for word in text.split():
         joined = f"{line} {word}".strip()
         if line and get_cwidth(joined) > width:
             lines.append(line)
-            line = word if get_cwidth(word) <= width else cut(word, width)
-        else:
-            line = joined
+            line = ""
+        if get_cwidth(word) <= width:
+            line = f"{line} {word}".strip()
+            continue
+        if not split_long:
+            line = cut(word, width)
+            continue
+        parts = _broken(word, width)
+        lines += parts[:-1]
+        line = parts[-1]
     return lines + [line] if line else lines
+
+
+def _broken(word: str, width: int) -> list[str]:
+    """One long word over as many lines as it takes, because cutting it would hide a grant."""
+    parts, part = [], ""
+    for char in word:
+        if get_cwidth(part + char) > width:
+            parts.append(part)
+            part = ""
+        part += char
+    return [*parts, part]
 
 
 # --- the lines a screen draws ----------------------------------------------
@@ -212,9 +238,13 @@ def columns(cells: list[str], width: int = WIDTH) -> list[str]:
     return lines
 
 
-def key_lines(width: int = WIDTH) -> list[str]:
-    """The whole key map, for `?`."""
-    return ["The keys", ""] + [cut(f"  {pad(key, 14)} {what}", width) for key, what in KEY_LIST]
+def key_lines(width: int = WIDTH, height: int = HEIGHT) -> list[str]:
+    """The whole key map, for `?`. It scrolls too, rather than running off a small popup."""
+    said = [cut(f"  {pad(key, 14)} {what}", width) for key, what in KEY_LIST]
+    room = height - 2
+    if len(said) > room > 0:
+        said = said[: room - 1] + [f"  +{len(said) - room + 1} more, and the design doc has all"]
+    return ["The keys", "", *said]
 
 
 def form_lines(
@@ -315,26 +345,53 @@ def tick_lines(
 
 
 def confirm_lines_drawn(
-    title: str, policy: list[tuple[str, str]], chosen: int, width: int = WIDTH
+    title: str,
+    policy: list[tuple[str, str]],
+    chosen: int,
+    width: int = WIDTH,
+    height: int = HEIGHT,
 ) -> list[str]:
     """The resolved policy over the three buttons.
 
-    A value too long for its line wraps under itself rather than being cut: this is the one
-    screen whose whole job is saying the grant in full.
+    A value too long for its line wraps under itself, and a path too long for a line is broken
+    across lines rather than cut: this is the one screen whose whole job is saying the grant in
+    full, so nothing it grants may be hidden by an ellipsis.
+
+    The buttons are pinned to the bottom and the policy scrolls above them. A confirm whose
+    buttons have gone off the end of a small popup is worse than useless: the cursor is still
+    on one of them, so the enter that was meant to launch cancels instead.
     """
-    lines = [title, ""]
+    said = []
     for label, text in policy:
-        for place, part in enumerate(_wrap(text, width - POLICY_ROOM - 3)):
+        for place, part in enumerate(_wrap(text, width - POLICY_ROOM - 3, split_long=True)):
             head = pad(label, POLICY_ROOM) if place == 0 else " " * POLICY_ROOM
-            lines.append(f"  {head} {part}")
-    return lines + ["", _confirm_buttons(chosen)]
+            said.append(f"  {head} {part}")
+    buttons = _confirm_buttons(chosen, width)
+    room = height - (3 + len(buttons))  # the title, a blank, a blank, and the buttons
+    if len(said) > room > 0:
+        said = said[: room - 1] + [f"  {' ' * POLICY_ROOM} +{len(said) - room + 1} more lines"]
+    return [title, "", *said, "", *buttons]
 
 
-def _confirm_buttons(chosen: int) -> str:
-    drawn = []
-    for place, (_, label) in enumerate(CONFIRM_BUTTONS):
-        drawn.append(f"{'>' if place == chosen else ' '} [ {label} ]")
-    return "  " + "    ".join(drawn)
+def _confirm_buttons(chosen: int, width: int = WIDTH) -> list[str]:
+    """The three, on one line if the popup is wide enough, and one per line when it is not.
+
+    They are what the screen exists for, so they give up their words and then their line
+    before they give up being on it.
+    """
+    for labels in (CONFIRM_BUTTONS, SHORT_BUTTONS):
+        drawn = [_button(place, label, chosen) for place, (_, label) in enumerate(labels)]
+        line = "  " + "    ".join(drawn)
+        if get_cwidth(line) <= width:
+            return [line]
+    return [
+        "  " + _button(place, label, chosen)
+        for place, (_, label) in enumerate(SHORT_BUTTONS)
+    ]
+
+
+def _button(place: int, label: str, chosen: int) -> str:
+    return f"{'>' if place == chosen else ' '} [ {label} ]"
 
 
 def type_lines(title: str, hint: str, width: int = WIDTH) -> list[str]:
@@ -595,7 +652,7 @@ def tick(
 
 
 def confirm(title: str, policy: list[tuple[str, str]]) -> str:
-    """The last screen: LAUNCH, BACK to the form, or CANCEL.
+    """The last screen: LAUNCH, BACK to the form, CANCEL, or SAVE these answers as a profile.
 
     It opens on Launch, because the common case is confirming what the form already said, and
     escape is the Back button: one level back, with every answer where it was.
@@ -617,6 +674,10 @@ def confirm(title: str, policy: list[tuple[str, str]]) -> str:
     def _(event) -> None:
         event.app.exit(result=CONFIRM_BUTTONS[state["cursor"]][0])
 
+    @keys.add("s")
+    def _(event) -> None:
+        event.app.exit(result=SAVE)  # the offer section 5.7 puts on this screen
+
     @keys.add("escape")
     def _(event) -> None:
         event.app.exit(result=BACK)
@@ -624,7 +685,7 @@ def confirm(title: str, policy: list[tuple[str, str]]) -> str:
     _finish(keys, state)
 
     def body(height: int, width: int) -> list[str]:
-        return confirm_lines_drawn(title, policy, state["cursor"], width)
+        return confirm_lines_drawn(title, policy, state["cursor"], width, height)
 
     return str(_run(body, lambda width: footer_line(CONFIRM_KEYS, width), keys, state))
 
@@ -680,7 +741,8 @@ def typed_in(
         HSplit(
             [
                 Window(FormattedTextControl(above), height=len(type_lines(title, hint))),
-                VSplit([Window(width=_indent), box]),  # the box keeps the margin the text has
+                # The box keeps the margins the text above it has, rather than running on.
+                VSplit([Window(width=_indent), box, Window(width=_indent)]),
                 Window(),  # the gap that puts the key line at the bottom, as on every screen
                 Window(FormattedTextControl(line), height=1, style="reverse"),
             ]
@@ -812,7 +874,7 @@ def _run(
 
     def text() -> str:
         rows, width = _room()
-        lines = key_lines(width) if state["keys"] else body(rows, width)
+        lines = key_lines(width, rows) if state["keys"] else body(rows, width)
         if len(lines) < rows:  # a line of air at the top, when there are rows to spare
             lines = ["", *lines]
         return "\n".join(_centred(lines, width))

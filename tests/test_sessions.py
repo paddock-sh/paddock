@@ -283,6 +283,33 @@ def test_a_keep_alive_session_survives_its_last_pane(
     assert sessions.get_session("demo").pane_ids == []
 
 
+def test_keeping_a_session_running_is_written_down_where_it_is_read(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    """The chooser asks under Advanced, and the answer has to outlive the process that asked."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    sessions.attach(session)
+
+    sessions.set_keep_alive(session, True)
+
+    assert sessions.get_session("demo").keep_alive is True
+    assert sessions.get_session("demo").pane_ids == session.pane_ids
+
+
+def test_a_session_collected_while_it_was_used_is_not_brought_back(
+    which: dict[str, str], client: FakeClient, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Writing a dead session back would revive one whose credentials have already gone."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    pane_id = sessions.attach(session)
+    sessions.remove_pane(pane_id)  # the last tab closed, so it was collected
+
+    sessions.set_keep_alive(session, True)
+
+    assert sessions.list_sessions() == []
+    assert "collected" in capsys.readouterr().err
+
+
 def test_a_collected_session_loses_the_token_in_its_run_dir(
     which: dict[str, str], client: FakeClient, keychain: dict[str, str]
 ) -> None:

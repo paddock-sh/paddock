@@ -110,7 +110,9 @@ def perform(plan: tui.Plan) -> int:
     session, pane_id = sessions.launch(profile, plan.name or None, backend=plan.backend)
     if plan.keep_alive:
         sessions.set_keep_alive(session, True)
-    recent.remember(profile.name)  # the chooser opens on it next time
+    remembered = plan.save_as or plan.started_from
+    if remembered in load_profiles():  # "+custom" is no profile to open on next time
+        recent.remember(remembered)
     print(pane_id)
     return 0
 
