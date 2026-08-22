@@ -350,3 +350,123 @@ def test_an_agent_with_no_redirection_gets_no_config_dir(home: Path, run_dir: Pa
     assert synth.env == {}
     assert synth.args == []
     assert not (run_dir / "config").exists()
+
+
+# --- copy mode, for a config dir mounted into a guest -----------------------
+
+
+def test_a_guest_gets_copies_because_a_symlink_out_of_the_mount_dangles(
+    home: Path, run_dir: Path
+) -> None:
+    """Only the config dir is mounted, so a link to a host path resolves to nothing there."""
+    (home / ".claude" / "skills" / "writing" / "SKILL.md").write_text("skill body")
+
+    synth = synth_config.build(Profile(skills=["writing"]), CLAUDE, run_dir, guest_dir="/cfg")
+
+    skill = synth.dir / "skills" / "writing"
+    assert not skill.is_symlink()
+    assert (skill / "SKILL.md").read_text() == "skill body"
+    credentials = synth.dir / ".credentials.json"
+    assert not credentials.is_symlink()
+    assert credentials.is_file()
+
+
+def test_srt_keeps_its_symlinks(home: Path, run_dir: Path) -> None:
+    """Nothing about the srt path changes: it reads the host files where they are."""
+    synth = synth_config.build(Profile(skills=["writing"]), CLAUDE, run_dir)
+
+    assert (synth.dir / "skills" / "writing").is_symlink()
+    assert (synth.dir / ".credentials.json").is_symlink()
+
+
+def test_the_agent_is_pointed_at_the_path_the_guest_will_see(home: Path, run_dir: Path) -> None:
+    """The dir is built on the host and read at the mount point, so the variable names that."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg")
+
+    assert synth.dir == run_dir / "config"  # the host side, which is what gets mounted
+    assert synth.env == {"CLAUDE_CONFIG_DIR": "/cfg"}
+    assert synth.args == ["--mcp-config", "/cfg/.mcp.json", "--strict-mcp-config"]
+
+
+def test_a_copied_dir_links_nothing_and_reports_every_source_copied(
+    home: Path, run_dir: Path
+) -> None:
+    """Nothing is reached through a link, so there is no path for a sandbox to allow."""
+    synth = synth_config.build(Profile(skills=["writing"]), CLAUDE, run_dir, guest_dir="/cfg")
+
+    assert synth.linked == []
+    assert synth.copied == [
+        home / ".claude/.credentials.json",
+        home / ".claude.json",
+        home / ".claude/skills/writing",
+    ]
+
+
+def test_a_copied_config_still_leaves_every_mcp_server_behind(home: Path, run_dir: Path) -> None:
+    """The whitelist is the only source of servers, in a guest as much as in a sandbox."""
+    synth = synth_config.build(Profile(mcp=["github"]), CLAUDE, run_dir, guest_dir="/cfg")
+
+    assert "mcpServers" not in (synth.dir / ".claude.json").read_text()
+    assert mcp_config(synth) == {"mcpServers": {"github": {"command": "gh-mcp"}}}
+
+
+def test_a_copied_token_is_discarded_with_the_session(home: Path, run_dir: Path) -> None:
+    """The guest read it out of the run dir, so collecting the session still takes it away."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg")
+    assert (synth.dir / ".credentials.json").is_file()
+
+    synth_config.discard_credentials(run_dir)
+
+    assert not (synth.dir / ".credentials.json").exists()
+
+
+def test_a_deferred_build_writes_no_token_at_all(home: Path, run_dir: Path) -> None:
+    """The guest is provisioned first, so a run that never gets there has no token on disk."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", defer_credentials=True)
+
+    assert not (synth.dir / ".credentials.json").exists()
+    assert (synth.dir / ".claude.json").is_file()  # everything else is built as usual
+    assert (synth.dir / ".mcp.json").is_file()
+
+
+def test_placing_credentials_copies_the_hosts_file_in(home: Path, run_dir: Path) -> None:
+    (home / ".claude" / ".credentials.json").write_text('{"claudeAiOauth": {"accessToken": "t"}}')
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", defer_credentials=True)
+
+    synth_config.place_credentials(Profile(), CLAUDE, run_dir)
+
+    placed = synth.dir / ".credentials.json"
+    assert not placed.is_symlink()  # a link would dangle in the guest, the same as any other
+    assert json.loads(placed.read_text()) == {"claudeAiOauth": {"accessToken": "t"}}
+
+
+def test_placing_credentials_falls_back_to_the_keychain(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """The deferred path keeps the export, and keeps it 0600."""
+    (home / ".claude" / ".credentials.json").unlink()
+    keychain["Claude Code-credentials"] = TOKEN
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", defer_credentials=True)
+
+    synth_config.place_credentials(Profile(), CLAUDE, run_dir)
+
+    placed = synth.dir / ".credentials.json"
+    assert list(json.loads(placed.read_text())) == ["claudeAiOauth"]
+    assert stat.S_IMODE(placed.stat().st_mode) == 0o600
+
+
+def test_placing_credentials_for_an_agent_with_no_redirection_does_nothing(
+    home: Path, run_dir: Path
+) -> None:
+    synth_config.place_credentials(Profile(agent="codex"), CODEX, run_dir)
+
+    assert not (run_dir / "config").exists()
+
+
+def test_a_skill_the_host_does_not_have_is_reported_in_copy_mode_too(
+    home: Path, run_dir: Path
+) -> None:
+    synth = synth_config.build(Profile(skills=["nope"]), CLAUDE, run_dir, guest_dir="/cfg")
+
+    assert list((synth.dir / "skills").iterdir()) == []
+    assert synth.missing == ["skill 'nope'"]

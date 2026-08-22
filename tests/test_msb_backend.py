@@ -9,12 +9,29 @@ from pathlib import Path
 
 import pytest
 
+from paddock.agents import AgentSpec
 from paddock.backends import RunNotFound, SandboxGone
 from paddock.backends import microsandbox as msb
 from paddock.profiles import Profile
+from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient
 
 SHELL = Profile(name="offline-shell", agent="shell", network_presets=[])
+CLAUDE = Profile(name="claude-vm", agent="claude", network_presets=["anthropic", "npm"])
+
+# What a shell session has: no synthesized config dir to mount or point at.
+NO_CONFIG = SynthConfig()
+
+
+@pytest.fixture
+def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A host home with the agent's real config dir in it, for the synthesized config dir."""
+    home = tmp_path / "home"
+    (home / ".claude" / "skills" / "writing").mkdir(parents=True)
+    (home / ".claude" / ".credentials.json").write_text("{}")
+    (home / ".claude.json").write_text("{}")
+    monkeypatch.setenv("HOME", str(home))
+    return home
 
 
 @pytest.fixture
@@ -70,7 +87,7 @@ def flag(argv: list[str], name: str) -> list[str]:
 
 
 def test_create_boots_a_named_vm_from_an_image(which: dict[str, str], tmp_path: Path) -> None:
-    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [])
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [], NO_CONFIG)
 
     assert argv[:2] == ["msb", "create"]
     assert flag(argv, "--name") == ["paddock-demo"]
@@ -80,7 +97,7 @@ def test_create_boots_a_named_vm_from_an_image(which: dict[str, str], tmp_path: 
 def test_the_workdir_is_mounted_read_write_and_the_guest_starts_there(
     which: dict[str, str], tmp_path: Path
 ) -> None:
-    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [])
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [], NO_CONFIG)
 
     assert flag(argv, "--mount-dir") == [f"{tmp_path}:/work"]
     assert flag(argv, "--workdir") == ["/work"]
@@ -96,9 +113,8 @@ def test_a_symlinked_mount_source_is_resolved(which: dict[str, str], tmp_path: P
     workdir = msb.workdir_for(Profile(shared_dir=str(link)), tmp_path / "run")
 
     assert workdir == real
-    assert flag(msb.create_argv("paddock-demo", "alpine", workdir, []), "--mount-dir") == [
-        f"{real}:/work"
-    ]
+    argv = msb.create_argv("paddock-demo", "alpine", workdir, [], NO_CONFIG)
+    assert flag(argv, "--mount-dir") == [f"{real}:/work"]
 
 
 def test_without_a_shared_dir_the_run_dirs_own_work_dir_is_mounted(tmp_path: Path) -> None:
@@ -111,7 +127,7 @@ def test_without_a_shared_dir_the_run_dirs_own_work_dir_is_mounted(tmp_path: Pat
 
 
 def test_the_network_is_denied_by_default(which: dict[str, str], tmp_path: Path) -> None:
-    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [])
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [], NO_CONFIG)
 
     assert flag(argv, "--net-default") == ["deny"]
 
@@ -119,7 +135,9 @@ def test_the_network_is_denied_by_default(which: dict[str, str], tmp_path: Path)
 def test_one_allow_rule_per_domain_the_profile_named(
     which: dict[str, str], tmp_path: Path
 ) -> None:
-    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, ["github.com", "*.github.com"])
+    argv = msb.create_argv(
+        "paddock-demo", "alpine", tmp_path, ["github.com", "*.github.com"], NO_CONFIG
+    )
 
     assert flag(argv, "--net-rule") == [
         "allow@dns",
@@ -132,7 +150,7 @@ def test_a_profile_with_no_domains_gets_no_network_at_all(
     which: dict[str, str], tmp_path: Path
 ) -> None:
     """Not even DNS: nothing is allowed out, so nothing needs resolving."""
-    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [])
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, [], NO_CONFIG)
 
     assert flag(argv, "--net-rule") == []
     assert flag(argv, "--net-default") == ["deny"]
@@ -142,7 +160,19 @@ def test_a_profile_with_no_domains_gets_no_network_at_all(
 
 
 def test_attaching_execs_a_terminal_shell_into_the_same_vm(which: dict[str, str]) -> None:
-    assert msb.attach_command("paddock-demo") == "msb exec --tty paddock-demo"
+    assert msb.attach_command("paddock-demo", []) == "msb exec --tty paddock-demo"
+
+
+def test_attaching_to_an_agent_session_runs_the_agent_in_the_guest(
+    which: dict[str, str],
+) -> None:
+    """A tab on an agent session is the agent itself, not a shell that could start it."""
+    argv = ["claude", "--mcp-config", "/paddock-config/.mcp.json", "--strict-mcp-config"]
+
+    assert msb.attach_command("paddock-demo", argv) == (
+        "msb exec --tty paddock-demo -- claude "
+        "--mcp-config /paddock-config/.mcp.json --strict-mcp-config"
+    )
 
 
 def test_stopping_a_vm_forces_it(which: dict[str, str]) -> None:
@@ -255,12 +285,12 @@ def test_prepare_opens_the_domains_the_profile_named(
     ]
 
 
-def test_this_backend_runs_the_shell_agent_only(
+def test_an_agent_with_no_image_is_refused_before_a_vm_exists(
     which: dict[str, str], msb_calls: list[list[str]]
 ) -> None:
-    """Provisioning an agent inside the guest is the next feature, not a silent fallback."""
-    with pytest.raises(ValueError, match="next feature"):
-        msb.prepare(Profile(agent="claude"))
+    """The guest holds what the image holds, so an agent with no image has nothing to run."""
+    with pytest.raises(ValueError, match="no image"):
+        msb.prepare(Profile(agent="codex"))
 
     assert msb_calls == []
 
@@ -293,6 +323,293 @@ def test_prepare_opens_no_tab(
 
     assert client.tabs == []
     assert client.commands == []
+
+
+# --- an agent inside the guest ---------------------------------------------
+
+
+def test_an_agent_session_boots_the_agents_own_image(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    msb.prepare(CLAUDE)
+
+    assert create_call(msb_calls)[-1] == "node:22-slim"
+
+
+def test_the_synthesized_config_dir_is_mounted_read_only(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """The host side is a source to copy from, never something the guest can write back to."""
+    run = msb.prepare(CLAUDE)
+
+    mounts = flag(create_call(msb_calls), "--mount-dir")
+    assert f"{run.run_dir}/config:{msb.GUEST_CONFIG_SRC}:ro" in mounts
+    assert not any(mount.endswith(msb.GUEST_CONFIG) for mount in mounts)
+
+
+def test_the_guest_gets_its_own_copy_of_the_config_dir(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """On the overlay, so what the agent writes there dies with the VM and never comes back."""
+    run = msb.prepare(CLAUDE)
+
+    assert msb_calls[-1] == [
+        "msb",
+        "exec",
+        "--timeout",
+        msb.BOOT_TIMEOUT,
+        run.vm_handle,
+        "--",
+        "/bin/sh",
+        "-c",
+        f"mkdir -p {msb.GUEST_CONFIG} && cp -a {msb.GUEST_CONFIG_SRC}/. {msb.GUEST_CONFIG}/",
+    ]
+
+
+def test_the_config_mount_source_is_resolved_too(
+    which: dict[str, str],
+    msb_calls: list[list[str]],
+    tmp_path: Path,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A state dir reached through a symlink would fail the mount, the same as a workdir."""
+    real = tmp_path / "linked-state"
+    real.mkdir()
+    link = tmp_path / "state-link"
+    link.symlink_to(real)
+    monkeypatch.setenv("PADDOCK_STATE_DIR", str(link))
+
+    run = msb.prepare(CLAUDE)
+
+    mounts = flag(create_call(msb_calls), "--mount-dir")
+    assert f"{(run.run_dir / 'config').resolve()}:{msb.GUEST_CONFIG_SRC}:ro" in mounts
+    assert str(link) not in " ".join(mounts)
+
+
+def test_the_config_dir_variable_is_set_on_create(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """`msb create -e` reaches every later exec, including the shell a tab attaches to."""
+    msb.prepare(CLAUDE)
+
+    assert flag(create_call(msb_calls), "-e") == [f"CLAUDE_CONFIG_DIR={msb.GUEST_CONFIG}"]
+
+
+def test_the_host_tab_is_given_no_environment(
+    which: dict[str, str], msb_calls: list[list[str]], client: FakeClient, home: Path
+) -> None:
+    """A variable on the host tab would stop at the host: the guest gets its own."""
+    run = msb.prepare(CLAUDE)
+
+    msb.open_pane(run)
+
+    assert client.tabs[0][2] == {}
+
+
+def test_the_boot_script_installs_the_agent_when_the_image_has_none(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """One exec after create, before any tab: the image is stock, so claude is not in it."""
+    run = msb.prepare(CLAUDE)
+
+    assert commands(msb_calls) == ["create", "exec", "exec"]  # install, then the config copy
+    assert msb_calls[1] == [
+        "msb",
+        "exec",
+        "--timeout",
+        msb.BOOT_TIMEOUT,
+        run.vm_handle,
+        "--",
+        "/bin/sh",
+        "-c",
+        "command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code@2.1.239",
+    ]
+
+
+def test_the_boot_script_asks_before_it_installs() -> None:
+    """A custom image with the agent baked in pays nothing, and gets no second version."""
+    agent = AgentSpec(command="claude", install="npm install -g x")
+
+    assert msb.boot_script(agent).startswith("command -v claude >/dev/null 2>&1 || ")
+
+
+def test_an_agent_with_nothing_to_install_runs_no_boot_script(
+    which: dict[str, str], msb_calls: list[list[str]], config_dir: Path, home: Path
+) -> None:
+    """An image that ships the agent needs no install command, and gets no exec."""
+    (config_dir / "agents").mkdir(parents=True)
+    # A whole entry: a user file replaces a built-in, redirection paths included.
+    (config_dir / "agents" / "claude.json").write_text(
+        json.dumps(
+            {
+                "command": "claude",
+                "image": "my/claude:1",
+                "auth_read_paths": ["~/.claude/.credentials.json", "~/.claude.json"],
+                "config_write_paths": ["~/.claude"],
+            }
+        )
+    )
+
+    msb.prepare(CLAUDE)
+
+    assert commands(msb_calls) == ["create", "exec"]  # the config copy, and no install
+
+
+def test_the_shell_agent_gets_no_config_dir_and_no_boot_script(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """A shell has no credentials to synthesize and nothing to install."""
+    run = msb.prepare(SHELL)
+
+    argv = create_call(msb_calls)
+    assert flag(argv, "--mount-dir") == [f"{run.workdir}:/work"]
+    assert flag(argv, "-e") == []
+    assert commands(msb_calls) == ["create"]
+
+
+def failing_msb(
+    monkeypatch: pytest.MonkeyPatch, fails: str, message: str
+) -> list[list[str]]:
+    """Stand in for an msb whose `fails` command raises. Returns the commands it is given."""
+    calls: list[list[str]] = []
+    booted: list[str] = []
+
+    def run(*args: str) -> str:
+        calls.append(list(args))
+        if args[1] == fails:
+            raise msb.MsbError(message)
+        if args[1] == "create":
+            booted.append(args[args.index("--name") + 1])
+        elif args[1] == "ls":
+            return json.dumps([{"name": name, "status": "Running"} for name in booted])
+        return ""
+
+    monkeypatch.setattr(msb, "_run", run)
+    return calls
+
+
+def credential_files(state_dir: Path) -> list[Path]:
+    return list((state_dir / "runs").glob("*/config/.credentials.json"))
+
+
+def test_the_token_is_placed_only_once_the_agent_is_installed(
+    which: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    state_dir: Path,
+    keychain: dict[str, str],
+) -> None:
+    """Deferred on purpose: an install can fail, and a token must not be on disk if it does."""
+    keychain["Claude Code-credentials"] = json.dumps({"claudeAiOauth": {"accessToken": "t"}})
+    seen: list[tuple[str, bool]] = []
+    booted: list[str] = []
+
+    def run(*args: str) -> str:
+        seen.append((args[1], bool(credential_files(state_dir))))
+        if args[1] == "create":
+            booted.append(args[args.index("--name") + 1])
+        elif args[1] == "ls":
+            return json.dumps([{"name": name, "status": "Running"} for name in booted])
+        return ""
+
+    monkeypatch.setattr(msb, "_run", run)
+
+    msb.prepare(CLAUDE)
+
+    # create and the install run with no token on disk; only the copy into the guest sees one.
+    assert seen == [("create", False), ("exec", False), ("exec", True)]
+    assert credential_files(state_dir)
+
+
+def test_an_install_that_fails_takes_the_vm_and_the_token_with_it(
+    which: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    state_dir: Path,
+    keychain: dict[str, str],
+) -> None:
+    """The session is never registered, so nothing else would ever collect that VM."""
+    keychain["Claude Code-credentials"] = json.dumps({"claudeAiOauth": {"accessToken": "t"}})
+    calls = failing_msb(monkeypatch, "exec", "msb exec failed: npm ERR! network request failed")
+
+    with pytest.raises(msb.MsbError, match="npm ERR") as raised:
+        msb.prepare(CLAUDE)
+
+    assert "npm install -g @anthropic-ai/claude-code" in str(raised.value)
+    assert commands(calls) == ["create", "exec", "ls", "rm"]
+    assert credential_files(state_dir) == []
+
+
+def test_a_create_that_fails_leaves_no_token_and_asks_msb_to_clean_up(
+    which: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    state_dir: Path,
+    keychain: dict[str, str],
+) -> None:
+    """A timeout can leave a VM behind, so the rollback runs whatever failed."""
+    keychain["Claude Code-credentials"] = json.dumps({"claudeAiOauth": {"accessToken": "t"}})
+    calls = failing_msb(monkeypatch, "create", "msb create gave up after 120s")
+
+    with pytest.raises(msb.MsbError, match="gave up"):
+        msb.prepare(CLAUDE)
+
+    assert commands(calls) == ["create", "ls"]  # asked msb what is there, and it is not
+    assert credential_files(state_dir) == []
+
+
+def test_an_agent_with_an_image_but_no_config_dir_says_it_is_unauthenticated(
+    which: dict[str, str],
+    msb_calls: list[list[str]],
+    config_dir: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only Claude Code has a redirection, so anything else boots with no credentials."""
+    (config_dir / "agents").mkdir(parents=True)
+    (config_dir / "agents" / "codex.json").write_text(
+        json.dumps({"command": "codex", "image": "node:22-slim"})
+    )
+
+    msb.prepare(Profile(agent="codex"))
+
+    assert "unauthenticated" in capsys.readouterr().err
+
+
+def test_the_agents_own_domains_reach_the_allow_rules(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """The registry's domains are merged by the profile, so the guest can reach the API."""
+    msb.prepare(CLAUDE)
+
+    rules = flag(create_call(msb_calls), "--net-rule")
+    assert "allow@api.anthropic.com:tcp:443" in rules
+    assert "allow@registry.npmjs.org:tcp:443" in rules  # the boot script has to reach npm
+
+
+def test_the_ticked_skills_are_copied_into_the_dir_that_gets_mounted(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """A symlink to a host skill would dangle in the guest, where only the mount exists."""
+    (home / ".claude" / "skills" / "writing" / "SKILL.md").write_text("skill body")
+
+    run = msb.prepare(Profile(agent="claude", skills=["writing"]))
+
+    copied = run.run_dir / "config" / "skills" / "writing"
+    assert not copied.is_symlink()
+    assert (copied / "SKILL.md").read_text() == "skill body"
+
+
+def test_the_launch_script_starts_the_agent_in_the_guest(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    run = msb.prepare(CLAUDE)
+
+    script = (run.run_dir / "launch.sh").read_text()
+    assert script == (
+        f"#!/bin/sh\nmsb exec --tty {run.vm_handle} -- claude "
+        f"--mcp-config {msb.GUEST_CONFIG}/.mcp.json --strict-mcp-config\n"
+    )
 
 
 # --- the launch script -----------------------------------------------------
@@ -441,7 +758,10 @@ def test_a_vm_that_goes_away_mid_collection_is_not_an_error(
     monkeypatch.setattr(msb, "_run", gone)
     msb.collect(run.run_dir)
 
-    assert "sandbox not found" in capsys.readouterr().err
+    said = capsys.readouterr().err
+    assert "sandbox not found" in said
+    # Removing a VM is best effort, so the message has to leave the user able to finish it.
+    assert f"msb rm -f {run.vm_handle}" in said
 
 
 def test_collecting_a_run_dir_with_no_launch_record_uses_the_handle_it_was_given(

@@ -77,9 +77,10 @@ note bottom of SessionA
   keep-alive arrives with the TUI; today it is a
   field a caller sets.
 
-  Shell sessions only so far. Running an agent in
-  the guest needs an image per agent and the config
-  dir mounted in, which is the next feature.
+  An agent session boots the agent's image, installs
+  the agent when the image lacks it, and gives the guest
+  its own copy of the synthesized config dir. A shell
+  session gets alpine and none of that.
 end note
 
 note bottom of SessionB
