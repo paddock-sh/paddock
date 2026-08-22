@@ -6,18 +6,18 @@ skinparam sequenceMessageAlign left
 
 legend top
   Participants marked **(planned)** are not built yet, and neither is the
-  layer-2 agent config — see SPEC section 7. Everything else exists today.
+  layer-2 permissions block — see SPEC section 7. Everything else exists today.
 endlegend
 
 actor User
 participant "Herdr" as Herdr
 participant "cli.py\n(planned)" as CLI
 participant "tui.py\n(chooser, planned)" as TUI
-participant "sessions.py\n(registry, planned)" as Sessions
+participant "sessions.py" as Sessions
 participant "profiles.py" as Profiles
 participant "agents.py" as Agents
 participant "backends/srt.py" as Backend
-participant "synth_config.py\n(planned)" as Synth
+participant "synth_config.py" as Synth
 participant "herdr_client.py" as Client
 participant "srt\n(Seatbelt / bubblewrap)" as Srt
 
@@ -33,11 +33,14 @@ TUI -> User : Local / New sandbox session / Attach to existing?
 User --> TUI : New sandbox session
 
 alt Local namespace chosen
-  TUI -> Backend : launch_local(cwd)
-  Backend -> Client : create_tab(cwd)
+  TUI -> Sessions : launch_local(cwd)
+  Sessions -> Client : create_tab(cwd)
   note right : plain tab, no label, no session, no sandbox — flow ends here
 else Attach to an existing session chosen
-  TUI -> Sessions : look up chosen session
+  TUI -> Sessions : get_session(name or id)
+  TUI -> Sessions : attach(session)
+  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json
+  Sessions -> Backend : open_pane(run, label="sbx:<session>")
   note right
     msb: exec a shell into the running guest.
     srt: new process under the SAME settings
@@ -62,35 +65,53 @@ group Questionnaire (skipped when a saved profile is reused)
   end
 end
 
-TUI -> Sessions : register session
-
-TUI -> Backend : launch(profile)
+TUI -> Sessions : launch(profile, name)
 deactivate TUI
+activate Sessions
+Sessions -> Sessions : create_session(profile, name)\nname unique among live sessions,\nelse profile name + short suffix
+
+Sessions -> Backend : prepare(profile)
 activate Backend
 
 Backend -> Agents : load_agents()[profile.agent]
 activate Agents
-Agents --> Backend : AgentSpec (command, api_domains,\nconfig_write_paths)
+Agents --> Backend : AgentSpec (command, api_domains,\nauth_read_paths, config_write_paths)
 deactivate Agents
 Backend -> Backend : new_run_dir()\n$PADDOCK_STATE_DIR/runs/<timestamp>-<rand>/
 Backend -> Backend : workdir_for(profile, run_dir)\nshared_dir, else run_dir/work (isolated)
 Backend -> Backend : build_shim_dir(run_dir, tools)\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
-Backend -> Backend : build_settings(profile, agent, workdir)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp,\n/dev/null, config_write_paths) — not the run dir\nfilesystem.allowRead (the agent's own credentials)\nfilesystem.denyRead = denyWrite (~/.ssh, ~/.aws, ...)\nevery configured path expanded here
-Backend -> Agents : layer-2 agent config (planned)
-Backend -> Synth : build synthetic config dir (planned)\n-> CLAUDE_CONFIG_DIR via `tab create --env`
+Backend -> Synth : build(profile, agent, run_dir)
+activate Synth
+Synth -> Synth : run_dir/config/\nsymlink the key it only reads; copy the config it writes back,\nminus every mcpServers key, at any depth\nno key file on the host? export the login Keychain entry's own\nclaudeAiOauth key, mode 0600 (macOS, deleted when the\nsession is collected)\nsymlink ONLY the ticked skills from <real config>/skills\nwrite .mcp.json with ONLY the ticked MCP servers
+Synth --> Backend : dir, env {CLAUDE_CONFIG_DIR: run_dir/config},\nargs [~--mcp-config <file>, ~--strict-mcp-config],\nwhat it linked, what it copied, what the host did not have
+deactivate Synth
+note right of Synth
+  Layer 3. Only Claude Code has a config-dir
+  variable today; other agents get nothing back
+  and keep their real config dir (SPEC 4.3).
+end note
+Backend -> Backend : build_settings(profile, agent, workdir, synth)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp, /dev/null,\nand run_dir/config when redirected, else config_write_paths)\nfilesystem.allowRead (what the config dir linked to — srt\nsees the target — else the agent's own credentials)\nfilesystem.denyRead (~/.ssh, ~/.aws, ..., plus the real config\ndir and what was copied when redirected); denyWrite adds\nevery credential path\nevery configured path expanded here
 Backend -> Backend : pane_command(...)\nfind_srt(): `srt`, else `npx -y @anthropic-ai/sandbox-runtime`\n(composed before any tab exists, so a missing srt\nfails with no empty pane left behind)
+Backend -> Backend : write run_dir/launch.json\n(command, workdir, env — what a later attach replays)
+Backend --> Sessions : Run
+deactivate Backend
+Sessions -> Sessions : register in <state>/sessions.json\n(written whole, then swapped in)
 
-Backend -> Client : create_tab(workdir, label="sbx:<profile>")
+Sessions -> Backend : open_pane(run, label="sbx:<session>")
+activate Backend
+Backend -> Client : create_tab(workdir, label, env)
 activate Client
-Client -> Herdr : herdr tab create [--workspace <id>]\n--cwd <workdir> --label sbx:<profile> --focus
+Client -> Herdr : herdr tab create [~--workspace <id>]\n~--cwd <workdir> ~--label sbx:<session>\n~--env CLAUDE_CONFIG_DIR=<run_dir>/config ~--focus
 Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:p2"}}}
 Client --> Backend : "wA:p2"
 Backend -> Client : run_in_pane("wA:p2", command)
-Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars>`\n`PATH=<shim>:/usr/bin:/bin <agent>'`
+Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`http_proxy="$http_proxy" ... GIT_SSH_COMMAND="$GIT_SSH_COMMAND"`\n`PATH=<shim>:/usr/bin:/bin <agent> --mcp-config <file> --strict-mcp-config'`
 deactivate Client
-Backend --> CLI : pane_id
+Backend --> Sessions : pane_id
 deactivate Backend
-CLI -> Sessions : record pane wA:p2 as attached
+Sessions -> Sessions : record wA:p2 on the session
+Sessions --> CLI : (session, pane_id)
+deactivate Sessions
 CLI --> Herdr : exit (popup closes)
 deactivate CLI
 
@@ -106,6 +127,15 @@ note over Backend, Srt
   the pane exists with the right cwd and label before any
   sandboxed process starts, so a launch failure leaves a
   visible, usable pane rather than a vanished window.
+
+  CLAUDE_CONFIG_DIR is passed twice on purpose. `tab create --env`
+  sets it for the pane; `env -i` wipes the pane's environment for
+  the sandboxed process, so the command carries it as well.
+
+  The proxy variables are passed by NAME, not by value: srt sets
+  them in the shell it spawns and that proxy is the sandbox's only
+  way out, so `VAR="$VAR"` is left for that shell to expand. No
+  value is read from the popup's environment (SPEC section 2.1).
 end note
 
 @enduml

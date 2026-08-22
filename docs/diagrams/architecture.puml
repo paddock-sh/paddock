@@ -16,19 +16,19 @@ package "Herdr 0.8.0" {
 package "paddock" {
   [cli.py\nchoose | launch | profiles] as CLI
   [tui.py\nquestionary chooser] as TUI
-  [sessions.py\nsession registry\ncreate | attach | GC] as Sessions
+  [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
   [agents.py\nagent registry\n+ layer-2 adapters] as Agents
-  [synth_config.py\nsynthetic config dir\n(credentials + skills)] as SynthConfig
-  interface "Backend\nlaunch(profile)\n-> pane id" as BackendAPI
-  [backends/srt.py\nv1\nbuild_settings / build_shim_dir\npane_command / launch] as SrtBackend
+  [synth_config.py\nsynthesized config dir\n(credentials + ticked skills\n+ MCP whitelist)] as SynthConfig
+  interface "Backend\nprepare(profile) -> run\nopen_pane(run, label)\n-> pane id" as BackendAPI
+  [backends/srt.py\nv1\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
   [backends/microsandbox.py\nv1.1 — planned] as MsbBackend
   [herdr_client.py\ncreate_tab / run_in_pane\n(mockable seam)] as HerdrClient
 }
 
 package "Host configuration" {
   database "~/.config/paddock/\n(override: $PADDOCK_CONFIG_DIR)\nprofiles/*.json\nagents/*.json" as ConfigFiles
-  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ bin/ + srt-settings.json + work/\nsessions.json (registry)\nworkspace default bindings" as RunDir
+  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ bin/ + srt-settings.json +\nconfig/ + work/ + launch.json\nsessions.json (registry)\nworkspace default bindings (planned)" as RunDir
 }
 
 package "Sandbox runtimes" {
@@ -46,20 +46,21 @@ Sessions ..> RunDir : registry survives\nHerdr restart
 Profiles ..> ConfigFiles : reads / writes
 Agents ..> ConfigFiles : reads user agents/*.json
 
-TUI --> BackendAPI : selected Profile
-CLI --> BackendAPI : launch <profile>
+TUI --> Sessions : selected Profile
+CLI --> Sessions : launch <profile>
 BackendAPI <|.. SrtBackend
 BackendAPI <|.. MsbBackend
 
-SrtBackend --> RunDir : writes PATH shim dir,\nsrt-settings.json + scratch workdir
-Sessions --> BackendAPI : new session -> launch;\nattach -> reuse settings + workdir (srt)\nor exec into guest (msb)
+SrtBackend --> RunDir : writes PATH shim dir, srt-settings.json,\nconfig dir, scratch workdir, launch.json
+Sessions --> BackendAPI : create_session -> prepare;\nattach -> open_pane on the same\nsettings + workdir (srt)\nor exec into guest (msb)
+Sessions --> HerdrClient : launch_local: a plain tab,\nno session, no sandbox
 SrtBackend ..> SynthConfig : build config dir
 MsbBackend ..> SynthConfig : build config dir (copied,\nno symlinks in a microVM)
 Agents --> SynthConfig : credentials + whitelisted skills
 
-SrtBackend --> HerdrClient : pane command
+SrtBackend --> HerdrClient : pane command + env
 MsbBackend ..> HerdrClient : pane command
-HerdrClient --> HerdrCLI : herdr tab create [--workspace] --cwd --label --focus\nherdr pane run <pane_id> <command>\n(--env follows with the synth config dir)
+HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> <command>
 HerdrCLI --> HerdrUI : creates tab, returns\nresult.root_pane.pane_id
 HerdrUI --> Srt : sandboxed pane process (v1)
 HerdrUI ..> Msb : sandboxed pane process (v1.1)

@@ -12,8 +12,8 @@ class HerdrError(RuntimeError):
     """herdr is missing, refused the command, or answered with something unusable."""
 
 
-def create_tab(cwd: Path, label: str = "") -> str:
-    """Create a focused tab and return its pane id."""
+def create_tab(cwd: Path, label: str = "", env: dict[str, str] | None = None) -> str:
+    """Create a focused tab and return its pane id. `env` sets variables in the new pane."""
     args = ["tab", "create"]
     workspace = os.environ.get("HERDR_ACTIVE_WORKSPACE_ID")
     # Outside herdr there is no workspace to name, and herdr picks the active one anyway.
@@ -22,6 +22,8 @@ def create_tab(cwd: Path, label: str = "") -> str:
     args += ["--cwd", str(cwd)]
     if label:
         args += ["--label", label]
+    for name, value in (env or {}).items():
+        args += ["--env", f"{name}={value}"]
     args.append("--focus")
 
     output = _run(*args)
