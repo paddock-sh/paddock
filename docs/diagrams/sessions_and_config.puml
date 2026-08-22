@@ -24,7 +24,16 @@ package "sessions.py" {
     attach(session, cwd) -> pane id
     launch(profile, name) = create + attach
     remove_pane(pane_id)
+    reconcile() -> the sessions it collected
     launch_local(cwd) -> pane id
+  }
+}
+
+package "herdr_client.py" {
+  class "functions" as ClientFns {
+    create_tab(cwd, label, env) -> pane id
+    run_in_pane(pane_id, command)
+    list_pane_ids() -> every pane herdr has open
   }
 }
 
@@ -65,7 +74,8 @@ database "the agent's real config dirs\nconfig_write_paths, e.g. $HOME/.claude" 
 SessionFns --> Session : builds
 SessionFns --> Registry : written whole under a file lock,\nthen swapped in; a file that will not parse\nis reported and treated as empty
 SessionFns --> SrtFns : create_session -> prepare\nattach -> load_run + open_pane
-SessionFns --> SynthFns : remove_pane -> discard_credentials\nwhen the session is collected
+SessionFns --> ClientFns : reconcile -> list_pane_ids:\nthe only thing that says a tab closed
+SessionFns --> SynthFns : discard_credentials when a session\nis collected, by reconcile or remove_pane
 SrtFns --> SynthFns : build the config dir
 SrtFns --> RunDir : writes
 SynthFns --> Config : writes
@@ -79,11 +89,20 @@ note right of Session
   under the same policy: srt has no guest for a
   second process to join (SPEC section 3.2).
 
-  remove_pane drops the session when its last
-  pane closes, unless keep_alive is set. The run
-  dir is left on disk either way, minus the
-  credential file: it may be an exported token,
-  and that does not outlive the session.
+  A session is dropped when its last pane closes,
+  unless keep_alive is set. The run dir is left on
+  disk either way, minus the credential file: it
+  may be an exported token, and that does not
+  outlive the session.
+
+  Nothing is listening for the close. reconcile()
+  runs at the start of every paddock command that
+  opens or lists sessions, and on `paddock gc`,
+  and compares the registry with `herdr pane list`
+  (SPEC section 3.4). remove_pane is the same
+  ending for one known pane id. A herdr that does
+  not answer changes nothing: no pane list is not
+  the same as no panes.
 end note
 
 note bottom of RealConfig

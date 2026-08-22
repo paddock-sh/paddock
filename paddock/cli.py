@@ -62,6 +62,15 @@ def run(command: Command) -> int:
     if command.name == "init":
         return init.run(dry_run=command.dry_run, undo=command.undo)
 
+    if command.name == "gc":
+        for session in sessions.reconcile():
+            print(f"collected {session.name}")
+        return 0
+    # Every command left here opens or lists sessions, so first drop the ones whose tabs
+    # are gone (SPEC §3.4). A dry run changes nothing, so it collects nothing either.
+    if not command.dry_run:
+        sessions.reconcile()
+
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
         plan = tui.choose(cwd)
@@ -178,6 +187,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
     subcommands.add_parser("profiles", help="list saved profiles")
+    subcommands.add_parser(
+        "gc", help="collect sessions whose tabs are all closed (every command does this first)"
+    )
     setup = subcommands.add_parser(
         "init", parents=[dry], help="bind the chooser to prefix+c in herdr's config"
     )

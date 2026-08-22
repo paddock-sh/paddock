@@ -1,5 +1,6 @@
 """Sandbox sessions: the registry, names, attaching tabs, and collecting what nobody uses."""
 
+import fcntl
 import json
 import os
 import shlex
@@ -647,6 +648,159 @@ def test_a_pane_nobody_registered_changes_nothing(
     sessions.remove_pane("wA:p99")
 
     assert sessions.get_session("demo").pane_ids == session.pane_ids
+
+
+# --- reconciling with herdr ------------------------------------------------
+
+
+def test_a_pane_herdr_no_longer_has_is_dropped(which: dict[str, str], client: FakeClient) -> None:
+    """Nothing tells paddock a tab closed, so it compares the registry with `herdr pane list`."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    first = sessions.attach(session)
+    second = sessions.attach(session)
+    client.close_pane(first)
+
+    sessions.reconcile()
+
+    assert sessions.get_session("demo").pane_ids == [second]
+
+
+def test_the_panes_that_are_still_open_are_kept(which: dict[str, str], client: FakeClient) -> None:
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    first = sessions.attach(session)
+    second = sessions.attach(session)
+
+    assert sessions.reconcile() == []
+    assert sessions.get_session("demo").pane_ids == [first, second]
+
+
+def test_a_session_whose_last_tab_closed_is_collected(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    client.close_pane(sessions.attach(session))
+
+    collected = sessions.reconcile()
+
+    assert [session.name for session in collected] == ["demo"]
+    assert sessions.list_sessions() == []
+
+
+def test_a_collected_srt_session_loses_the_token_in_its_run_dir(
+    which: dict[str, str], client: FakeClient, keychain: dict[str, str]
+) -> None:
+    """The guarantee the whole thing exists for: the token does not outlive the session."""
+    keychain["Claude Code-credentials"] = '{"claudeAiOauth": {}}'
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    client.close_pane(sessions.attach(session))
+    config = Path(session.run_dir) / "config"
+    assert (config / ".credentials.json").is_file()
+
+    sessions.reconcile()
+
+    assert not (config / ".credentials.json").exists()
+    assert Path(session.run_dir).is_dir()
+
+
+def test_a_collected_vm_session_is_torn_down_with_the_handle_the_registry_kept(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """This is where an msb microVM is destroyed: nothing else knows the session ended."""
+    fake = FakeBackend(vm_handle="paddock-1")
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+    pane_id = sessions.attach(session)
+    client.live.add(pane_id)  # the fake backend opens its pane without going through the client
+    client.close_pane(pane_id)
+
+    sessions.reconcile()
+
+    assert fake.collected == [(Path(session.run_dir), "paddock-1")]
+
+
+def test_a_keep_alive_session_survives_with_no_panes_left(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+    session.keep_alive = True
+    pane_id = sessions.attach(session)
+    client.live.add(pane_id)  # the fake backend opens its pane without going through the client
+    client.close_pane(pane_id)
+
+    assert sessions.reconcile() == []
+    assert sessions.get_session("demo").pane_ids == []
+    assert fake.collected == []
+
+
+def test_a_herdr_that_cannot_be_reached_changes_nothing(
+    which: dict[str, str], client: FakeClient, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No answer is not "no panes". Collecting the lot here would destroy every session."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+    sessions.attach(session)
+    before = (state_dir / "sessions.json").read_text()
+    client.unreachable = True
+
+    assert sessions.reconcile() == []
+    assert (state_dir / "sessions.json").read_text() == before
+    assert fake.collected == []
+
+
+def test_a_reconcile_with_nothing_to_do_does_not_rewrite_the_registry(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It runs at every paddock invocation, so the usual case has to be a read and no more."""
+    sessions.attach(sessions.create_session(Profile(tools=[]), name="demo"))
+    monkeypatch.setattr(os, "replace", _boom)
+
+    assert sessions.reconcile() == []
+
+
+def test_a_session_that_has_not_opened_its_first_tab_is_left_alone(
+    which: dict[str, str], client: FakeClient
+) -> None:
+    """create_session registers before attach opens a pane, and another paddock may be there."""
+    sessions.create_session(Profile(tools=[]), name="demo")
+
+    assert sessions.reconcile() == []
+    assert sessions.get_session("demo").pane_ids == []
+
+
+def test_herdr_is_asked_while_the_registry_lock_is_held(
+    which: dict[str, str], client: FakeClient, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two paddocks at once: a tab that attached a moment ago must not read as a dead pane.
+
+    The lock is what makes that true. A pane list taken before the lock could miss a tab
+    another paddock had already opened and registered, and this would then collect it.
+    """
+    held: list[bool] = []
+
+    def list_pane_ids() -> set[str]:
+        held.append(_lock_is_held(state_dir))
+        return set(client.live)
+
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    sessions.attach(session)
+    monkeypatch.setattr(herdr_client, "list_pane_ids", list_pane_ids)
+
+    sessions.reconcile()
+
+    assert held == [True]
+
+
+def _lock_is_held(state_dir: Path) -> bool:
+    """Whether something already holds the registry lock, asked without blocking on it."""
+    with open(state_dir / "sessions.lock") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
 
 
 # --- the registry file -----------------------------------------------------

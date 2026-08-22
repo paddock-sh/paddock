@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import secrets
 import sys
@@ -186,6 +187,43 @@ def remove_pane(pane_id: str) -> None:
         _save(kept)
         for session in collected:
             _collect(session)
+
+
+def reconcile() -> list[Session]:
+    """Drop panes herdr no longer has, and collect the sessions that ran out of them.
+
+    Nothing is watching herdr, so this runs at every paddock invocation instead (SPEC §3.4).
+    Returns the sessions it collected, which is what `paddock gc` prints.
+    """
+    with _locked():
+        try:
+            alive = herdr_client.list_pane_ids()
+        except herdr_client.HerdrError as error:
+            # No answer is not "no panes": treating it as one would collect every session.
+            logging.getLogger(__name__).debug("not reconciling, herdr did not answer: %s", error)
+            return []
+        # Both reads happen under the lock, so a tab another paddock opened and registered
+        # before this one got the lock is in the pane list too, and never looks closed.
+        live = list_sessions()
+        kept, collected, changed = [], [], False
+        for session in live:
+            panes = [pane_id for pane_id in session.pane_ids if pane_id in alive]
+            if panes == session.pane_ids:
+                kept.append(session)
+                continue
+            changed = True
+            session.pane_ids = panes
+            # A session that already had no panes is one mid-launch, or a kept one. Only
+            # the session this just took the last pane from is over.
+            if panes or session.keep_alive:
+                kept.append(session)
+            else:
+                collected.append(session)
+        if changed:
+            _save(kept)
+    for session in collected:
+        _collect(session)
+    return collected
 
 
 def launch_local(cwd: Path | None = None) -> str:
