@@ -5,8 +5,9 @@
 A paddock for your herd: sandboxed agent environments for
 [Herdr](https://herdr.dev).
 
-Press `prefix+c` in [Herdr](https://herdr.dev). Pick a plain local tab, or an
-agent in a sandbox.
+Press `prefix+s` in [Herdr](https://herdr.dev) (`prefix` is herdr's prefix key,
+`ctrl+b` by default). Pick an agent, say what it may reach, and launch it into a
+tab of its own.
 
 You choose what each sandbox gets:
 
@@ -19,8 +20,9 @@ You choose what each sandbox gets:
 Enforced by the OS: Seatbelt on macOS, bubblewrap on Linux. Saved profiles make
 it two keystrokes. A session can run in a microVM instead, with
 `paddock launch <profile> --backend msb`: its own kernel, and only the directory
-you shared. The agent is installed in the guest on the way up, which costs about
-21s for Claude Code. Per-session VPNs and isolated IPs are on the
+you shared. The agent is installed in the guest on the way up, so a microVM
+session takes about 40 seconds to its first tab and an `srt` one starts at once.
+Per-session VPNs and isolated IPs are on the
 [roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
 
 > **Status:** the v1 launcher works end to end. It has had no outside security
@@ -29,7 +31,8 @@ you shared. The agent is installed in the guest on the way up, which costs about
 
 ## The chooser
 
-`prefix+c` opens a popup with one screen on it:
+`prefix+s` opens a popup with one screen on it (this is what it looks like after
+a few runs, with a profile saved and last used):
 
 ```
 paddock                          claude-default            in ~/dev/paddock
@@ -51,6 +54,12 @@ paddock                          claude-default            in ~/dev/paddock
 
 enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys
 ```
+
+On a first run there is nothing to remember yet, so the form opens on **Custom**,
+paddock's own defaults: Claude Code, a few tools, the anthropic and github domain
+groups, and an isolated scratch directory. Everything below the Profile row is
+yours to change before you launch, and `s` saves the answers as a profile so the
+next run is one pick.
 
 The form is filled in already, so the ordinary case is two key presses: `L`, then
 enter on the confirm. The confirm stays even for a repeat launch, because it is
@@ -74,6 +83,15 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Skills` | Only the ticked ones exist inside the sandbox at all |
 | `Advanced` | The session name, saving these answers as a profile, keeping the session running after its last tab, MCP servers, extra writable paths, denied reads and the system PATH |
 
+`Tools`, `Network` and `Skills` each offer an all-of-it row at the top of their
+checklist: every binary on the host `PATH`, any domain with no allowlist at all,
+every installed skill. Ticking one clears the individual ticks below it, and the
+confirm says what it granted in as many words: `can run: the full host PATH`,
+`can reach: ANY domain (unrestricted)`, `can see: all skills`. The `srt` backend
+has no way to express "any domain", so that one row is refused there and says to
+use the `msb` backend instead. There is deliberately no all-of-it row for writes:
+a sandbox with no filesystem fence is a Local tab, which is one field up.
+
 `Open` lists every live session by its name, backend, agent, profile and
 attached tabs, so a second tab on one of them is a pick and not a screen of its
 own. Picking one asks what goes in the tab: the agent again, or a plain shell
@@ -89,8 +107,24 @@ own, with the reason, the log path and the way back to the form.
 
 The form opens on the profile that workspace launched last, so the ordinary run
 is the same sandbox as yesterday's, unchanged, in those two presses. `s` saves the
-answers as a profile, which makes them one pick anywhere. Plain new-tab moves to
-`prefix+shift+c`.
+answers as a profile, which makes them one pick anywhere.
+
+### The keys
+
+| Key | What it does |
+| --- | --- |
+| `prefix+c` | A plain new tab. herdr's own, and paddock is not involved in it |
+| `prefix+s` | The chooser |
+| `prefix+shift+s` | The chooser, opened on the list of live sessions, for attaching |
+
+`prefix` is herdr's prefix key, `ctrl+b` unless you have changed it. `paddock
+init` writes those two bindings and moves herdr's own settings screen to
+`prefix+comma`, because paddock took its key. It tells you every binding that
+changed, and `paddock init --undo` puts them all back.
+
+An earlier paddock took `prefix+c` for the chooser and moved plain new-tab to
+`prefix+shift+c`. Running `paddock init` again migrates that config to the
+scheme above and says so. `prefix+shift+c` then goes back to being unbound.
 
 The popup herdr opens is smaller than the terminal it is in, so the screens are
 built for a small one: they scroll their rows, they pin what must never scroll
@@ -119,6 +153,15 @@ When a session's last tab closes it is collected: dropped from the registry, its
 copied credentials deleted, and its microVM destroyed if it had one. Nothing is
 running to watch for that, so it happens at the next `paddock` command rather
 than the instant the tab closes. `paddock gc` forces it.
+
+**What collection does not delete.** The session's run directory stays on disk,
+under `~/.local/state/paddock/runs/`. It holds the settings file, the shim dir,
+the synthesized config dir (minus the credentials, which are deleted) and, for a
+session that shared no host directory, the scratch workdir with whatever the
+agent wrote in it. Deleting that would lose work, so paddock keeps it and you
+delete it when you are done with it. `paddock gc` removes only the ones that hold
+nothing: a launch that failed before its first tab, or a session whose scratch
+workdir is empty.
 
 ## Trust model
 
@@ -155,22 +198,37 @@ paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock attach review --shell   # ... or a plain shell inside its sandbox
 paddock profiles                # list saved profiles
-paddock gc                      # collect sessions whose tabs are all closed,
-                                # and remove any sandbox left running with no session
+paddock gc                      # collect sessions whose tabs are all closed, and
+                                # sweep sandboxes and run dirs nothing claims
 paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```
 
-`launch` and `attach` take `--cwd` to say which directory to work in, and
-`--dry-run` prints what would happen instead of doing it. `attach` takes
-`--shell` for a plain shell inside the sandbox instead of the agent. `paddock
-init` also takes `--undo`.
+`--dry-run` prints what would happen instead of doing it, and `paddock init`
+also takes `--undo`. `attach` takes `--shell` for a plain shell inside the
+sandbox instead of the agent.
+
+**`--cwd` is a permission, not a working directory.** On `launch` it is the one
+directory on this machine the sandbox may read and write, mounted into a microVM
+or unlocked in the OS policy, and it overrides whatever the profile shared. Point
+it at the project you want the agent to work on, never at your home directory. On
+`attach` it only says where the new tab opens, because the session's permissions
+were settled when it was created.
+
+A launch on the `msb` backend takes about **40 seconds** before its first tab:
+it pulls the guest image and installs the agent inside the guest. The chooser
+draws a screen saying so, and the command line prints the same lines before it
+blocks. `srt` starts at once.
 
 ## Install
 
 **1. Prerequisites**
 
 - [herdr](https://herdr.dev) 0.8.0 or newer.
+- Python 3.11 or newer, and [uv](https://docs.astral.sh/uv/), which installs
+  paddock and brings its own Python if yours is older: `brew install uv`, or
+  `curl -LsSf https://astral.sh/uv/install.sh | sh`. The install script below
+  offers to install uv for you.
 - Node.js, so `npx` can fetch the sandbox runtime on first use. To install it
   instead: `npm i -g @anthropic-ai/sandbox-runtime`.
 - On Linux, also `bubblewrap`, `socat` and `ripgrep`. On Ubuntu 24.04 and newer,
@@ -181,8 +239,17 @@ init` also takes `--undo`.
 **2. Install paddock**
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/desquaredp/paddock/main/install.sh | sh
+```
+
+Or, if you already have uv and would rather see the command:
+
+```sh
 uv tool install git+https://github.com/desquaredp/paddock
 ```
+
+If the shell then says `paddock: command not found`, the tool directory is not on
+your `PATH` yet. `uv tool update-shell` adds it, and a new shell picks it up.
 
 **3. Wire it into herdr**
 
@@ -190,23 +257,43 @@ uv tool install git+https://github.com/desquaredp/paddock
 paddock init
 ```
 
-That backs up `~/.config/herdr/config.toml`, binds the chooser to `prefix+c`,
-moves plain new-tab to `prefix+shift+c`, and asks herdr to reload. It writes the
-file if herdr has not written one yet, and running it twice changes nothing.
-`paddock init --dry-run` shows the change first; `paddock init --undo` puts the
-old config back. Every run that changes something keeps a
-`config.toml.paddock-backup-*` copy next to the config; delete them when you no
-longer want them.
+That backs up `~/.config/herdr/config.toml`, binds the chooser to `prefix+s` and
+the attach list to `prefix+shift+s`, moves herdr's settings screen to
+`prefix+comma` to free that key, and asks herdr to reload. It prints every
+binding that changed. It writes the file if herdr has not written one yet, and
+running it twice changes nothing. `paddock init --dry-run` shows the change
+first; `paddock init --undo` puts the old config back. Every run that changes
+something keeps a `config.toml.paddock-backup-*` copy next to the config; delete
+them when you no longer want them.
 
-**4. Press `prefix+c` inside herdr.**
+**4. Press `prefix+s` inside herdr** (`prefix` is herdr's prefix key, `ctrl+b`
+by default).
 
 To check herdr is happy with the result: `herdr config check`.
+
+## Uninstall
+
+In this order, because the first step needs paddock to still be installed:
+
+```sh
+paddock init --undo                     # put herdr's keybindings back
+uv tool uninstall paddock               # remove the command
+rm -rf ~/.local/state/paddock           # run dirs, session registry, logs
+rm -rf ~/.config/paddock                # saved profiles and agent entries
+```
+
+The last two are separate on purpose. The state directory holds the scratch
+workdirs of every session that ever ran, so look in it before you delete it. The
+config directory holds the profiles you saved, which are worth keeping if you
+might come back.
 
 ## Troubleshooting
 
 `paddock logs` prints where the log is and the last 40 lines of it, and
 `paddock logs <session>` prints what that session's tabs printed: the agent's
-log, the shell tabs' log, or both. A launch that
+log, the shell tabs' log, or both. Those files hold the pane's **stderr** only,
+so a session that is going well leaves them empty: the agent draws its interface
+on stdout, and an empty log means it had nothing to complain about. A launch that
 fails leaves its pane open with the reason on screen, and one that never got as
 far as a pane says why on a screen of its own, with the way back to the form.
 

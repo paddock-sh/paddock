@@ -36,43 +36,74 @@ Verified against a local herdr 0.8.0.
 **Shipped: `paddock init` writes this.** In `~/.config/herdr/config.toml`:
 
 ```toml
+[keys]
+settings = "prefix+comma"
+
 [[keys.command]]
-key = "prefix+c"
+key = "prefix+s"
 type = "popup"
 command = "paddock"
 width = "70%"
 height = "70%"
 
-[keys]
-new_tab = "prefix+shift+c"
+[[keys.command]]
+key = "prefix+shift+s"
+type = "popup"
+command = "paddock choose --attach"
+width = "70%"
+height = "70%"
 ```
 
 `type = "popup"` runs the command in an overlay, which is where the chooser
-draws its form. Plain new-tab moves to `prefix+shift+c`.
+draws its form. `prefix+shift+s` is the same chooser opened on the list of live
+sessions, for the second most common thing anyone does, which needs no form.
+
+**`prefix+c` is herdr's own new tab, and paddock is not involved in it.** A plain
+tab is the cheapest and most common thing anyone does in a terminal multiplexer,
+and it should not cost a Python process and a popup frame. The design is
+docs/design/session-control.md §3; the permissions panel it also describes is not
+built yet, so `prefix+e` is left alone.
+
+Two of the keys the scheme wants are already herdr's: `settings = "prefix+s"`
+and `edit_scrollback = "prefix+e"`. paddock takes `prefix+s`, so init moves
+`settings` to `prefix+comma`, which is the settings idiom elsewhere and
+unmodified punctuation, the form herdr's own config calls reliable. It does not
+touch `edit_scrollback`, because it does not take that key.
 
 The popup is transient: it asks, it creates the pane, it exits.
 
-`paddock init` splices both into the config, and writes the file when herdr has
-not written one yet. It edits the text, not a parsed document, because a TOML
-round trip drops comments: the `[[keys.command]]` block sits between
-`# --- paddock (managed) ---` markers, so a second run replaces it rather than
-repeating it, and the `new_tab` line is inserted or rewritten on its own.
+`paddock init` splices all of it into the config, and writes the file when herdr
+has not written one yet. It edits the text, not a parsed document, because a TOML
+round trip drops comments: the `[[keys.command]]` blocks sit between
+`# --- paddock (managed) ---` markers, so a second run replaces them rather than
+repeating them, and the `settings` line is inserted or rewritten on its own.
 Everything else in the file stays byte for byte, line endings included.
+
+**Migrating the old scheme.** An earlier paddock bound the chooser to `prefix+c`
+and moved `new_tab` to `prefix+shift+c`. The next `paddock init` replaces that
+block, deletes the `new_tab` line it wrote (herdr's own default then applies
+again), and prints every binding that changed, including that `prefix+shift+c`
+is now bound to nothing. Only the exact value paddock wrote is deleted: a
+`new_tab` the user has since bound themselves is theirs and stays.
 
 Three things stand between that splice and the user's config. The result is
 parsed as TOML before anything is written, and a result that will not parse is
 reported and dropped. The old config is copied to
 `config.toml.paddock-backup-<timestamp>` first. `herdr config check` then runs on
-what was written, and a config herdr refuses is put straight back.
-`herdr server reload-config` runs last: herdr may not be running, which is a
-message, not a failure.
+what was written, and a config herdr refuses is put straight back, unless herdr
+already had something to say about the config before paddock touched it: paddock
+runs the same check first, and does not refuse over a problem it did not cause.
+It says so instead and leaves the wiring in place. `herdr server reload-config`
+runs last: herdr may not be running, which is a message, not a failure.
 
 `--dry-run` prints the diff and touches nothing. `--undo` restores the newest
 backup, keeping what it replaces as `config.toml.paddock-undone-<timestamp>`, so
-edits made since the last init are not lost. A `new_tab` the user has bound to
-something of their own is left alone and reported: paddock still takes
-`prefix+c`. A config that sets `keys` outside a `[keys]` table, as a dotted key
-or an inline table, is refused rather than edited.
+edits made since the last init are not lost. A config paddock wrote itself has no
+backup, because it replaced nothing, so its managed block carries a marker saying
+so and `--undo` removes the whole file, keeping a copy the same way. A `settings`
+the user has bound to something of their own is left alone and reported: paddock
+still takes `prefix+s`. A config that sets `keys` outside a `[keys]` table, as a
+dotted key or an inline table, is refused rather than edited.
 
 ### 1.2 Environment in the popup
 
@@ -334,12 +365,13 @@ So `build_settings` **raises** `UnsupportedPolicy` for a profile that ticks
 `everything`, rather than writing the named domains — which would enforce an
 allowlist nobody chose and deny exactly the traffic the profile said to allow. The
 message names `msb` as the backend that can do it. On msb the equivalent is one
-default rather than a rule: `msb run --net-default allow` with no `--net-rule` at
-all, verified live on 0.6.13 — plain HTTP and HTTPS to arbitrary hosts both work,
-and DNS needs no `allow@dns` of its own. `net_rules()` (§2.2) does not do that yet;
-it maps every domain to `allow@<domain>:tcp:443` under `--net-default deny`, so the
-sentinel reaches it as two useless rules. That is the next step, and it is a
-change in the msb backend, not here.
+default rather than a rule: `--net-default allow` with no `--net-rule` at all,
+verified live on 0.6.13 — plain HTTP and HTTPS to arbitrary hosts both work, and
+DNS needs no `allow@dns` of its own. **Shipped:** `net_rules()` (§2.2) writes
+exactly that for a profile whose `opens_every_domain()` is true, and is otherwise
+unchanged, so the sentinel is a real answer on msb and a refusal on srt. The
+chooser shows both: the row is on the network checklist, and on srt it cannot be
+ticked and says which backend to use (§3.1).
 
 **srt checks the path an access resolves to**, not the path the agent typed. A
 symlink is therefore governed by its target: what the policy has to name is the
@@ -474,7 +506,7 @@ The same profile maps across:
 | `tools` | PATH shim dir | baked into the image |
 | `shared_dir` | `filesystem.allowWrite` entry | `--mount-dir <resolved path>:/work`, read-write |
 | isolated workdir | scratch dir under the run dir | that same directory, mounted at `/work` |
-| `network_presets` | `network.allowedDomains` | `--net-default deny`, then one allow rule each |
+| `network_presets` | `network.allowedDomains` | `--net-default deny`, then one allow rule each, or `--net-default allow` alone for `everything` |
 | `deny_read` | `filesystem.denyRead` | nothing to deny: an unmounted path is not in the guest |
 | `skills`, `mcp` | synthesized config dir (§4.3) | that same directory, mounted at `/paddock-config` |
 
@@ -487,6 +519,10 @@ Four of those differ in kind, not in spelling:
   domain through its proxy; an msb rule is `allow@<domain>:tcp:443`, so it is https to
   that host and nothing else. A profile with no domains gets no network at all, DNS
   included.
+- **Allow-all is a default, not a rule.** A profile that ticks `everything` (§2.1) boots
+  with `--net-default allow` and no rules at all: every host, every port, and DNS with
+  them. It is the one network answer msb can give and srt cannot, which is why the
+  chooser refuses that row on srt and names msb.
 - **DNS is all or nothing.** `allow@dns` goes in with the first allowed domain, and it
   opens the gateway resolver for **every** name, not only the allowed ones. Lookups of
   anything else succeed and the connection is then refused. srt's proxy sees the request
@@ -679,6 +715,32 @@ as a zeroth option: every session is one field away.
 
 **Backend** is which sandbox runs it (§3.2). A backend this machine has no binary
 for stays on the list and says why it cannot be chosen, rather than vanishing.
+
+**Three of the checklists have an allow-all row**, first on the list, because a
+form that can only add permissions one at a time makes "I want this sandbox to
+have everything" a chore and then a lie: people untick the fence instead of
+saying what they mean. Network offers `everything`, Tools offers every binary on
+the host PATH and Skills offers every installed skill. Each is a sentinel in the
+profile, not a list that was expanded: `network_presets = ["everything"]` (§2.1)
+and `*` in `tools` and `skills`. They are mutually exclusive with the individual
+ticks in the same list, in whichever direction the last key press meant: ticking
+allow-all clears the rest, and ticking anything else takes allow-all off.
+
+The confirm says what each one granted in words no one can misread: `ANY domain
+(unrestricted)`, `the full host PATH`, `all skills`. And a backend that cannot
+enforce one refuses the row with the reason on the key line, the way the agent
+list refuses an agent this machine has not got: srt has no allow-all network at
+all (§2.1), so on srt that row says so and names msb.
+
+**There is no allow-all for writes.** A sandbox with no filesystem fence is not a
+sandbox, and paddock already has a name for that: a Local tab, which the Files
+hint names.
+
+**The Network row says what nothing ticked really means.** The chosen agent's own
+API domains are open whatever the profile says (§5), so a row reading `none`
+beside a note counting two domains was the form contradicting itself. With no
+preset ticked it reads `only <agent>'s own API`, and the offline sandbox anyone
+actually wants is the Shell agent, which has no API of its own.
 
 The popup is 70% of the terminal minus herdr's sidebar and border, so an ordinary
 one is about 48 by 18 and only a large terminal gives the 80 by 24 the design is
@@ -1026,6 +1088,24 @@ a fallback source, never a replacement. It is a macOS-only path: without
 `security`, without that entry, or with an entry of a shape the launcher does not
 recognise, no file is written and the agent asks the user to log in.
 
+**The agent's first-run questions are answered in the copy.** A sandboxed session
+is a config dir the agent has never seen, in a workdir it has never seen, so
+Claude Code opens on its trust dialog rather than on its prompt, and behind that
+on an auto-updater which cannot write to the install from inside the sandbox and
+leaves a red "Auto-update failed" banner over the session. Neither question is one
+the user can answer usefully, and neither is a permission: the trust dialog asks
+about a directory paddock generated, and the updater is asking to write outside
+the sandbox. So the copy gets `hasCompletedOnboarding` and
+`hasTrustDialogAccepted` for the workdir (under both of its names, because macOS
+spells everything under `/var` two ways), and `autoUpdates` off. The key names are
+Claude Code's own, read off a real `~/.claude.json`. The host's file is never
+touched: this is written into the copy in the run dir, and a machine with no
+`~/.claude.json` at all gets a config dir holding these answers and nothing else.
+
+**Every skill, rather than a list of them.** `skills = ["*"]` in a profile means
+whatever the agent has installed, which is the chooser's allow-all row (§3.1). It
+names no skill of its own, so nothing about it can be reported missing.
+
 **Only Claude Code has a config-dir variable today.** An agent without one is
 launched as before: no synthesized directory, and its real config dir stays
 readable and writable (§2.1). Adding one is a line in the redirection table.
@@ -1175,6 +1255,16 @@ word rather than reported as unsweepable.
   closed. The rest stays: deleting a workdir loses work, keeping it leaks disk.
 - Can a tab move between sessions after creation, or is detach-and-relaunch the
   honest answer, given that srt cannot migrate a running process tree?
+
+**Answered: what happens to the run directory of a launch that never opened a
+tab.** It goes with the session, at once. Nothing ran in there, so nothing in it
+is anyone's work, and a directory nothing removes is a directory for ever. What
+that leaves is the killed-paddock case again, so `paddock gc` sweeps run dirs no
+session claims as well as sandboxes: only the ones whose scratch workdir holds
+nothing, because a workdir with files in it is somebody's work and no `gc` is
+worth losing it, and only ones older than five minutes, because `prepare` makes
+the directory before the session that claims it is registered and a gc in another
+pane must not take a running launch's workdir out from under it.
 - Is v2 per-binary blocking (§4.1) worth the enumeration cost, or is the honest
   answer that PATH shimming is a usability feature and the network and write
   boundaries are the real security story?
@@ -1194,6 +1284,16 @@ it, written by `shell.sh`, because a session with both has two stories and the
 one that explains a launch is not always the one the agent wrote. `paddock logs
 <session>` prints whichever of the two the run has, and names the agent's when
 it has neither yet.
+
+**An empty pane log is the good case, and says so.** It holds stderr and nothing
+else, and an agent draws its interface on stdout, so a session that is going well
+writes nothing there at all. Measured, because it looked like a bug: a healthy
+sandboxed Claude Code session leaves `pane.log` at 0 bytes, and the append itself
+is fine, since the file is opened by the pane's own shell before the sandbox
+starts and an already-open descriptor is not what the policy checks. So the empty
+case is not silence: `paddock logs <session>` says the file takes stderr only and
+that a session with nothing to complain about leaves it empty, rather than
+printing a path and then nothing, which is what a broken command looks like.
 
 **A failed launch keeps its pane.** `launch.sh` runs the command in the
 foreground with its stderr appended to `pane.log`, not piped: a pipe closes only

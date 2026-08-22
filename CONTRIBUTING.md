@@ -81,7 +81,7 @@ Three diagrams are seeded:
 - `architecture.puml` holds the components: keybinding popup, chooser TUI, sessions,
   profiles, agent registry, `Backend` interface, `srt` / `microsandbox`, herdr
   CLI.
-- `launch_sequence.puml` is a sandboxed launch end to end, from `prefix+c` to
+- `launch_sequence.puml` is a sandboxed launch end to end, from `prefix+s` to
   `herdr pane run`.
 - `scoping_model.puml` covers sandbox sessions: one workspace with local tabs, a
   two-tab group on a microVM session, and a tab on an srt session.
