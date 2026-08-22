@@ -1934,12 +1934,14 @@ def test_srt_is_refused_while_the_network_is_unrestricted() -> None:
     """srt cannot express it, so the backend list says so rather than the launch failing."""
     rows = tui.backend_choices(everything=True)
 
+    # Never `== ""` for msb: whether that row is refused at all depends on whose machine
+    # draws it, and what this is about is which backend allow-all rules out.
     refusals = {key: why for key, _, why in rows}
     assert refusals["srt"] == tui.NO_ALLOW_ALL_ON_SRT
-    assert refusals["msb"] == ""
+    assert refusals["msb"] != tui.NO_ALLOW_ALL_ON_SRT
 
 
-def test_srt_is_refused_for_nothing_when_the_network_is_a_list(which: dict[str, str]) -> None:
+def test_srt_is_refused_for_nothing_when_the_network_is_a_list() -> None:
     rows = tui.backend_choices()
 
     assert {key: why for key, _, why in rows}["srt"] == ""
