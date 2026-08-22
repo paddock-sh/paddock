@@ -70,9 +70,10 @@ note right
   says so, rather than reading as a new sandbox.
 
   Landing in steps (docs/design/chooser-redesign.md).
-  The fields, words and rules are in tui.py now; the
-  questionary shell still asks them one at a time
-  until the screen layer lands.
+  The fields, words and rules are in tui.py and the
+  screens are in screen.py (chooser_keys.puml). The
+  questionary shell still asks the questions one at
+  a time until the chooser drives the form.
 end note
 
 @enduml

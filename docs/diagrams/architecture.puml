@@ -16,7 +16,8 @@ package "Herdr 0.8.0" {
 package "paddock" {
   [cli.py\nchoose | launch | attach | profiles | init\n~--cwd, ~--dry-run] as CLI
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
-  [tui.py\nquestionary chooser\nanswers -> a plan] as TUI
+  [tui.py\nthe chooser: fields, words and rules\nanswers -> a plan] as TUI
+  [screen.py\nthe four screens: form, list,\nchecklist, box\none prompt_toolkit Application each] as Screen
   [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
   [agents.py\nagent registry\n+ layer-2 adapters] as Agents
@@ -45,6 +46,7 @@ User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
 TUI --> CLI : one plan:\nlocal | attach | new session
+TUI ..> Screen : draws the form and its editors\n(the questionary shell still asks\nthe questions until this is wired)
 TUI --> Profiles : load / save profile
 TUI --> Agents : list agents, remember a typed command
 TUI --> Sessions : list live sessions

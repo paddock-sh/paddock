@@ -1,0 +1,483 @@
+"""The screens, driven by real key presses with no terminal at all.
+
+Two halves, like the module: the lines each screen draws are plain functions and are asserted
+as text, and the keys are pressed for real through a pipe, which is a better test than faking
+a prompt library. Where what is on screen is the point, the screen is rendered to a string and
+read back.
+"""
+
+import io
+from collections.abc import Callable
+
+import pytest
+from prompt_toolkit.application import create_app_session
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.plain_text import PlainTextOutput
+from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.widgets import TextArea
+
+from paddock import screen
+
+# Escape as the parser sees it. One is enough: the screens wait ESCAPE_WAIT for it, not
+# prompt_toolkit's half second.
+ESC = "\x1b"
+CTRL_C = "\x03"
+DOWN, UP = "\x1b[B", "\x1b[A"
+
+# Every character of this is two columns wide.
+WIDE = "日本語のテキストはとても長い"
+
+
+class Sized(DummyOutput):
+    """A terminal of whatever size the test wants."""
+
+    def __init__(self, rows: int = 24, columns: int = screen.WIDTH) -> None:
+        self.size = Size(rows=rows, columns=columns)
+
+    def get_size(self) -> Size:
+        return self.size
+
+
+class Readable(PlainTextOutput):
+    """A terminal a test can read back, for when what is on screen is the point."""
+
+    def __init__(self, sink: io.StringIO, rows: int = 24, columns: int = screen.WIDTH) -> None:
+        super().__init__(sink)
+        self.size = Size(rows=rows, columns=columns)
+
+    def get_size(self) -> Size:
+        return self.size
+
+
+def drive(keys: str, show: Callable[[], object], rows: int = 24) -> object:
+    """Run one screen with the keys already typed."""
+    with create_pipe_input() as pipe:
+        pipe.send_text(keys)
+        with create_app_session(input=pipe, output=Sized(rows)):
+            return show()
+
+
+def drawn(keys: str, show: Callable[[], object], rows: int = 24) -> str:
+    """Everything one screen put on the terminal while those keys were pressed."""
+    sink = io.StringIO()
+    with create_pipe_input() as pipe:
+        pipe.send_text(keys)
+        with create_app_session(input=pipe, output=Readable(sink, rows)):
+            show()
+    return sink.getvalue()
+
+
+FIELDS = [
+    ("Open", "New sandbox", "New sandbox: an agent under the OS sandbox."),
+    ("Profile", "claude-default", "Fills in everything below."),
+    ("Agent", "Claude Code (claude)", "The command that runs inside the sandbox."),
+    ("Tools", "git rg fd (3)", "Ticked binaries are on the sandbox PATH."),
+    ("Network", "anthropic (2 domains)", "Only these domains are reachable."),
+    ("Files", "an isolated scratch directory", "Isolated: a fresh scratch directory."),
+    ("Skills", "none", "Unticked skills are not in the config dir at all."),
+    ("Advanced", "name, save as profile, MCP", "The session name, MCP servers, denied reads."),
+]
+
+PROFILES = [
+    ("claude-default", "Claude Code, 10 tools, 4 network groups"),
+    ("offline-shell", "Shell, 4 tools, no network"),
+    ("review", "Claude Code, 3 tools, github only"),
+]
+
+# A list where a navigation key also matches a row, which is what makes bare typing a trap.
+MENU = [("jq", "a filter for json"), ("git", "version control"), ("rg", "a faster grep")]
+
+TOOLS = [("git", True), ("rg", True), ("fd", False), ("jq", False), ("curl", True)]
+
+
+# --- the lines a screen draws ----------------------------------------------
+
+
+def test_the_key_line_truncates_rather_than_wraps() -> None:
+    """A wrapped footer would push the layout around, which is the one thing it may not do."""
+    line = screen.footer_line(["enter done", "esc back"])
+    long = screen.footer_line([f"key {index} does something" for index in range(9)])
+
+    assert line == "enter done   esc back"
+    assert get_cwidth(long) <= screen.WIDTH
+    assert long.endswith("...")
+
+
+def test_the_form_says_how_many_digits_jump() -> None:
+    """Section 6 puts a ninth field on this form, and the key line has to say so when it does."""
+    assert "1-8 jump" in screen.form_footer(8)
+    assert "1-9 jump" in screen.form_footer(9)
+
+
+def test_a_line_with_two_ends_keeps_the_right_one() -> None:
+    line = screen.spread("paddock   claude-default", "in ~/dev/paddock")
+
+    assert line.startswith("paddock   claude-default")
+    assert line.endswith("in ~/dev/paddock")
+    assert get_cwidth(line) == screen.WIDTH
+
+
+def test_a_long_left_end_is_cut_short() -> None:
+    line = screen.spread("x" * 200, "in ~/dev")
+
+    assert get_cwidth(line) == screen.WIDTH
+    assert "..." in line
+    assert line.endswith("in ~/dev")
+
+
+def test_a_right_end_wider_than_the_line_is_cut_too() -> None:
+    assert get_cwidth(screen.spread("left", "x" * 200)) <= screen.WIDTH
+
+
+def test_a_hint_is_always_the_same_number_of_lines() -> None:
+    """A longer hint must not move the buttons under it."""
+    assert len(screen.wrapped("short", 3)) == 3
+    assert len(screen.wrapped("word " * 60, 3)) == 3
+    assert screen.wrapped("", 3) == ["", "", ""]
+
+
+def test_a_wide_character_is_two_columns_everywhere() -> None:
+    """Counting characters instead of columns wraps the line and moves the layout."""
+    rows = [(WIDE, WIDE, WIDE, WIDE)]
+    lines = [
+        screen.footer_line([WIDE] * 6),
+        screen.spread(WIDE * 3, WIDE),
+        *screen.wrapped(f"{WIDE} " * 6, 3),
+        *screen.columns([WIDE] * 5),
+        *screen.form_lines(WIDE, WIDE, rows, 0),
+        *screen.list_lines(WIDE, WIDE, [(WIDE, WIDE)], [0], 0),
+        *screen.tick_lines(WIDE, WIDE, [(WIDE, True)], [0], 0),
+    ]
+
+    assert [line for line in lines if get_cwidth(line) > screen.WIDTH] == []
+
+
+def test_a_checklist_reads_down_the_left_column_first() -> None:
+    """Eighteen short names do not fit one under another, and reading order is the only order."""
+    lines = screen.columns([f"item{index}" for index in range(5)])
+
+    assert len(lines) == 3
+    assert lines[0].split() == ["item0", "item3"]
+    assert lines[2].split() == ["item2"]
+
+
+def test_the_form_numbers_its_fields_and_marks_the_cursor() -> None:
+    lines = screen.form_lines("claude-default", "in ~/dev/paddock", FIELDS, 1)
+
+    assert lines[0].startswith("paddock")
+    assert lines[0].endswith("in ~/dev/paddock")
+    assert "  > 2 Profile" in lines[3]
+    assert "    1 Open" in lines[2]
+    assert any("Fills in everything below." in line for line in lines)  # the cursor's own hint
+    assert lines[-1].strip().startswith("[ Launch ]")
+
+
+def test_the_form_moves_the_cursor_onto_the_buttons() -> None:
+    lines = screen.form_lines("claude-default", "", FIELDS, len(FIELDS))
+
+    assert lines[-1].strip() == "> [ Launch ]        [ Cancel ]"
+    assert not any(line.startswith("  >") for line in lines[2:10])
+
+
+def test_a_row_can_keep_a_count_at_the_right_edge() -> None:
+    """Section 5.1 puts the count of what a value holds in a column of its own."""
+    line = screen.form_lines("p", "", [("Tools", "git rg fd", "hint", "(10)")], 0)[2]
+
+    assert line.endswith("(10)")
+    assert get_cwidth(line) <= screen.WIDTH
+
+
+def test_a_value_too_long_for_the_line_says_it_was_cut() -> None:
+    line = screen.form_lines("p", "", [("Tools", "git " * 40, "hint")], 0)[2]
+
+    assert get_cwidth(line) <= screen.WIDTH
+    assert line.endswith("...")
+
+
+def test_a_short_terminal_scrolls_the_fields_and_keeps_the_buttons() -> None:
+    """Clipping would lose the buttons and the cursor. The rows move instead."""
+    lines = screen.form_lines("p", "", FIELDS, 6, height=14)
+
+    assert len(lines) <= 14
+    assert any(line.startswith("  > 7 Skills") for line in lines)
+    assert lines[-1].strip().endswith("[ Cancel ]")
+    assert any("Unticked skills" in line for line in lines)
+
+
+def test_a_list_shows_a_rule_and_the_hint_of_the_row_you_are_on() -> None:
+    lines = screen.list_lines("Profile", "3 saved", PROFILES, [0, 1, 2], 1, rule_after=1)
+
+    assert lines[0] == screen.spread("Profile", "3 saved")
+    assert "    claude-default" in lines[2]
+    assert "  > offline-shell" in lines[3]
+    assert lines[4].strip().startswith("---")
+    assert any("Shell, 4 tools, no network" in line for line in lines)
+
+
+def test_a_choice_can_show_a_panel_instead_of_a_line() -> None:
+    """Section 5.3 picks a profile on what it is, which takes more than one line to say."""
+    panel = ["agent    Claude Code", "tools    git rg fd", "network  4 groups"]
+
+    lines = screen.list_lines("Profile", "", [("claude-default", panel)], [0], 0, hint_rows=6)
+
+    assert "agent    Claude Code" in lines[2]  # the first line of it stands beside the row
+    assert any("tools    git rg fd" in line for line in lines[3:])
+    assert any("network  4 groups" in line for line in lines[3:])
+
+
+def test_an_empty_list_says_which_kind_of_empty_it_is() -> None:
+    empty = screen.list_lines("Profile", "", [], [], 0)
+    filtered = screen.list_lines("Profile", "", PROFILES, [], 0, "zzz", True)
+
+    assert any("nothing to choose from" in line for line in empty)
+    assert any("nothing matches that" in line for line in filtered)
+
+
+def test_a_short_terminal_keeps_the_filter_echo_on_a_list() -> None:
+    """What you have typed is the one thing a narrowed list may not drop off the bottom."""
+    lines = screen.list_lines("Profile", "", PROFILES, [0, 1, 2], 2, "rev", True, height=10)
+
+    assert len(lines) <= 10
+    assert lines[-1].strip() == "/rev"
+    assert any("review" in line for line in lines)
+
+
+def test_a_checklist_counts_what_is_ticked() -> None:
+    hint = "Ticked binaries are on the PATH."
+
+    lines = screen.tick_lines("Tools it can run", hint, TOOLS, [0, 1, 2, 3, 4], 0)
+
+    assert lines[0] == screen.spread("Tools it can run", "3 of 5 ticked")
+    assert "> [x] git" in lines[6]
+    assert any("[ ] fd" in line for line in lines)
+
+
+def test_a_short_terminal_scrolls_a_checklist_around_the_cursor() -> None:
+    rows = [(f"tool{index}", False) for index in range(20)]
+
+    lines = screen.tick_lines("Tools", "hint", rows, list(range(20)), 12, height=12)
+
+    assert len(lines) <= 12
+    assert any("tool12" in line for line in lines)
+
+
+def test_the_key_list_names_the_two_promises() -> None:
+    """Escape never loses an answer and ctrl-c always cancels, so both are on the list."""
+    lines = screen.key_lines()
+
+    assert any(line.startswith("  esc") for line in lines)
+    assert any(line.startswith("  ctrl-c") for line in lines)
+    assert any("jump straight to that field" in line for line in lines)
+
+
+# --- the form ---------------------------------------------------------------
+
+
+def test_enter_on_a_field_opens_it() -> None:
+    assert drive(f"{DOWN}{DOWN}\r", lambda: screen.form("p", "", FIELDS)) == (screen.OPEN, 2)
+
+
+def test_k_and_j_move_the_way_the_arrows_do() -> None:
+    assert drive("jjjk\r", lambda: screen.form("p", "", FIELDS)) == (screen.OPEN, 2)
+
+
+def test_a_digit_jumps_straight_to_a_field() -> None:
+    """The form is a fixed list that never reorders, so a digit cannot lie."""
+    assert drive("5\r", lambda: screen.form("p", "", FIELDS)) == (screen.OPEN, 4)
+
+
+def test_the_cursor_comes_back_where_it_was() -> None:
+    assert drive("\r", lambda: screen.form("p", "", FIELDS, cursor=6)) == (screen.OPEN, 6)
+
+
+def test_l_launches_from_anywhere_on_the_form() -> None:
+    what, _ = drive("L", lambda: screen.form("p", "", FIELDS))
+
+    assert what == screen.LAUNCH
+
+
+def test_s_saves_the_answers_as_a_profile() -> None:
+    what, _ = drive(f"{DOWN}s", lambda: screen.form("p", "", FIELDS))
+
+    assert what == screen.SAVE
+
+
+def test_the_buttons_are_the_last_two_places_the_cursor_goes() -> None:
+    to_launch = DOWN * len(FIELDS)
+    launch = drive(f"{to_launch}\r", lambda: screen.form("p", "", FIELDS))
+    cancel = drive(f"{to_launch}{DOWN}\r", lambda: screen.form("p", "", FIELDS))
+
+    assert launch == (screen.LAUNCH, len(FIELDS))
+    assert cancel is None
+
+
+def test_the_cursor_stops_at_both_ends() -> None:
+    assert drive(f"{UP}{UP}\r", lambda: screen.form("p", "", FIELDS)) == (screen.OPEN, 0)
+    assert drive(DOWN * 20 + "\r", lambda: screen.form("p", "", FIELDS)) is None  # on Cancel
+
+
+def test_escape_on_the_form_closes_the_popup_with_nothing_done() -> None:
+    assert drive(ESC * 2, lambda: screen.form("p", "", FIELDS)) is None
+
+
+def test_a_bare_escape_answers_on_its_own() -> None:
+    """One escape byte, nothing after it: the wait for an arrow key has to end quickly."""
+    assert drive(ESC, lambda: screen.form("p", "", FIELDS)) is None
+
+
+def test_a_short_terminal_still_answers() -> None:
+    assert drive("\r", lambda: screen.form("p", "", FIELDS), rows=10) == (screen.OPEN, 0)
+    assert drive(" \r", lambda: screen.tick("Tools", TOOLS), rows=10) == [1, 4]
+
+
+def test_a_short_terminal_still_draws_the_buttons_and_the_key_line() -> None:
+    """At sixteen rows there is no room for everything, and these two are what must stay."""
+    shown = drawn(f"{DOWN}\r", lambda: screen.form("p", "", FIELDS), rows=16)
+
+    assert "[ Launch ]" in shown
+    assert "esc close" in shown
+
+
+def test_ctrl_c_cancels_from_any_screen() -> None:
+    for show in (
+        lambda: screen.form("p", "", FIELDS),
+        lambda: screen.pick("Profile", PROFILES),
+        lambda: screen.tick("Tools", TOOLS),
+        lambda: screen.type_in("Name", ""),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            drive(CTRL_C, show)
+
+
+def test_ctrl_c_cancels_from_under_the_key_list() -> None:
+    """The key list catches every key to take itself off. Ctrl-c is the one that gets through."""
+    for show in (
+        lambda: screen.form("p", "", FIELDS),
+        lambda: screen.pick("Profile", PROFILES),
+        lambda: screen.tick("Tools", TOOLS),
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            drive(f"?{CTRL_C}", show)
+
+
+def test_the_key_list_goes_over_the_screen_and_comes_off_again() -> None:
+    assert drive("?q\r", lambda: screen.form("p", "", FIELDS)) == (screen.OPEN, 0)
+
+
+def test_the_key_list_swallows_the_key_that_takes_it_off() -> None:
+    """It is over the screen, so the key that dismisses it must not also do its own job."""
+    assert drive("?5\r", lambda: screen.form("p", "", FIELDS)) == (screen.OPEN, 0)
+
+
+# --- the list picker --------------------------------------------------------
+
+
+def test_a_list_gives_back_what_was_chosen() -> None:
+    assert drive(f"{DOWN}\r", lambda: screen.pick("Profile", PROFILES)) == 1
+
+
+def test_backing_out_of_a_list_chooses_nothing() -> None:
+    """Not a cancel: the caller keeps whatever value it had."""
+    assert drive(ESC * 2, lambda: screen.pick("Profile", PROFILES)) is None
+
+
+def test_a_cursor_past_the_end_of_a_list_lands_on_the_last_row() -> None:
+    """The caller remembers where it was, and the list it comes back to can be shorter."""
+    assert drive("\r", lambda: screen.pick("Profile", PROFILES[:2], cursor=5)) == 1
+
+
+def test_typing_on_a_list_never_filters_it() -> None:
+    """`j` matches a row here: if bare typing filtered, enter would take that row instead."""
+    assert drive("j\r", lambda: screen.pick("Tools", MENU)) == 1
+
+
+def test_the_filter_key_narrows_a_list_and_keeps_the_real_index() -> None:
+    assert drive("/rev\r\r", lambda: screen.pick("Profile", PROFILES)) == 2
+
+
+def test_escape_leaves_the_filter_and_the_list_stands() -> None:
+    assert drive(f"/rev{ESC}\r", lambda: screen.pick("Profile", PROFILES)) == 0
+
+
+def test_a_filter_that_matches_nothing_takes_nothing() -> None:
+    assert drive(f"/zzz\r\r{ESC}{ESC}", lambda: screen.pick("Profile", PROFILES)) is None
+
+
+def test_the_filter_key_is_advertised_only_on_a_list_worth_filtering() -> None:
+    assert screen.FILTER_KEY not in screen.pick_footer(3)
+    assert screen.FILTER_KEY in screen.pick_footer(9)
+
+
+# --- the checklist ----------------------------------------------------------
+
+
+def test_space_ticks_and_enter_is_done() -> None:
+    assert drive(f"{DOWN}{DOWN} \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 4]
+
+
+def test_escape_from_a_checklist_keeps_the_ticks() -> None:
+    """The promise: escape closes what is open and never loses an answer."""
+    assert drive(f" {ESC}{ESC}", lambda: screen.tick("Tools", TOOLS)) == [1, 4]
+
+
+def test_all_and_none_are_one_key_each() -> None:
+    assert drive("a\r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 3, 4]
+    assert drive("n\r", lambda: screen.tick("Tools", TOOLS)) == []
+
+
+def test_all_and_none_reach_only_what_is_on_screen() -> None:
+    """A filter narrows what a key does. It must not throw away a tick you cannot see."""
+    assert drive("/fd\ra\r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 4]
+    assert drive("/git\rn\r", lambda: screen.tick("Tools", TOOLS)) == [1, 4]
+
+
+def test_letters_inside_the_filter_stay_text() -> None:
+    """`a` and `n` are keys on a checklist, and plain text while the filter has the keyboard."""
+    assert drive("/an\r \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 4]
+
+
+def test_a_filtered_checklist_ticks_the_row_it_shows() -> None:
+    assert drive("/fd\r \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 4]
+
+
+# --- the text box -----------------------------------------------------------
+
+
+def test_what_is_typed_comes_back() -> None:
+    assert drive("review\r", lambda: screen.type_in("Name", "")) == "review"
+
+
+def test_the_box_starts_on_the_value_it_was_given() -> None:
+    name = "claude-default-7f2a"
+
+    assert drive("\r", lambda: screen.type_in("Name", name)) == name
+
+
+def test_escape_from_a_box_keeps_what_was_typed() -> None:
+    assert drive(f"review{ESC}{ESC}", lambda: screen.type_in("Name", "")) == "review"
+
+
+def test_a_bad_answer_is_reported_on_the_key_line_and_the_box_stays_open() -> None:
+    """huh's rule: one row of chrome, two jobs, never both at once."""
+    said: list[str] = []
+
+    def check(text: str) -> str:
+        said.append(text)
+        return "" if text.startswith("/") else "a shared directory has to be a path"
+
+    assert drive(f"repo\rx{ESC}{ESC}", lambda: screen.type_in("Files", "", check=check)) == "repox"
+    assert said == ["repo"]
+
+
+def test_the_error_goes_as_soon_as_the_answer_changes() -> None:
+    """It is the key line's row. Holding it after the answer changed would keep the keys off."""
+    box, state = TextArea(text="repo", multiline=False), {"error": "not a path"}
+
+    screen.forget_error(box, state)
+    box.text = "repo/x"
+
+    assert state["error"] == ""
+    assert screen.type_footer("not a path") == "not a path"
+    assert screen.type_footer("") == screen.footer_line(screen.TYPE_KEYS)

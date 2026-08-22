@@ -179,6 +179,7 @@ name = "paddock"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "prompt-toolkit" },
     { name = "questionary" },
 ]
 
@@ -190,7 +191,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "questionary", specifier = ">=2.0" }]
+requires-dist = [
+    { name = "prompt-toolkit", specifier = ">=3.0" },
+    { name = "questionary", specifier = ">=2.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
