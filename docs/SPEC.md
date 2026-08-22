@@ -140,6 +140,7 @@ One interface, in two halves:
 
 ```
 Backend.prepare(profile) -> run          # settings file, shim dir, config dir, command
+Backend.load_run(run_dir) -> run         # a prepared run read back, for a later tab
 Backend.open_pane(run, label) -> pane id # a tab on a prepared run
 ```
 
@@ -148,7 +149,8 @@ They are separate because a session is prepared once and attached to many times
 tab and starts the command through `herdr_client` (§7). `herdr_client` is the seam
 every test mocks, so a backend is still testable with no herdr server and no
 sandbox. Sessions (§3) drive both calls; a backend knows nothing about the
-registry.
+registry. Which module runs a session is the `backend` name in its record
+(§3.4), looked up in a dict of name to module in `sessions.py`.
 
 The interface exists because v1 needs it, to keep srt's settings and invocation
 out of the chooser, not in anticipation of a second backend.
@@ -288,7 +290,12 @@ popup's own environment.
 `msb` runs workloads in libkrun microVMs from OCI images, with volume mounts and
 a host/port network policy. A harder boundary than Seatbelt (its own kernel
 rather than a filtered view of the host's) at the cost of an image per agent and
-a heavier, still sub-second, start.
+a heavier start.
+
+There is no server and no daemon: each running sandbox is one `msb` process on
+the host, and the runtime installs in user space with no privileged step. The
+[microVM spike](spikes/microvm.md) measured 175ms from `msb create` to a usable
+VM. Every number in this section is from that spike.
 
 The same profile maps across:
 
@@ -300,10 +307,20 @@ The same profile maps across:
 | isolated workdir | scratch dir under the run dir | VM filesystem |
 | `network_presets` | `network.allowedDomains` | host/port rules |
 
-It also gives each sandbox a `<name>.localhost` URL, so a dev server inside a
-sandbox is reachable from the host browser with no port forwarding. That is why
-the agent registry has an `image` field now (§5): profiles written for `srt` port
-over without a schema change.
+That is why the agent registry has an `image` field now (§5): profiles written
+for `srt` port over without a schema change. A dev server in a sandbox is
+reached by port forwarding, `msb -p <host>:<guest>`, which binds loopback on the
+host. A per-sandbox `<name>.localhost` URL is a portless feature paddock would
+have to build (see [ROADMAP](ROADMAP.md)), not something `msb` provides.
+
+Two constraints the spike settled. **Memory, not boot time, caps how many VM
+sessions run at once**: an agent VM that has installed a toolchain holds 0.8GB to
+1.3GB resident and does not give it back, so the per-session budget and a session
+cap have to be decided before the backend is built. **Host and guest need an
+explicit channel**: a guest reaches no host service by default and there is no
+host alias, so anything in a sandbox that has to talk to the host, the `herdr`
+CLI behind §3's local orchestration above all, needs a mechanism chosen first.
+`vsock` is the candidate; it is not decided.
 
 ---
 
@@ -343,8 +360,14 @@ New window:
 ```
 
 **New sandbox session** runs the permissions questionnaire (§6) and asks for a
-name. **Attach** lists live sessions with name, backend, profile and attached tab
-count, so the choice is made on what a session is, not on remembering its name.
+name. **Attach** lists live sessions with name, backend, agent, profile and
+attached tab count, so the choice is made on what a session is, not on
+remembering its name:
+
+```
+Attach to:
+  > review [srt]: claude / hardened, 2 tabs
+```
 
 ### 3.2 Attach means different things per backend
 
@@ -387,6 +410,7 @@ Sessions are tracked in `<state>/sessions.json`, a list of records:
 | `run_dir` | Its directory under `runs/`: settings, shim dir, config dir, workdir |
 | `keep_alive` | Survives its last pane |
 | `pane_ids` | Pane ids currently attached |
+| `backend` | Which backend runs it: `srt` today. Absent in a record written before the field, which means `srt` |
 
 An unnamed session is named after its profile plus a short suffix. A name may not
 be another session's id either, since both are references a caller can look up.
@@ -397,7 +421,10 @@ whole and swapped in, so a crash mid-write leaves the previous registry rather
 than half of one. A file that will not parse is reported and treated as empty,
 and a record of the wrong shape is dropped rather than half-applied.
 
-v1.1 adds `backend` and `vm_handle` when there is a second backend to name.
+`backend` is what `sessions.attach` dispatches on: a small dict maps the name to
+the module that runs it, and a name this paddock does not have is a message at
+attach rather than a registry it refuses to read. v1.1 adds `vm_handle` when
+there is a VM to name.
 
 **Sessions survive Herdr detach and restart.** A microVM keeps running with no
 tab attached, and an srt session is just a settings file and a workdir.
@@ -481,8 +508,9 @@ holding only:
   symlink. A file it writes back to is a **copy**, so the agent keeps working and
   the host's file is never touched: for Claude Code that is `.claude.json`, which
   it rewrites constantly.
-- the skills the user ticked (symlinked for srt, copied for microsandbox, which
-  cannot follow them), and
+- the skills the user ticked (symlinked for srt, copied for microsandbox, where a
+  symlink resolves only when its target is inside the same mount, and a host
+  skill directory is not), and
 - the generated MCP whitelist (§4.2).
 
 The agent is pointed at it, for Claude Code via `CLAUDE_CONFIG_DIR` passed
@@ -627,7 +655,7 @@ no v1.1 concern appears in any of them:
 
 | Module | Responsibility | Status |
 | --- | --- | --- |
-| `paddock/sessions.py` | Session registry in `~/.local/state/paddock/`: create, list, attach, lifecycle (§3) | Done; workspace bindings (§3.3) wait for the TUI |
+| `paddock/sessions.py` | Session registry in `~/.local/state/paddock/`: create, list, attach, lifecycle (§3), and the backend dispatch dict (§2) | Done; workspace bindings (§3.3) wait for the TUI |
 | `paddock/profiles.py` | `Profile` dataclass, network presets, tool candidates, load/save | Done |
 | `paddock/agents.py` | Agent registry and per-agent layer-2 config | Registry done; the layer-2 `permissions` block is not generated yet |
 | `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |

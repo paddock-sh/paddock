@@ -82,7 +82,14 @@ def test_a_session_is_shown_by_what_it_is() -> None:
         name="review", agent="claude", profile_name="hardened", pane_ids=["wA:p1", "wA:p2"]
     )
 
-    assert tui.session_label(session) == "review: claude / hardened, 2 tabs"
+    assert tui.session_label(session) == "review [srt]: claude / hardened, 2 tabs"
+
+
+def test_the_label_says_which_backend_the_session_runs_on() -> None:
+    """Attaching means a different thing per backend, so the list says which (SPEC §3.2)."""
+    label = tui.session_label(Session(name="build", backend="microsandbox"))
+
+    assert label.startswith("build [microsandbox]: ")
 
 
 def test_one_tab_is_not_two() -> None:

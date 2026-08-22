@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import ModuleType
 
 from paddock import herdr_client, state_dir, synth_config
 from paddock.backends import srt
@@ -25,6 +26,12 @@ from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
 LOCK_FILE = "sessions.lock"
+
+# Which module runs a session, by the name its record carries. srt is the only one in v1;
+# microsandbox joins the dict when it is built (SPEC §2.2).
+BACKENDS: dict[str, ModuleType] = {"srt": srt}
+
+DEFAULT_BACKEND = "srt"
 
 
 @dataclass
@@ -37,6 +44,18 @@ class Session:
     run_dir: str
     keep_alive: bool
     pane_ids: list[str]
+    # A record written before there was a second backend is an srt session (SPEC §3.4).
+    backend: str = DEFAULT_BACKEND
+
+
+def backend_for(name: str) -> ModuleType:
+    """The module that runs sessions on this backend. An unknown name is a message, not a crash."""
+    module = BACKENDS.get(name)
+    if module is None:
+        raise ValueError(
+            f"session backend {name!r} is not in this paddock: it has {', '.join(sorted(BACKENDS))}"
+        )
+    return module
 
 
 def registry_path() -> Path:
@@ -88,7 +107,8 @@ def create_session(profile: Profile, name: str | None = None) -> Session:
             raise ValueError(f"a live session already answers to {name!r}")
 
         # Prepared before the session is registered, so a failed setup leaves no dead entry.
-        run = srt.prepare(profile)
+        backend = DEFAULT_BACKEND
+        run = backend_for(backend).prepare(profile)
         session = Session(
             session_id=_generate_id(taken),
             name=name,
@@ -98,6 +118,7 @@ def create_session(profile: Profile, name: str | None = None) -> Session:
             run_dir=str(run.run_dir),
             keep_alive=False,
             pane_ids=[],
+            backend=backend,
         )
         _save(live + [session])
         return session
@@ -108,8 +129,9 @@ def attach(session: Session, cwd: Path | None = None) -> str:
 
     The tab starts in the session's workdir unless another directory is named.
     """
-    run = srt.load_run(Path(session.run_dir))
-    pane_id = srt.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+    backend = backend_for(session.backend)
+    run = backend.load_run(Path(session.run_dir))
+    pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
     session.pane_ids.append(pane_id)
     _record(session)
     return pane_id
@@ -195,6 +217,8 @@ def _session(record: object) -> Session | None:
         return None
     shape = vars(Session("", "", "", "", "", "", False, []))  # field names and their types
     values = {key: value for key, value in record.items() if key in shape}
+    # The one field with a default: a record written before it existed is still a session.
+    values.setdefault("backend", DEFAULT_BACKEND)
     if set(values) != set(shape):
         return None
     # A record of the wrong shape is dropped whole. Half of a session is worse than none.
