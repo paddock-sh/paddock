@@ -209,9 +209,13 @@ def prepare(profile: Profile) -> Run:
             profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
         ),
     )
-    # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
-    # An agent named by absolute path (the shell, say) is found without one.
-    tools = list(profile.tools) + shlex.split(agent.command)[:1]
+    # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own,
+    # and one for whatever it cannot start without: `codex` is a script that runs `node`.
+    # An agent named by absolute path (the shell, say) is found without one. Choosing the
+    # agent is what put these here, and every screen that says what can run names them.
+    tools = list(
+        dict.fromkeys(list(profile.tools) + shlex.split(agent.command)[:1] + agent.required_tools)
+    )
     shim, skipped = build_shim_dir(run_dir, tools)
     logger.debug(
         "shim dir %s",

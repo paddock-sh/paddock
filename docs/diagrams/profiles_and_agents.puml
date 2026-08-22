@@ -36,6 +36,7 @@ package "agents.py" {
     name
     command
     api_domains
+    required_tools (what the command cannot start without)
     auth_read_paths
     config_write_paths
     image (OCI image the msb backend boots; unused by srt)
@@ -80,6 +81,15 @@ note bottom of AgentSpec
   credentials. $HOME/.ssh, .aws, .gnupg and
   .config/gh stay in deny_read unless the user
   takes them out (SPEC section 5).
+
+  required_tools go on the srt shim dir with the
+  command itself: codex is a script whose shebang
+  runs node, and a PATH without node is a pane
+  that dies on exit 127. Choosing the agent is
+  what puts them there, so the agent list, the
+  confirm and --dry-run all name them. An agent
+  whose required tool is not on this host reads
+  as "(not installed)" and cannot be chosen.
 end note
 
 @enduml

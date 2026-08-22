@@ -65,7 +65,7 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Profile` | What everything below starts from. Change anything and the session runs as "the profile + changes", never under its name |
 | `Backend` | `srt`, a policy sandbox around the process, or `msb`, a microVM that starts slower and shares less |
 | `Agent` | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or a command you type. One this machine has not got says `(not installed)` and cannot be picked |
-| `Tools` | The binaries on the sandbox `PATH`. An absolute path still runs anything, so this is convenience, not a boundary |
+| `Tools` | The binaries on the sandbox `PATH`, plus whatever the agent cannot start without, which is named with it. An absolute path still runs anything, so this is convenience, not a boundary |
 | `Network` | The domain allowlist, by group, plus any domain you add. Everything else is refused by the OS |
 | `Files` | An isolated scratch directory, or the one host directory the sandbox may change |
 | `Skills` | Only the ticked ones exist inside the sandbox at all |

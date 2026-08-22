@@ -213,6 +213,9 @@ def describe(plan: tui.Plan) -> str:
         f"backend {plan.backend}",
         plan.profile.shared_dir or "isolated workdir",
     ]
+    needed = tui.required_note(plan)
+    if needed:
+        parts.append(needed)
     if plan.agent_command:
         parts.append(f"remembering the command {plan.agent_command!r}")
     if plan.save_as:

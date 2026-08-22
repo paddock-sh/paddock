@@ -583,12 +583,15 @@ any depth, and costs nothing, because the chooser returns a plan and `cli.py` is
 the only thing that acts on one. Filtering a long list is a mode `/` opens, so
 every letter stays a shortcut everywhere else.
 
-**An agent this machine has no binary for** is on the Agent list and says
+**An agent this machine cannot run** is on the Agent list and says
 `(not installed)`, the way a tool the host lacks does and a backend without its
 binary does. Enter on it gives the reason instead of launching, because the tab
 it would open dies on `No such file or directory` before the user sees anything.
-An agent whose command is written as a path is left alone: that is the user's own
-answer to where it lives, and it is what the `shell` agent's `$SHELL` is.
+Two things count as cannot run: no binary for its `command`, and a missing
+`required_tools` entry (§5), because a script with nothing to run it is not an
+agent either. An agent whose command is written as a path is left alone: that is
+the user's own answer to where it lives, and it is what the `shell` agent's
+`$SHELL` is.
 
 **Nothing the popup was asked to do dies without a screen.** The popup is
 transient (§1.1): it closes when `paddock` exits, so a message printed after the
@@ -756,6 +759,16 @@ a shim directory of symlinks, one per selected tool, and sets the sandbox `PATH`
 to it (plus `/usr/bin` and `/bin` when `include_system_path` is set, so a shell
 and coreutils work).
 
+Three things are on that PATH without being ticked, and all three are the agent
+itself. Its `command`, because `env PATH=<shim> claude` only works if claude is
+on that PATH. Its `required_tools` (§5), because `codex` is a script whose
+shebang runs `node` and a PATH without node is a pane that dies on
+`env: node: No such file or directory`. And whatever `/usr/bin` and `/bin` hold.
+Choosing an agent is consenting to what it runs on, which is why this is not a
+permission the user is asked for a second time, but it is never silent: the
+agent list says what the choice puts on the PATH, the confirm names each one with
+the agent that asked for it, and `--dry-run` prints the same line.
+
 > **Known bypass:** `PATH` only governs bare-name lookup. An agent that runs
 > `/opt/homebrew/bin/docker` gets a binary nobody ticked. The shim dir shapes
 > what the agent finds and defaults to; it does not stop a determined caller.
@@ -906,6 +919,7 @@ entry:
 | `name` | Display name |
 | `command` | Executable run inside the sandbox |
 | `api_domains` | Domains the agent needs; merged into the allowlist when selected |
+| `required_tools` | Tools the command cannot start without, put on the srt shim dir when the agent is selected. `codex` is a `#!/usr/bin/env node` script, so it names `node`. Blank for an agent that is a binary |
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
 | `image` | OCI image the `msb` backend boots for this agent. Blank means srt-only, except `shell`, which gets `alpine` (§2.2) |

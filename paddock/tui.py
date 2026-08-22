@@ -546,7 +546,7 @@ def confirm_lines(
         ("can write", _writable(profile)),
         ("can read", _readable(profile)),
         ("can reach", _reachable(profile)),
-        ("can run", _runnable(profile)),
+        ("can run", _runnable(profile, registry)),
         ("can see", _visible(profile, registry)),
     ]
     warning = install_warning(plan, registry)
@@ -714,9 +714,30 @@ def _reachable(profile: Profile) -> str:
     return f"{_counted(domains)}: {', '.join(shown)}"
 
 
-def _runnable(profile: Profile) -> str:
-    tools = " ".join(profile.tools) or "nothing by name"
+def _runnable(profile: Profile, registry: dict[str, AgentSpec]) -> str:
+    """What the sandbox PATH holds: the ticked tools, and what the agent cannot start without.
+
+    A required tool is not a ticked one. It is on the PATH because the agent was chosen, so
+    it is named with the agent that asked for it rather than folded in among the ticks.
+    """
+    named = profile.tools + [
+        f"{tool} (needed by {profile.agent})" for tool in required_tools(profile, registry)
+    ]
+    tools = " ".join(named) or "nothing by name"
     return f"{tools}, plus /usr/bin:/bin" if profile.include_system_path else tools
+
+
+def required_tools(profile: Profile, registry: dict[str, AgentSpec]) -> list[str]:
+    """What the chosen agent needs on the sandbox PATH beyond what the profile ticked."""
+    spec = registry.get(profile.agent)
+    needed = spec.required_tools if spec else []
+    return [tool for tool in needed if tool not in profile.tools]
+
+
+def required_note(plan: NewSession) -> str:
+    """The same tools as a line for `--dry-run`, so no CLI launch adds one silently."""
+    extra = required_tools(plan.profile, load_agents())
+    return f"plus {', '.join(extra)}, needed by {plan.profile.agent}" if extra else ""
 
 
 def _visible(profile: Profile, registry: dict[str, AgentSpec]) -> str:
@@ -822,7 +843,11 @@ def agent_hint(key: str, registry: dict[str, AgentSpec]) -> str:
     if spec is None:
         return "Type a command. paddock remembers it so a profile can name it later."
     domains = ", ".join(spec.api_domains) or "nothing of its own"
-    return f"Runs {spec.command} in the sandbox. Reaches {domains} whatever you tick."
+    hint = f"Runs {spec.command} in the sandbox. Reaches {domains} whatever you tick."
+    if spec.required_tools:
+        # Choosing the agent is what puts these on the PATH, so the list that chooses says so.
+        hint += f" Cannot start without {', '.join(spec.required_tools)}, which it gets."
+    return hint
 
 
 def key_clash(key: str) -> str:
@@ -856,12 +881,19 @@ def agent_refusal(key: str, registry: dict[str, AgentSpec]) -> str:
 
     Only a bare command name is looked for. One written as a path is the user's own answer
     to where it lives, which is what the shell agent's `$SHELL` is, so it is left alone.
+    An agent whose `required_tools` are not here cannot run either: `codex` without `node`
+    is a script with nothing to run it.
     """
     spec = registry.get(key)
     words = shlex.split(spec.command) if spec and spec.command else []
-    if not words or "/" in words[0] or shutil.which(words[0]):
+    if not words:
         return ""
-    return f"{words[0]} is not installed, so this machine cannot run it"
+    if "/" not in words[0] and not shutil.which(words[0]):
+        return f"{words[0]} is not installed, so this machine cannot run it"
+    missing = [tool for tool in spec.required_tools if not shutil.which(tool)]
+    if missing:
+        return f"{key} needs {', '.join(missing)}, which this machine has not got"
+    return ""
 
 
 def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple[str, str, bool]]:

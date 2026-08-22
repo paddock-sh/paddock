@@ -765,3 +765,14 @@ def test_the_fake_sessions_module_matches_the_real_one() -> None:
     assert [field.name for field in fields(fake_sessions_module.Session)] == [
         field.name for field in fields(sessions.Session)
     ]
+
+
+def test_a_dry_run_names_what_the_agent_will_add_to_the_path() -> None:
+    """No launch adds a tool to the sandbox PATH without saying which and for whom."""
+    plan = tui.NewSession(profile=Profile(agent="codex", tools=["git"]))
+
+    assert "plus node, needed by codex" in cli.describe(plan)
+
+
+def test_a_dry_run_says_nothing_extra_for_an_agent_that_needs_nothing() -> None:
+    assert "needed by" not in cli.describe(tui.NewSession(profile=Profile(agent="claude")))

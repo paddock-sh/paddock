@@ -1011,3 +1011,29 @@ def test_open_pane_can_start_the_tab_elsewhere(
     srt.open_pane(run, label="sbx:demo", cwd=tmp_path)
 
     assert client.tabs[0][0] == tmp_path
+
+
+def test_prepare_shims_what_the_agent_cannot_start_without(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """`codex` is a script whose shebang runs node, so a PATH without node is a dead pane."""
+    which["codex"] = "/opt/bin/codex"
+    which["node"] = "/opt/bin/node"
+
+    run = srt.prepare(Profile(agent="codex", tools=["git"]))
+
+    assert (run.run_dir / "bin" / "node").readlink() == Path("/opt/bin/node")
+    assert sorted(path.name for path in (run.run_dir / "bin").iterdir()) == [
+        "codex", "git", "node",
+    ]
+
+
+def test_a_required_tool_the_profile_already_ticked_is_reported_once(
+    which: dict[str, str], fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It is the same symlink either way, so it must not be named twice when it is missing."""
+    which["codex"] = "/opt/bin/codex"
+
+    srt.prepare(Profile(agent="codex", tools=["node"]))
+
+    assert capsys.readouterr().err.strip() == "paddock: left off the sandbox PATH: node"

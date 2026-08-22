@@ -36,12 +36,15 @@ def which(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Control what the chooser finds on the host PATH.
 
     The agents are in it because the agent list refuses one this machine has not got, and
-    what the form does must not depend on which agents the developer happens to have.
+    what the form does must not depend on which agents the developer happens to have. `node`
+    is in it for the same reason: codex cannot start without it, so a machine without node
+    has no codex to choose.
     """
     found = {
         "git": "/usr/bin/git",
         "jq": "/usr/bin/jq",
         "kubectl": "/usr/bin/kubectl",
+        "node": "/usr/bin/node",
         "claude": "/usr/bin/claude",
         "codex": "/usr/bin/codex",
         "opencode": "/usr/bin/opencode",
@@ -130,8 +133,8 @@ def test_tools_the_host_has_are_offered_and_ticked_from_the_profile(
 ) -> None:
     rows = tui.tool_choices(Profile(tools=["git", "curl"]))
 
-    assert values(rows) == ["git", "jq", "curl"]
-    assert ticks(rows) == {"git": True, "jq": False, "curl": True}
+    assert values(rows) == ["git", "jq", "curl", "node"]
+    assert ticks(rows) == {"git": True, "jq": False, "curl": True, "node": False}
 
 
 def test_a_profiles_own_tools_are_offered_too(which: dict[str, str]) -> None:
@@ -146,7 +149,7 @@ def test_a_tool_this_host_lacks_stays_ticked_and_says_so(which: dict[str, str]) 
     rows = tui.tool_choices(Profile(tools=["git", "curl"]))
 
     assert ticks(rows)["curl"] is True
-    assert titles(rows)[-1] == "curl (not installed)"
+    assert "curl (not installed)" in titles(rows)
 
 
 def test_a_candidate_the_host_lacks_is_left_out(which: dict[str, str]) -> None:
@@ -1245,3 +1248,58 @@ def test_the_profile_a_plan_stood_on_is_read_back_off_its_name(config_dir: Path)
 def test_a_local_or_attached_tab_gives_back_the_one_answer_it_has() -> None:
     assert tui.answers_from(tui.Local(cwd="/tmp"), {}) == {"open": tui.LOCAL}
     assert tui.answers_from(tui.Attach(ref="s1"), {}) == {"open": "s1"}
+
+
+# --- what the agent needs on the PATH beyond what was ticked ----------------
+
+
+def test_the_confirm_names_what_the_agent_needs_and_who_needs_it(
+    which: dict[str, str],
+) -> None:
+    """It goes on the sandbox PATH because the agent was chosen, so it is not folded in."""
+    lines = dict(tui.confirm_lines({}, Profile(agent="codex", tools=["git"]), load_agents()))
+
+    assert lines["can run"] == "git node (needed by codex), plus /usr/bin:/bin"
+
+
+def test_a_required_tool_the_profile_ticked_is_named_once_as_a_tick(
+    which: dict[str, str],
+) -> None:
+    """It is already on the screen as an answer, so saying it twice would read as two."""
+    lines = dict(tui.confirm_lines({}, Profile(agent="codex", tools=["node"]), load_agents()))
+
+    assert lines["can run"] == "node, plus /usr/bin:/bin"
+
+
+def test_an_agent_that_needs_nothing_says_only_what_was_ticked(which: dict[str, str]) -> None:
+    lines = dict(tui.confirm_lines({}, Profile(agent="claude", tools=["git"]), load_agents()))
+
+    assert lines["can run"] == "git, plus /usr/bin:/bin"
+
+
+def test_the_agent_list_says_what_a_choice_puts_on_the_path() -> None:
+    """Choosing the agent is what consents to it, so the list that chooses says so."""
+    assert "Cannot start without node" in tui.agent_hint("codex", load_agents())
+    assert "Cannot start without" not in tui.agent_hint("claude", load_agents())
+
+
+def test_an_agent_whose_interpreter_is_missing_cannot_be_chosen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex is installed and still cannot run: a script with nothing to run it is not an agent."""
+    monkeypatch.setattr(shutil, "which", {"codex": "/usr/bin/codex"}.get)
+
+    titles = {value: title for title, value, _ in tui.agent_choices(load_agents())}
+
+    why = "codex needs node, which this machine has not got"
+
+    assert tui.agent_refusal("codex", load_agents()) == why
+    assert titles["codex"] == "Codex CLI (codex) (not installed)"
+
+
+def test_the_interpreter_being_there_is_enough_to_choose_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", {"codex": "/usr/bin/codex", "node": "/usr/bin/node"}.get)
+
+    assert tui.agent_refusal("codex", load_agents()) == ""

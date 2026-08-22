@@ -83,7 +83,7 @@ Agents --> Backend : AgentSpec (command, api_domains,\nauth_read_paths, config_w
 deactivate Agents
 Backend -> Backend : new_run_dir()\n$PADDOCK_STATE_DIR/runs/<timestamp>-<rand>/
 Backend -> Backend : workdir_for(profile, run_dir)\nshared_dir, else run_dir/work (isolated)
-Backend -> Backend : build_shim_dir(run_dir, tools)\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
+Backend -> Backend : build_shim_dir(run_dir, tools)\nthe ticked tools, the agent's own command, and its\nrequired_tools (node for codex, SPEC section 5);\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
 Backend -> Synth : build(profile, agent, run_dir)
 activate Synth
 Synth -> Synth : run_dir/config/\nsymlink the key it only reads; copy the config it writes back,\nminus every mcpServers key, at any depth\nno key file on the host? export the login Keychain entry's own\nclaudeAiOauth key, mode 0600 (macOS, deleted when the\nsession is collected)\nsymlink ONLY the ticked skills from <real config>/skills\nwrite .mcp.json with ONLY the ticked MCP servers

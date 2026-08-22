@@ -16,6 +16,11 @@ class AgentSpec:
     # Executable run inside the sandbox. An entry without one is unusable and is skipped.
     command: str = ""
     api_domains: list[str] = field(default_factory=list)
+    # Tools the command cannot start without, beyond itself. A Node CLI is a script whose
+    # shebang runs `node`, so an absent interpreter is an absent agent (SPEC §5). The srt
+    # backend shims these alongside the command: choosing an agent is consenting to what
+    # it runs on. Every screen that says what is on the sandbox PATH names them.
+    required_tools: list[str] = field(default_factory=list)
     # Only this agent's own credentials. Never another agent's, never ~/.ssh and friends.
     auth_read_paths: list[str] = field(default_factory=list)
     config_write_paths: list[str] = field(default_factory=list)
@@ -49,6 +54,9 @@ def builtin_agents() -> dict[str, AgentSpec]:
             name="Codex CLI",
             command="codex",
             api_domains=["api.openai.com", "chatgpt.com", "auth.openai.com"],
+            # `codex` is a `#!/usr/bin/env node` script, so without node on the sandbox
+            # PATH the pane dies on `env: node: No such file or directory`, exit 127.
+            required_tools=["node"],
             auth_read_paths=["~/.codex/auth.json"],
             config_write_paths=["~/.codex"],
         ),
