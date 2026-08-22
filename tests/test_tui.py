@@ -2,11 +2,12 @@
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from paddock import tui
+from paddock import recent, sessions, tui
 from paddock.agents import AgentSpec, builtin_agents, load_agents
 from paddock.profiles import (
     LOCAL_SERVICES,
@@ -34,8 +35,24 @@ def ticks(rows: list[tuple[str, str, bool]]) -> dict[str, bool]:
 
 @pytest.fixture
 def which(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    """Control what the chooser finds on the host PATH."""
-    found = {"git": "/usr/bin/git", "jq": "/usr/bin/jq", "kubectl": "/usr/bin/kubectl"}
+    """Control what the chooser finds on the host PATH.
+
+    The agents are in it because the agent list refuses one this machine has not got, and
+    what the form does must not depend on which agents the developer happens to have. `node`
+    is in it for the same reason: codex cannot start without it, so a machine without node
+    has no codex to choose.
+    """
+    found = {
+        "git": "/usr/bin/git",
+        "jq": "/usr/bin/jq",
+        "kubectl": "/usr/bin/kubectl",
+        "node": "/usr/bin/node",
+        "claude": "/usr/bin/claude",
+        "codex": "/usr/bin/codex",
+        "opencode": "/usr/bin/opencode",
+        "aider": "/usr/bin/aider",
+        "gemini": "/usr/bin/gemini",
+    }
     monkeypatch.setattr(shutil, "which", found.get)
     return found
 
@@ -55,7 +72,7 @@ def test_local_new_and_every_live_session_are_on_one_list() -> None:
 def test_a_session_on_the_open_list_is_shown_by_what_it_is() -> None:
     live = [Session(session_id="s1", name="review", agent="claude", pane_ids=["wA:p1"])]
 
-    assert tui.open_choices(live)[-1][0] == "review: claude / claude-default, 1 tab"
+    assert tui.open_choices(live)[-1][0] == "review [srt]: claude / claude-default, 1 tab"
 
 
 def test_attaching_says_the_tabs_do_not_share_a_process_tree() -> None:
@@ -71,7 +88,14 @@ def test_a_session_is_shown_by_what_it_is() -> None:
         name="review", agent="claude", profile_name="hardened", pane_ids=["wA:p1", "wA:p2"]
     )
 
-    assert tui.session_label(session) == "review: claude / hardened, 2 tabs"
+    assert tui.session_label(session) == "review [srt]: claude / hardened, 2 tabs"
+
+
+def test_the_label_says_which_backend_the_session_runs_on() -> None:
+    """Attaching means a different thing per backend, so the list says which (SPEC §3.2)."""
+    label = tui.session_label(Session(name="build", backend="microsandbox"))
+
+    assert label.startswith("build [microsandbox]: ")
 
 
 def test_one_tab_is_not_two() -> None:
@@ -97,13 +121,13 @@ def test_saved_profiles_are_offered_with_a_blank_start() -> None:
     assert values[-1] == tui.CUSTOM
 
 
-def test_every_registered_agent_is_offered_plus_a_typed_command() -> None:
+def test_every_registered_agent_is_offered_plus_a_typed_command(which: dict[str, str]) -> None:
     choices = tui.agent_choices(load_agents())
 
-    values = [value for _, value in choices]
+    values = [value for _, value, _ in choices]
     assert set(builtin_agents()) <= set(values)
     assert values[-1] == tui.CUSTOM
-    assert any("claude" in title for title, _ in choices)
+    assert any("claude" in title for title, _, _ in choices)
 
 
 def test_tools_the_host_has_are_offered_and_ticked_from_the_profile(
@@ -111,8 +135,8 @@ def test_tools_the_host_has_are_offered_and_ticked_from_the_profile(
 ) -> None:
     rows = tui.tool_choices(Profile(tools=["git", "curl"]))
 
-    assert values(rows) == ["git", "jq", "curl"]
-    assert ticks(rows) == {"git": True, "jq": False, "curl": True}
+    assert values(rows) == ["git", "jq", "curl", "node"]
+    assert ticks(rows) == {"git": True, "jq": False, "curl": True, "node": False}
 
 
 def test_a_profiles_own_tools_are_offered_too(which: dict[str, str]) -> None:
@@ -127,7 +151,7 @@ def test_a_tool_this_host_lacks_stays_ticked_and_says_so(which: dict[str, str]) 
     rows = tui.tool_choices(Profile(tools=["git", "curl"]))
 
     assert ticks(rows)["curl"] is True
-    assert titles(rows)[-1] == "curl (not installed)"
+    assert "curl (not installed)" in titles(rows)
 
 
 def test_a_candidate_the_host_lacks_is_left_out(which: dict[str, str]) -> None:
@@ -454,7 +478,7 @@ def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers(
         "Network": "anthropic, github, npm, pypi/uv",
         "Files": "an isolated scratch directory",
         "Skills": "none for this agent",
-        "Advanced": "name, save as profile, MCP",
+        "Advanced": "name, save as profile, keep running, MCP",
     }
     assert dict((label, note) for label, _, _, note in rows)["Tools"] == "(10)"
     assert dict((label, note) for label, _, _, note in rows)["Network"] == "(12 domains)"
@@ -489,7 +513,7 @@ def test_attaching_names_the_session_and_keeps_its_workdir() -> None:
     shown = tui.form_rows({"open": "s1"}, Profile(), {}, live)
     rows = dict((label, value) for label, value, _, _ in shown)
 
-    assert rows["Open"] == "Attach: review"
+    assert rows["Open"] == "Attach the agent on review"
     assert rows["Files"] == "the session's own workdir"
 
 
@@ -637,15 +661,16 @@ def test_the_confirm_expands_the_presets_into_domains() -> None:
     assert "pypi/uv" not in lines["can reach"]
 
 
-def test_a_long_domain_list_is_cut_short_with_a_count() -> None:
-    """Nine and a count fit the line. The whole list does not, and wrapping moves the layout."""
+def test_the_confirm_names_every_domain_it_is_about_to_open() -> None:
+    """The count is what cannot be cut, and the screen elides only when the popup makes it."""
     base = builtin_profiles()["claude-default"]
 
     reach = dict(tui.confirm_lines({"profile": "claude-default"}, base, load_agents()))["can reach"]
     shown = reach.split(": ", 1)[1].split(", ")
 
-    assert len(shown) == 10
-    assert shown[-1] == "+3"
+    assert reach.startswith("12 domains: ")
+    assert len(shown) == 12
+    assert "registry.npmjs.org" in shown
 
 
 def test_the_confirm_folds_in_the_agents_own_domains() -> None:
@@ -735,7 +760,7 @@ def test_the_confirm_says_whether_the_answers_still_match_the_profile() -> None:
     changed = dict(tui.confirm_lines({**kept, "tools": ["git"]}, base, load_agents()))
 
     assert unchanged["profile"] == "claude-default, unchanged"
-    assert changed["profile"] == "claude-default + changes"
+    assert changed["profile"] == "claude-default + changes. Press s to save these answers"
 
 
 
@@ -751,15 +776,21 @@ ESC, CTRL_C = "\x1b", "\x03"
 DOWN, UP, TAB = "\x1b[B", "\x1b[A", "\t"
 OPEN_FIELD, PROFILE, BACKEND, AGENT = "1\r", "2\r", "3\r", "4\r"
 TOOLS, NETWORK, FILES, SKILLS, ADVANCED = "5\r", "6\r", "7\r", "8\r", "9\r"
+# Launch, and then enter on the confirm, which is what a sandbox ends on.
+GO = "L\r"
+# Advanced keeps its list open after an editor, so a sequence through it has to leave the
+# list. One escape does that: the byte after it flushes it, and a list, unlike a box, hands
+# that byte on to the screen it goes back to.
+LEAVE = ESC
 
 
 def test_launching_what_the_form_already_says_is_one_key_press(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """The common case: the answers are already there, so Launch is the whole interaction."""
-    plan = press("L", lambda: tui.choose(tmp_path))
+    plan = press(GO, lambda: tui.choose(tmp_path))
 
-    assert plan == tui.NewSession(profile=Profile(), backend="srt")
+    assert plan == tui.NewSession(profile=Profile(), backend="srt", started_from=tui.CUSTOM)
     assert fake_sessions.calls == [("list_sessions",)]  # it read the sessions and did nothing
 
 
@@ -783,7 +814,7 @@ def test_ctrl_c_cancels_the_popup_wherever_it_is_pressed(
 def test_a_local_tab_is_two_key_presses_and_no_permissions(
     press, fake_sessions, tmp_path: Path
 ) -> None:
-    plan = press(f"{OPEN_FIELD}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{OPEN_FIELD}{DOWN}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan == tui.Local(cwd=str(tmp_path))
 
@@ -794,7 +825,7 @@ def test_a_live_session_is_on_the_same_field_as_the_new_one(
     """No cwd: an attached tab belongs in the session's own workdir."""
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
 
-    plan = press(f"{OPEN_FIELD}{DOWN}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{OPEN_FIELD}{DOWN}{DOWN}\r\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan == tui.Attach(ref="s1")
 
@@ -803,7 +834,7 @@ def test_no_sandbox_means_none_of_the_fields_under_it_open(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """Greying them out is the promise, so pressing enter on one has to do nothing."""
-    plan = press(f"{OPEN_FIELD}{DOWN}\r{TOOLS}L", lambda: tui.choose(tmp_path))
+    plan = press(f"{OPEN_FIELD}{DOWN}\r{TOOLS}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan == tui.Local(cwd=str(tmp_path))
 
@@ -813,7 +844,7 @@ def test_another_profile_hands_over_all_of_its_answers(
 ) -> None:
     save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
 
-    plan = press(f"{PROFILE}{UP}{UP}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}{UP}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile == load_profiles()["hardened"]
 
@@ -823,7 +854,7 @@ def test_the_backend_is_a_field_and_says_what_each_one_costs(
 ) -> None:
     monkeypatch.setattr(shutil, "which", {"msb": "/opt/bin/msb"}.get)
 
-    plan = press(f"{BACKEND}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{BACKEND}{DOWN}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.backend == "msb"
 
@@ -834,19 +865,30 @@ def test_a_backend_this_machine_cannot_run_is_not_chosen(
     """It stays on the list and says why, the way a tool the host lacks does."""
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
-    plan = press(f"{BACKEND}{DOWN}\r{ESC}L", lambda: tui.choose(tmp_path))
+    plan = press(f"{BACKEND}{DOWN}\r{ESC}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.backend == "srt"
     assert tui.backend_choices()[1][2].startswith("msb is not installed")
 
 
+def test_every_backend_the_field_offers_is_one_sessions_can_actually_run() -> None:
+    """The field names a backend and `sessions` looks it up, so a typo here is a dead launch.
+
+    `tests/fake_sessions` stands in for the real module everywhere else in this file, which
+    is why the registry is read from the real one here. The order is the field's own: the
+    cheapest first, not whatever order the registry happens to be written in.
+    """
+    assert {key for key, _, _ in tui.backend_choices()} == set(sessions.BACKENDS)
+
+
 def test_choosing_another_agent_drops_the_skills_that_came_with_the_last_one(
-    press, fake_sessions, monkeypatch: pytest.MonkeyPatch, config_dir: Path, tmp_path: Path
+    press, fake_sessions, which: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+    config_dir: Path, tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     save_profile(Profile(name="reviewing", agent="claude", skills=["reviewer"]))
 
-    plan = press(f"{PROFILE}{UP}\r{AGENT}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}\r{AGENT}{DOWN}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.agent == "codex"
     assert plan.profile.skills == []
@@ -856,7 +898,7 @@ def test_a_typed_command_is_asked_for_on_the_agent_field(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """Three questions became one field: the agent, the command, and the key it is saved under."""
-    keys = f"{AGENT}{DOWN * 5}\rnpx claude-code\rL"
+    keys = f"{AGENT}{DOWN * 5}\rnpx claude-code\r{GO}"
 
     plan = press(keys, lambda: tui.choose(tmp_path))
 
@@ -867,7 +909,7 @@ def test_a_typed_command_is_asked_for_on_the_agent_field(
 def test_the_tools_are_ticked_off_a_checklist(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
-    plan = press(f"{TOOLS} \rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS} \r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]  # git was ticked, and the space unticked it
 
@@ -876,7 +918,7 @@ def test_escape_from_an_editor_keeps_what_was_done_in_it(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
     """The promise that the questionnaire could not keep: escape loses no answer."""
-    plan = press(f"{TOOLS} {ESC}L", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS} {ESC}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]
 
@@ -885,7 +927,7 @@ def test_the_network_groups_and_the_extra_domains_are_one_screen(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """Section 5.5: the box under the checklist is what killed the extra-domains question."""
-    keys = f"{NETWORK} {TAB}example.com\rL"
+    keys = f"{NETWORK} {TAB}example.com\r{GO}"
 
     plan = press(keys, lambda: tui.choose(tmp_path))
 
@@ -894,7 +936,7 @@ def test_the_network_groups_and_the_extra_domains_are_one_screen(
 
 
 def test_sharing_a_directory_is_one_field(press, fake_sessions, tmp_path: Path) -> None:
-    plan = press(f"{FILES}{DOWN}\r\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{FILES}{DOWN}\r\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.shared_dir == str(tmp_path.resolve())
 
@@ -904,7 +946,7 @@ def test_the_isolated_scratch_directory_is_the_other_answer_to_the_same_field(
 ) -> None:
     save_profile(Profile(name="shared", shared_dir=str(tmp_path)))
 
-    plan = press(f"{PROFILE}{UP}\r{FILES}{UP}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}\r{FILES}{UP}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.shared_dir == ""
 
@@ -922,20 +964,20 @@ def test_the_skills_are_ticked_off_the_agents_own_list(
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude" / "skills" / "reviewer").mkdir(parents=True)
 
-    plan = press(f"{SKILLS} \rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{SKILLS} \r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.skills == ["reviewer"]
 
 
 def test_the_session_name_lives_under_advanced(press, fake_sessions, tmp_path: Path) -> None:
-    plan = press(f"{ADVANCED}\rreview\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{ADVANCED}\rreview\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.name == "review"
 
 
 def test_the_s_key_saves_the_answers_as_a_profile(press, fake_sessions, tmp_path: Path) -> None:
     """A question every launch used to ask is a key press on the form now."""
-    plan = press("sreview-profile\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"sreview-profile\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.save_as == "review-profile"
 
@@ -950,9 +992,9 @@ def test_the_whole_form_becomes_one_plan(
         f"{TOOLS} \r"  # untick git
         f"{NETWORK} {TAB}example.com\r"  # github only, plus a domain
         f"{FILES}{DOWN}\r\r"  # share this directory
-        f"{ADVANCED}\rreview\r"  # name it
+        f"{ADVANCED}\rreview\r{LEAVE}"  # name it, and leave Advanced
         "sreview-profile\r"  # save the answers
-        "L"
+        f"{GO}"
     )
 
     plan = press(keys, lambda: tui.choose(tmp_path))
@@ -968,18 +1010,19 @@ def test_the_whole_form_becomes_one_plan(
         name="review",
         save_as="review-profile",
         backend="srt",
+        started_from=tui.CUSTOM,
     )
 
 
 def test_every_list_opens_on_the_answer_it_already_has(
-    press, fake_sessions, config_dir: Path, tmp_path: Path
+    press, fake_sessions, which: dict[str, str], config_dir: Path, tmp_path: Path
 ) -> None:
     """Enter on a list you only meant to look at must not quietly change the answer."""
     save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
 
-    opened = press(f"{OPEN_FIELD}{DOWN}\r{OPEN_FIELD}\rL", lambda: tui.choose(tmp_path))
-    profile = press(f"{PROFILE}{UP}{UP}\r{PROFILE}\rL", lambda: tui.choose(tmp_path))
-    agent = press(f"{AGENT}{DOWN}\r{AGENT}\rL", lambda: tui.choose(tmp_path))
+    opened = press(f"{OPEN_FIELD}{DOWN}\r{OPEN_FIELD}\r{GO}", lambda: tui.choose(tmp_path))
+    profile = press(f"{PROFILE}{UP}{UP}\r{PROFILE}\r{GO}", lambda: tui.choose(tmp_path))
+    agent = press(f"{AGENT}{DOWN}\r{AGENT}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert opened == tui.Local(cwd=str(tmp_path))
     assert profile.profile == load_profiles()["hardened"]
@@ -992,7 +1035,7 @@ def test_the_backend_list_opens_on_the_backend_that_was_chosen(
     """Reopening it and pressing enter reverted the microVM to srt, which is a silent downgrade."""
     monkeypatch.setattr(shutil, "which", {"msb": "/opt/bin/msb"}.get)
 
-    plan = press(f"{BACKEND}{DOWN}\r{BACKEND}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{BACKEND}{DOWN}\r{BACKEND}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.backend == "msb"
 
@@ -1002,7 +1045,7 @@ def test_a_key_clash_offers_a_name_that_is_free(
 ) -> None:
     """Offering the taken name back would fail the launch after the whole form was filled in."""
     tui.remember_agent("claude-custom", "some other wrapper")
-    keys = f"{AGENT}{DOWN * 6}\rclaude --model opus\r\rL"
+    keys = f"{AGENT}{DOWN * 6}\rclaude --model opus\r\r{GO}"
 
     plan = press(keys, lambda: tui.choose(tmp_path))
 
@@ -1019,7 +1062,7 @@ def test_a_free_key_is_one_the_registry_does_not_answer_to(config_dir: Path) -> 
 
 def test_saving_answers_needs_answers_to_save(press, fake_sessions, tmp_path: Path) -> None:
     """A local tab permits nothing, so there is nothing for the s key to write down."""
-    plan = press(f"{OPEN_FIELD}{DOWN}\rsL", lambda: tui.choose(tmp_path))
+    plan = press(f"{OPEN_FIELD}{DOWN}\rs{GO}", lambda: tui.choose(tmp_path))
 
     assert plan == tui.Local(cwd=str(tmp_path))
 
@@ -1033,7 +1076,7 @@ def test_escape_from_the_directory_box_goes_back_to_the_files_list(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """One level at a time: the box was opened from the list, so escape lands on the list."""
-    plan = press(f"{FILES}{DOWN}\r{ESC}{ESC}k\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{FILES}{DOWN}\r{ESC}{ESC}k\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.shared_dir == ""
 
@@ -1058,7 +1101,7 @@ def test_taking_the_back_row_leaves_a_field_as_it_was(
     """The row and the key are one answer: one level back, with every answer kept."""
     save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
 
-    plan = press(f"{PROFILE}{UP}{UP}\r{PROFILE}{UP}{UP}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{PROFILE}{UP}{UP}\r{PROFILE}{UP}{UP}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile == load_profiles()["hardened"]
 
@@ -1066,6 +1109,578 @@ def test_taking_the_back_row_leaves_a_field_as_it_was(
 def test_the_back_row_on_a_checklist_keeps_the_ticks(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
-    plan = press(f"{TOOLS} {UP * 4}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS} {UP * 4}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]
+
+
+# --- the confirm, the Advanced screen and where the form opens ---------------
+
+RIGHT, LEFT = "\x1b[C", "\x1b[D"
+
+
+def test_a_sandbox_is_launched_from_the_confirm_and_nowhere_else(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Every permission is an active choice, so the thing that grants them says so out loud."""
+    plan = press(GO, lambda: tui.choose(tmp_path))
+
+    assert plan == tui.NewSession(profile=Profile(), backend="srt", started_from=tui.CUSTOM)
+
+
+def test_the_confirm_can_send_you_back_to_the_form_with_every_answer_on_it(
+    press, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """Back is one level, so the answers are still there, and the second launch takes them."""
+    plan = press(f"{TOOLS} \rL{RIGHT}\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.tools == ["rg", "curl"]
+
+
+def test_cancel_on_the_confirm_launches_nothing(press, fake_sessions, tmp_path: Path) -> None:
+    assert press(f"L{RIGHT}{RIGHT}\r", lambda: tui.choose(tmp_path)) is None
+    assert fake_sessions.calls == [("list_sessions",)]
+
+
+def test_escape_on_the_confirm_is_back_to_the_form(press, fake_sessions, tmp_path: Path) -> None:
+    """And escape on the form after that closes the popup, which is one level again."""
+    assert press(f"L{ESC}{ESC}{ESC}{ESC}", lambda: tui.choose(tmp_path)) is None
+
+
+def test_a_local_tab_has_no_policy_to_confirm(press, fake_sessions, tmp_path: Path) -> None:
+    assert press(f"{OPEN_FIELD}{DOWN}\rL", lambda: tui.choose(tmp_path)) == tui.Local(
+        cwd=str(tmp_path)
+    )
+
+
+def test_advanced_holds_everything_that_should_never_be_asked() -> None:
+    """Section 5.8, including the four profile fields the chooser had never asked about."""
+    rows = [label for label, _, _ in tui.advanced_choices({}, Profile())]
+
+    assert rows == [
+        "Name",
+        "Save as profile",
+        "Keep running",
+        "MCP servers",
+        "Also writable",
+        "Never readable",
+        "System PATH",
+    ]
+
+
+def test_keeping_a_session_running_is_asked_about_here_and_only_here(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """SPEC 3.4's field, whose prompt was waiting for the TUI to have somewhere to put it."""
+    plan = press(f"{ADVANCED}{DOWN}{DOWN}\r{DOWN}\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.keep_alive is True
+    assert tui.build_session(Profile(), {}).keep_alive is False
+
+
+def test_the_mcp_servers_are_named_under_advanced(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    keys = f"{ADVANCED}{DOWN * 3}\rplaywright fetch\r{LEAVE}{GO}"
+
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan.profile.mcp == ["playwright", "fetch"]
+
+
+def test_the_extra_writable_paths_are_named_under_advanced(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    plan = press(f"{ADVANCED}{DOWN * 4}\r/var/tmp\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.extra_allow_write == ["/var/tmp"]
+
+
+def test_the_denied_reads_can_be_changed_and_say_what_they_are(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """A profile that wants a credential directory readable has to say so, and here is where."""
+    # ctrl-u clears the box, which opens on what the profile denies now.
+    plan = press(f"{ADVANCED}{DOWN * 5}\r\x15~/.ssh\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.deny_read == ["~/.ssh"]
+    assert tui.advanced_value("deny_read", {}, Profile()).startswith("~/.ssh ~/.aws")
+
+
+def test_the_system_path_is_a_yes_or_a_no(press, fake_sessions, tmp_path: Path) -> None:
+    plan = press(f"{ADVANCED}{DOWN * 6}\r{DOWN}\r{LEAVE}{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.include_system_path is False
+
+
+def test_an_advanced_answer_makes_the_session_custom(
+    press, fake_sessions, config_dir: Path, tmp_path: Path
+) -> None:
+    """A session that says it runs a profile has to be the permissions that profile describes."""
+    save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
+
+    keys = f"{PROFILE}{UP}{UP}\r{ADVANCED}{DOWN * 4}\r/var/tmp\r{LEAVE}{GO}"
+
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan.profile.extra_allow_write == ["/var/tmp"]
+    assert plan.profile.name == "hardened+custom"
+
+
+def test_the_form_opens_on_the_profile_this_workspace_launched_last(
+    press, fake_sessions, config_dir: Path, state_dir: Path, tmp_path: Path
+) -> None:
+    """The whole saving of a form over a walk: last time's answers are this time's defaults."""
+    save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
+    recent.remember("hardened")
+
+    plan = press(GO, lambda: tui.choose(tmp_path))
+
+    assert plan.profile == load_profiles()["hardened"]
+
+
+def test_a_remembered_profile_that_is_gone_is_no_answer(
+    press, fake_sessions, state_dir: Path, tmp_path: Path
+) -> None:
+    recent.remember("deleted-since")
+
+    plan = press(GO, lambda: tui.choose(tmp_path))
+
+    assert plan.profile == Profile()
+
+
+def test_a_path_typed_under_advanced_shows_up_on_the_confirm(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """What the screen says it is granting has to be what was typed, and all of it."""
+    answers = {"extra_allow_write": ["/var/tmp/a path, with a comma"]}
+
+    lines = dict(tui.confirm_lines(answers, Profile(), load_agents()))
+
+    assert "/var/tmp/a path, with a comma" in lines["can write"]
+
+
+def test_typed_paths_are_split_on_spaces_and_never_on_commas() -> None:
+    """A comma is part of a path, where a domain never has one."""
+    assert tui.parse_paths("/var/tmp /work/repo") == ["/var/tmp", "/work/repo"]
+    assert tui.parse_paths("/tmp/one,two") == ["/tmp/one,two"]
+    assert tui.parse_paths("  ") == []
+    assert tui.parse_domains("a.com, b.com") == ["a.com", "b.com"]  # domains still split on both
+
+
+def test_the_advanced_row_says_when_it_holds_a_grant(press, fake_sessions, tmp_path: Path) -> None:
+    """A row reading as untouched while it holds new write grants is the one lie it may not tell."""
+    plain = tui.build_session(Profile(), {})
+    granted = tui.build_session(Profile(), {"extra_allow_write": ["/var/tmp"]})
+    opened = tui.build_session(Profile(), {"deny_read": []})
+
+    assert tui._advanced_value(plain) == "name, save as profile, keep running, MCP"
+    assert tui._advanced_value(granted).startswith("1 writable path")
+    assert "denied reads changed" in tui._advanced_value(opened)
+
+
+def test_the_confirm_can_save_the_answers_it_is_about_to_launch(
+    press, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """Section 5.7 puts the offer here, because here is where the answers are worth keeping."""
+    plan = press(f"{TOOLS} \rLsreview-profile\r\r", lambda: tui.choose(tmp_path))
+
+    assert plan.save_as == "review-profile"
+    assert plan.profile.tools == ["rg", "curl"]
+
+
+def test_advanced_comes_back_where_it_was_left(press, fake_sessions, tmp_path: Path) -> None:
+    """Escape backs out one level: the editor to the list, and the list to the form."""
+    # The list comes back on the row that was edited, and the box on what it holds.
+    keys = f"{ADVANCED}{DOWN * 3}\rplaywright\r\r fetch\r{LEAVE}{GO}"
+
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan.profile.mcp == ["playwright", "fetch"]
+# --- an agent this machine has not got --------------------------------------
+
+
+def test_an_agent_that_is_not_installed_is_offered_and_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hiding it would leave the user wondering where it went, and choosing it opens a dead tab."""
+    monkeypatch.setattr(shutil, "which", {"claude": "/usr/bin/claude"}.get)
+
+    titles = {value: title for title, value, _ in tui.agent_choices(load_agents())}
+    refusals = {value: why for _, value, why in tui.agent_choices(load_agents())}
+
+    assert titles["opencode"] == "OpenCode (opencode) (not installed)"
+    assert refusals["opencode"].startswith("opencode is not installed")
+    assert refusals["claude"] == ""
+    assert titles["claude"] == "Claude Code (claude)"
+
+
+def test_an_agent_run_by_a_path_of_its_own_is_never_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shell agent is `$SHELL`, which is the user's own answer to where it lives."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    refusals = {value: why for _, value, why in tui.agent_choices(load_agents())}
+
+    assert tui.agent_refusal("shell", load_agents()) == ""
+    assert refusals["shell"] == ""
+    assert refusals[tui.CUSTOM] == ""
+
+
+def test_a_refused_agent_cannot_be_chosen_off_the_list(
+    press, fake_sessions, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Enter on it says why instead of quietly launching a tab that dies on `not found`."""
+    monkeypatch.setattr(shutil, "which", {"claude": "/usr/bin/claude"}.get)
+
+    plan = press(f"{AGENT}{DOWN * 3}\r{ESC}{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.profile.agent == "claude"  # opencode was on the cursor and was not taken
+
+
+# --- the warning an msb install earns ---------------------------------------
+
+
+def msb_plan(**profile: object) -> tui.NewSession:
+    return tui.NewSession(profile=Profile(agent="claude", **profile), backend="msb")
+
+
+def test_an_msb_install_without_the_npm_preset_is_warned_about() -> None:
+    """The install runs in the guest, where the profile's domains are the whole network."""
+    plan = msb_plan(network_presets=["anthropic", "github"])
+
+    assert tui.install_warning(plan, load_agents()) == tui.INSTALL_WARNING
+
+
+def test_the_npm_preset_is_what_takes_the_warning_away() -> None:
+    plan = msb_plan(network_presets=["anthropic", "npm"])
+
+    assert tui.install_warning(plan, load_agents()) == ""
+
+
+def test_nothing_is_warned_about_on_a_backend_that_installs_nothing() -> None:
+    """srt runs the agent this machine already has, so there is no install to feed."""
+    srt = tui.NewSession(profile=Profile(agent="claude", network_presets=[]))
+
+    assert tui.install_warning(srt, load_agents()) == ""
+
+
+def test_an_agent_with_no_install_is_not_warned_about() -> None:
+    plan = tui.NewSession(profile=Profile(agent="shell", network_presets=[]), backend="msb")
+
+    assert tui.install_warning(plan, load_agents()) == ""
+
+
+def test_the_confirm_carries_the_warning_and_drops_it_when_it_is_answered() -> None:
+    answers = {"backend": "msb", "agent": "claude", "network": ["anthropic"]}
+    without = dict(tui.confirm_lines(answers, Profile(), load_agents()))
+    with_npm = dict(
+        tui.confirm_lines({**answers, "network": ["anthropic", "npm"]}, Profile(), load_agents())
+    )
+
+    assert without["warning"] == tui.INSTALL_WARNING
+    assert "warning" not in with_npm
+
+
+def test_the_profile_is_never_changed_to_suit_the_install() -> None:
+    """What a sandbox may reach is an answer the user gives, not one paddock fills in."""
+    answers = {"backend": "msb", "agent": "claude", "network": ["anthropic"]}
+
+    tui.confirm_lines(answers, Profile(), load_agents())
+
+    assert answers["network"] == ["anthropic"]
+
+
+# --- what a launch says it is doing -----------------------------------------
+
+
+def test_the_slow_steps_of_an_msb_launch_are_named_before_it_blocks_on_them() -> None:
+    steps = tui.starting_lines(msb_plan(network_presets=["npm"]), load_agents())
+
+    assert steps[0] == "pulling the node:22-slim image"
+    assert steps[1] == "installing claude in the guest"
+    assert "40 seconds" in steps[2]
+
+
+def test_a_launch_that_will_fail_on_its_install_says_so_while_it_runs() -> None:
+    steps = tui.starting_lines(msb_plan(network_presets=[]), load_agents())
+
+    assert steps[-1] == tui.INSTALL_WARNING
+
+
+def test_an_srt_launch_has_one_step_because_it_has_nothing_slow_to_do() -> None:
+    assert tui.starting_lines(tui.NewSession(profile=Profile()), load_agents()) == [
+        "preparing the sandbox"
+    ]
+
+
+# --- a plan, back to the answers that made it -------------------------------
+
+
+def test_a_plan_goes_back_to_the_form_it_was_made_on() -> None:
+    """A minute of waiting on a launch that failed must not cost the answers behind it."""
+    plan = tui.NewSession(
+        profile=Profile(
+            agent="codex",
+            tools=["git"],
+            network_presets=["github"],
+            extra_domains=["example.com"],
+            shared_dir="/work/repo",
+        ),
+        name="review",
+        save_as="reviewing",
+        backend="msb",
+        started_from=tui.CUSTOM,
+    )
+
+    answers = tui.answers_from(plan, load_profiles())
+
+    assert tui.build_session(tui.base_profile(load_profiles(), answers), answers) == plan
+
+
+def test_the_profile_a_plan_stood_on_comes_back_with_it(config_dir: Path) -> None:
+    """`started_from` is the answer, not a guess made from the built profile's name."""
+    save_profile(Profile(name="hardened", deny_read=["~/.ssh", "~/.kube"]))
+    saved = load_profiles()
+    plan = tui.NewSession(
+        profile=replace(saved["hardened"], tools=["git"], name="hardened+custom"),
+        started_from="hardened",
+    )
+
+    answers = tui.answers_from(plan, saved)
+
+    assert answers["profile"] == "hardened"
+    # the fields the form never asks about come back with it, not reset to the defaults
+    assert tui.build_session(tui.base_profile(saved, answers), answers).profile.deny_read == [
+        "~/.ssh",
+        "~/.kube",
+    ]
+
+
+def test_a_local_or_attached_tab_gives_back_the_one_answer_it_has() -> None:
+    assert tui.answers_from(tui.Local(cwd="/tmp"), {}) == {"open": tui.LOCAL}
+    assert tui.answers_from(tui.Attach(ref="s1"), {}) == {"open": "s1", "shell": False}
+
+
+# --- what the agent needs on the PATH beyond what was ticked ----------------
+
+
+def test_the_confirm_names_what_the_agent_needs_and_who_needs_it(
+    which: dict[str, str],
+) -> None:
+    """It goes on the sandbox PATH because the agent was chosen, so it is not folded in."""
+    lines = dict(tui.confirm_lines({}, Profile(agent="codex", tools=["git"]), load_agents()))
+
+    assert lines["can run"] == "git node (needed by codex), plus /usr/bin:/bin"
+
+
+def test_a_required_tool_the_profile_ticked_is_named_once_as_a_tick(
+    which: dict[str, str],
+) -> None:
+    """It is already on the screen as an answer, so saying it twice would read as two."""
+    lines = dict(tui.confirm_lines({}, Profile(agent="codex", tools=["node"]), load_agents()))
+
+    assert lines["can run"] == "node, plus /usr/bin:/bin"
+
+
+def test_an_agent_that_needs_nothing_says_only_what_was_ticked(which: dict[str, str]) -> None:
+    lines = dict(tui.confirm_lines({}, Profile(agent="claude", tools=["git"]), load_agents()))
+
+    assert lines["can run"] == "git, plus /usr/bin:/bin"
+
+
+def test_the_agent_list_says_what_a_choice_puts_on_the_path() -> None:
+    """Choosing the agent is what consents to it, so the list that chooses says so."""
+    assert "Cannot start without node" in tui.agent_hint("codex", load_agents())
+    assert "Cannot start without" not in tui.agent_hint("claude", load_agents())
+
+
+def test_an_agent_whose_interpreter_is_missing_cannot_be_chosen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex is installed and still cannot run: a script with nothing to run it is not an agent."""
+    monkeypatch.setattr(shutil, "which", {"codex": "/usr/bin/codex"}.get)
+
+    titles = {value: title for title, value, _ in tui.agent_choices(load_agents())}
+
+    why = "codex needs node, which this machine has not got"
+
+    assert tui.agent_refusal("codex", load_agents()) == why
+    assert titles["codex"] == "Codex CLI (codex) (not installed)"
+
+
+def test_the_interpreter_being_there_is_enough_to_choose_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", {"codex": "/usr/bin/codex", "node": "/usr/bin/node"}.get)
+
+    assert tui.agent_refusal("codex", load_agents()) == ""
+
+
+# --- a shell in a session that is already running ---------------------------
+
+
+def test_the_open_field_asks_what_goes_in_an_attached_tab(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Attaching the agent again and opening a shell are the same field, one question apart."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    agent = press(f"{OPEN_FIELD}{DOWN}{DOWN}\r\r{GO}", lambda: tui.choose(tmp_path))
+    shell = press(f"{OPEN_FIELD}{DOWN}{DOWN}\r{DOWN}\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert agent == tui.Attach(ref="s1", shell=False)
+    assert shell == tui.Attach(ref="s1", shell=True)
+
+
+def test_backing_out_of_that_question_goes_to_the_session_list_not_the_form(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Two screens for one field, so escape backs out one level, as the Files field does."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    keys = f"{OPEN_FIELD}{DOWN}{DOWN}\r{ESC}{DOWN}{DOWN}\r{DOWN}\r{GO}"
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan == tui.Attach(ref="s1", shell=True)
+
+
+def test_a_new_sandbox_is_never_a_shell_attach(press, fake_sessions, tmp_path: Path) -> None:
+    """Nothing is running yet, so there is no second question and nothing to answer it with."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"{OPEN_FIELD}\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert isinstance(plan, tui.NewSession)
+
+
+def test_the_form_says_which_of_the_two_an_attach_is() -> None:
+    live = [Session(session_id="s1", name="review")]
+
+    agent = tui.form_rows({"open": "s1"}, Profile(), {}, live)
+    shell = tui.form_rows({"open": "s1", "shell": True}, Profile(), {}, live)
+
+    assert dict((label, value) for label, value, _, _ in agent)["Open"] == (
+        "Attach the agent on review"
+    )
+    assert dict((label, value) for label, value, _, _ in shell)["Open"] == (
+        "Attach a shell in review"
+    )
+
+
+def test_a_shell_attach_goes_back_to_the_form_as_one() -> None:
+    assert tui.answers_from(tui.Attach(ref="s1", shell=True), {}) == {"open": "s1", "shell": True}
+
+
+# --- the confirm describes the backend it is about to use -------------------
+
+
+def msb_answers(**extra: object) -> dict:
+    return {"backend": "msb", **extra}
+
+
+def test_the_confirm_describes_the_guest_a_microvm_actually_gives(
+    which: dict[str, str],
+) -> None:
+    """srt lists host paths. A guest has a filesystem of its own, and saying otherwise lies."""
+    lines = dict(tui.confirm_lines(msb_answers(), Profile(agent="claude"), load_agents()))
+
+    assert lines["can write"].startswith("everything in the guest")
+    assert "/work" in lines["can write"]
+    assert "not in there at all" in lines["can read"]
+    assert "the node:22-slim image" in lines["can run"]
+
+
+def test_the_confirm_still_lists_host_paths_for_a_policy_sandbox(which: dict[str, str]) -> None:
+    profile = Profile(agent="claude", shared_dir="/work/repo", tools=["git"])
+    lines = dict(tui.confirm_lines({}, profile, load_agents()))
+
+    assert lines["can write"] == (
+        "its own workdir, /tmp and /dev/null, plus /work/repo"
+    )
+    assert lines["can read"] == "your disk, except ~/.ssh ~/.aws ~/.gnupg ~/.config/gh"
+    assert lines["can run"] == "git, plus /usr/bin:/bin"
+
+
+def test_a_shared_directory_is_named_as_the_mount_it_becomes(which: dict[str, str]) -> None:
+    profile = Profile(agent="claude", shared_dir="/work/repo")
+    lines = dict(tui.confirm_lines(msb_answers(), profile, load_agents()))
+
+    assert "/work/repo, mounted at /work" in lines["can write"]
+
+
+# --- what stops an agent is not the same on the two backends ----------------
+
+
+def test_an_agent_the_host_lacks_is_still_offered_on_msb_when_it_has_an_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guest installs it, so the host PATH says nothing about whether it can run."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    assert tui.agent_refusal("claude", load_agents(), "msb") == ""
+    assert tui.agent_refusal("claude", load_agents(), "srt").startswith("claude is not installed")
+
+
+def test_an_agent_with_no_image_is_refused_on_msb_however_installed_it_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backend refuses it anyway, so the list says so before the wait rather than after."""
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert tui.agent_refusal("codex", load_agents(), "msb") == (
+        "codex has no image, so a microVM has nothing to run it in"
+    )
+    assert tui.agent_refusal("codex", load_agents(), "srt") == ""
+
+
+def test_the_shell_agent_is_never_refused_on_msb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It has no image of its own because it gets the default one (SPEC 2.2)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    assert tui.agent_refusal("shell", load_agents(), "msb") == ""
+
+
+def test_the_agent_list_asks_about_the_backend_the_answers_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    on_srt = {value: title for title, value, _ in tui.agent_choices(load_agents(), "srt")}
+    on_msb = {value: title for title, value, _ in tui.agent_choices(load_agents(), "msb")}
+
+    assert on_srt["claude"] == "Claude Code (claude) (not installed)"
+    assert on_msb["claude"] == "Claude Code (claude)"
+    assert on_msb["codex"] == "Codex CLI (codex) (not installed)"
+
+
+# --- a registry entry paddock cannot read -----------------------------------
+
+
+def test_an_agent_whose_command_cannot_be_parsed_is_refused_not_raised(
+    config_dir: Path,
+) -> None:
+    """This is drawn for every agent on the list, before anything is chosen, so it may not raise."""
+    (config_dir / "agents").mkdir(parents=True)
+    (config_dir / "agents" / "mangled.json").write_text(
+        json.dumps({"command": "mycoder --flag 'unclosed"})
+    )
+    registry = load_agents()
+
+    why = tui.agent_refusal("mangled", registry)
+
+    assert why.startswith("mangled has a command paddock cannot read")
+    titles = {value: title for title, value, _ in tui.agent_choices(registry)}
+    assert titles["mangled"] == "mangled (mycoder --flag 'unclosed) (not installed)"
+
+
+def test_an_install_that_cannot_be_parsed_warns_about_nothing_rather_than_raising(
+    config_dir: Path,
+) -> None:
+    (config_dir / "agents").mkdir(parents=True)
+    (config_dir / "agents" / "odd.json").write_text(
+        json.dumps({"command": "odd", "image": "alpine", "install": "npm install 'unclosed"})
+    )
+    plan = tui.NewSession(profile=Profile(agent="odd", network_presets=[]), backend="msb")
+
+    assert tui.install_warning(plan, load_agents()) == ""

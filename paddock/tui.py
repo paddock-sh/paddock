@@ -13,13 +13,15 @@ out, which is why backing out at any depth costs nothing.
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import screen, sessions
+from paddock import recent, screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
+    DEFAULT_DENY_READ,
     LOCAL_SERVICES_CONSEQUENCE,
     NETWORK_PRESETS,
     TOOL_CANDIDATES,
@@ -37,6 +39,10 @@ NEW, LOCAL = "new", "local"
 # The sandbox a session runs under (SPEC 3.2). srt is v1 and always here; the microVM backend
 # needs a binary of its own, and the field says so when this machine has not got one.
 SRT, MSB = "srt", "msb"
+
+# The agent that means "the guest's own shell". msb gives it the default image rather than
+# refusing it for having none of its own (SPEC §2.2), so the agent list must know it too.
+SHELL_AGENT = "shell"
 BACKEND_LABELS = {SRT: "srt (instant, a policy sandbox)", MSB: "msb (a microVM, full isolation)"}
 BACKEND_HINTS = {
     SRT: "Instant. A policy sandbox around the process itself: Seatbelt on macOS, bubblewrap "
@@ -117,8 +123,8 @@ FIELD_HINTS = {
     "is writable. Shared: that one directory is the only thing on your machine it can change.",
     "skills": "Unticked skills are not in the sandbox's config dir at all, so the agent "
     "cannot find them.",
-    "advanced": "The session name, saving these answers as a profile, MCP servers, extra "
-    "writable paths, denied reads and the system PATH.",
+    "advanced": "The session name, saving these answers as a profile, keeping the session "
+    "running, MCP servers, extra writable paths, denied reads and the system PATH.",
 }
 
 # One line per box inside an editor. Merging questions into a field cost them their screen,
@@ -130,16 +136,62 @@ EDITOR_HINTS = {
     "also_allow": "Space separated, for example example.com *.internal.dev",
     "name": "Shown in the tab bar as sbx:<name> and used to attach later. Blank generates one.",
     "save_as": "Save these answers so they are one pick next time.",
+    "keep_alive": "A session normally ends with its last tab. Kept running, it waits with its "
+    "files and its policy until you end it yourself.",
+    "mcp": "Space separated. Only the servers named here are in the sandbox's config dir, so "
+    "the agent cannot reach any other one.",
+    "extra_allow_write": "Space separated paths, beyond the workdir, /tmp and /dev/null. Every "
+    "one of them is a path on this machine the sandbox can change.",
+    "deny_read": "Space separated paths the sandbox may not read at all, whatever else it can. "
+    "Emptying this hands over the credential directories it names.",
+    "include_system_path": "Whether /usr/bin:/bin is appended to the sandbox PATH, which is "
+    "what gives it a shell and the ordinary commands.",
+}
+
+# The Advanced rows that are a yes or a no, with what each answer means and what it holds.
+ADVANCED_FLAGS = {
+    "keep_alive": (
+        (False, "No, the session ends with its last tab"),
+        (True, "Yes, it waits until you end it yourself"),
+    ),
+    "include_system_path": (
+        (True, "Yes, /usr/bin:/bin is appended"),
+        (False, "No, only the tools ticked above"),
+    ),
+}
+
+# The Advanced rows that are a list of words in a box.
+ADVANCED_LISTS = {
+    "mcp": "none",
+    "extra_allow_write": "nothing beyond the workdir, /tmp and /dev/null",
+    "deny_read": "nothing, so the sandbox can read whatever you can",
 }
 
 # The heading of the last screen, which is a question and not an announcement.
 CONFIRM_TITLE = "Launch this sandbox?"
 
+# What an in-guest install downloads from. msb runs the install inside the guest, where the
+# profile's domains are the only way out, so an npm install needs the npm preset (SPEC §2.2).
+INSTALL_TOOLS = ("npm", "npx")
+INSTALL_PRESET = "npm"
+INSTALL_WARNING = "the in-guest install needs npm; add the npm preset or the first start will fail"
+
+# How long an msb launch sits there before its first tab. Measured with the image already
+# pulled: a first pull is on top of it.
+FIRST_START_SECONDS = 40
+
 # The line under a field a local or attached tab greys out.
 NO_SANDBOX = "No sandbox, so there is nothing to permit."
 
-# How many domains the confirm screen names before it falls back to counting them (section 5.7).
-SHOWN_DOMAINS = 9
+# The second question the Open field asks about a live session: what goes in the new tab.
+ATTACH_TITLE = "What goes in the tab?"
+ATTACH_CHOICES = (
+    ("Attach the agent", "The agent again, under the same policy and on the same files."),
+    (
+        "Open a shell inside it",
+        "A plain shell in the same sandbox: the same files, the same policy, no second agent.",
+    ),
+)
 
 # One line per entry on the Open list.
 OPEN_HINTS = {
@@ -177,6 +229,8 @@ class Attach:
     ref: str
     # Blank leaves the session its own workdir, which is what attaching usually means.
     cwd: str = ""
+    # A plain shell inside the sandbox rather than the agent again (SPEC §3.2).
+    shell: bool = False
 
 
 @dataclass
@@ -192,20 +246,27 @@ class NewSession:
     agent_command: str = ""
     # Which sandbox runs it (SPEC 3.2). srt wraps the process; msb boots a microVM.
     backend: str = SRT
+    # Whether the session outlives its last tab (SPEC 3.4).
+    keep_alive: bool = False
+    # The saved profile the answers stand on, which is what the chooser opens on next time.
+    started_from: str = ""
 
 
 Plan = Local | Attach | NewSession
 
 
-def choose(cwd: Path) -> Plan | None:
+def choose(cwd: Path, answers: dict | None = None) -> Plan | None:
     """Ask what to open. None means the popup was closed with nothing done.
 
     Ctrl-c raises KeyboardInterrupt from wherever it was pressed, which `cli.py` turns into
     the exit code 130 that fzf made the convention.
+
+    `answers` starts the form on answers already given, which is how a launch that failed
+    comes back to the form it was made on instead of to a blank one.
     """
     saved, registry = load_profiles(), load_agents()
     live = sessions.list_sessions()
-    answers: dict = {}
+    answers = dict(answers) if answers else opening_answers(saved)
     cursor = 0
     while True:
         base = base_profile(saved, answers)
@@ -215,7 +276,20 @@ def choose(cwd: Path) -> Plan | None:
             return None
         what, cursor = chosen
         if what == screen.LAUNCH:
-            return plan_from(answers, base, cwd)
+            plan = plan_from(answers, base, cwd)
+            if not isinstance(plan, NewSession):
+                return plan  # a local or an attached tab permits nothing, so there is no policy
+            while True:
+                said = screen.confirm(CONFIRM_TITLE, confirm_lines(answers, base, registry))
+                if said != screen.SAVE:
+                    break
+                answers = _edit_save_as(answers)  # the offer section 5.7 puts on this screen
+                plan = plan_from(answers, base, cwd)
+            if said == screen.CANCEL:
+                return None
+            if said == screen.LAUNCH:
+                return plan
+            continue  # back to the form, with every answer where it was
         if what == screen.SAVE:
             # A local or an attached tab permits nothing, so it has nothing to save either.
             if editable(answers, "advanced"):
@@ -224,13 +298,23 @@ def choose(cwd: Path) -> Plan | None:
             answers = _edit(FIELDS[cursor], answers, base, saved, registry, live, cwd)
 
 
+def opening_answers(saved: dict[str, Profile]) -> dict:
+    """What the form opens on: the profile this workspace launched last, if it still exists.
+
+    Reusing the last run's answers is the whole saving of a form over a walk, and a profile
+    that has since been deleted is no answer, so paddock's own defaults stand instead.
+    """
+    remembered = recent.last_profile()
+    return {"profile": remembered} if remembered in saved else {}
+
+
 def plan_from(answers: dict, base: Profile, cwd: Path) -> Plan:
     """The answers as the one thing the popup hands back."""
     opened = str(answers.get("open", NEW))
     if opened == LOCAL:
         return Local(cwd=str(cwd))
     if opened != NEW:  # anything else on the Open list is a session to attach to
-        return Attach(ref=opened)
+        return Attach(ref=opened, shell=bool(answers.get("shell")))
     return build_session(base, answers)
 
 
@@ -272,15 +356,30 @@ def _edit(
         return _edit_files(answers, base, cwd)
     if field == "skills":
         return _edit_skills(answers, base, registry)
-    return _edit_advanced(answers)
+    return _edit_advanced(answers, base)
 
 
 def _edit_open(answers: dict, live: list[sessions.Session]) -> dict:
+    """The Open list, and for a live session the second question of what to put in the tab.
+
+    Two screens for one field, so escape from the second backs out to the list, not to the
+    form, exactly as the Files field's directory box does.
+    """
     choices = open_choices(live)
     rows = [(title, open_hint(value)) for title, value in choices]
     where = _at(choices, str(answers.get("open", NEW)))
-    index = screen.pick(FIELD_TITLES["open"], rows, cursor=where, rule_after=open_rule(live))
-    return answers if index is None else dict(answers, open=choices[index][1])
+    while True:
+        index = screen.pick(FIELD_TITLES["open"], rows, cursor=where, rule_after=open_rule(live))
+        if index is None:
+            return answers
+        opened = choices[index][1]
+        if opened in (NEW, LOCAL):
+            return dict(answers, open=opened, shell=False)
+        was = int(bool(answers.get("shell")))
+        how = screen.pick(ATTACH_TITLE, list(ATTACH_CHOICES), cursor=was)
+        if how is not None:
+            return dict(answers, open=opened, shell=how == 1)
+        where = index  # backed out of the second question, so the list opens where it was
 
 
 def _edit_profile(answers: dict, saved: dict[str, Profile], registry: dict[str, AgentSpec]) -> dict:
@@ -304,10 +403,12 @@ def _edit_backend(answers: dict) -> dict:
 
 
 def _edit_agent(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
-    choices = agent_choices(registry)
-    rows = [(title, agent_hint(value, registry)) for title, value in choices]
-    where = _at(choices, str(answers.get("agent", base.agent)))
-    index = screen.pick(FIELD_TITLES["agent"], rows, cursor=where)
+    choices = agent_choices(registry, str(answers.get("backend", SRT)))
+    rows = [(title, agent_hint(value, registry)) for title, value, _ in choices]
+    refused = {index: why for index, (_, _, why) in enumerate(choices) if why}
+    listed = [(title, value) for title, value, _ in choices]
+    where = _at(listed, str(answers.get("agent", base.agent)))
+    index = screen.pick(FIELD_TITLES["agent"], rows, cursor=where, refused=refused)
     if index is None:
         return answers
     key = choices[index][1]
@@ -373,14 +474,36 @@ def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -
     return dict(answers, skills=[rows[index][1] for index in ticked])
 
 
-def _edit_advanced(answers: dict) -> dict:
-    rows = advanced_choices(answers)
-    index = screen.pick(FIELD_TITLES["advanced"], [(label, hint) for label, hint, _ in rows])
-    if index is None:
-        return answers
-    label, _, step = rows[index]
-    typed = screen.type_in(label, str(answers.get(step, "")), EDITOR_HINTS[step])
-    return dict(answers, **{step: typed})
+def _edit_advanced(answers: dict, base: Profile) -> dict:
+    """The list of rows, and the editor for one of them. Escape backs out one at a time."""
+    cursor = 0
+    while True:
+        rows = advanced_choices(answers, base)
+        shown = [(label, hint) for label, hint, _ in rows]
+        index = screen.pick(FIELD_TITLES["advanced"], shown, cursor=cursor)
+        if index is None:
+            return answers
+        label, _, step = rows[index]
+        cursor = index  # the list comes back where it was left
+        if step in ADVANCED_FLAGS:
+            answers = _edit_flag(answers, base, label, step)
+            continue
+        hint = EDITOR_HINTS[step]
+        if step in ADVANCED_LISTS:
+            typed = screen.type_in(label, " ".join(advanced_list(step, answers, base)), hint)
+            answers = dict(answers, **{step: parse_paths(typed)})
+            continue
+        answers = dict(answers, **{step: screen.type_in(label, str(answers.get(step, "")), hint)})
+
+
+def _edit_flag(answers: dict, base: Profile, label: str, step: str) -> dict:
+    """A yes or a no, as two rows that say what each one means."""
+    rows = ADVANCED_FLAGS[step]
+    standing = advanced_flag(step, answers, base)
+    where = next(place for place, (value, _) in enumerate(rows) if value == standing)
+    choices = [(said, EDITOR_HINTS[step]) for _, said in rows]
+    index = screen.pick(label, choices, cursor=where)
+    return answers if index is None else dict(answers, **{step: rows[index][0]})
 
 
 def _edit_save_as(answers: dict) -> dict:
@@ -498,7 +621,7 @@ def form_rows(
     it every attach would read as a new sandbox, which is the opposite of what it does.
     """
     opened = str(answers.get("open", NEW))
-    values = _field_values(answers, base, registry, live, cwd)
+    values = _field_values(answers, base, registry, live, cwd, bool(answers.get("shell")))
     notes = _field_notes(answers, base)
     rows = []
     for field in FIELDS:
@@ -523,17 +646,67 @@ def confirm_lines(
     if plan.agent_command:  # the key is derived, so it can still be blank here
         running = f"running {plan.agent_command}"
         agent = f"{agent}, {running}" if agent else running
-    return [
+    lines = [
         ("session", plan.name or "generated at launch"),
         ("backend", BACKEND_LABELS.get(plan.backend, plan.backend)),
         ("agent", agent),
         ("profile", _profile_line(answers, base)),
-        ("can write", _writable(profile)),
-        ("can read", _readable(profile)),
+        ("can write", _writable(profile, plan.backend)),
+        ("can read", _readable(profile, plan.backend)),
         ("can reach", _reachable(profile)),
-        ("can run", _runnable(profile)),
+        ("can run", _runnable(profile, registry, plan.backend)),
         ("can see", _visible(profile, registry)),
     ]
+    warning = install_warning(plan, registry)
+    return lines + [("warning", warning)] if warning else lines
+
+
+def install_warning(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
+    """Why this msb launch is about to fail on its install, or nothing when it is not.
+
+    The install runs inside the guest, where the profile's domains are the whole of the
+    network, so an agent installed from npm needs the npm preset. Said before the wait
+    rather than after it, and the profile is never changed to suit: what a sandbox may
+    reach is an answer the user gives (SPEC §6).
+    """
+    if plan.backend != MSB:
+        return ""
+    spec = registry.get(plan.profile.agent)
+    try:
+        words = shlex.split(spec.install) if spec and spec.install else []
+    except ValueError:
+        return ""  # an install nobody can read is one this cannot say anything about
+    if not words or words[0] not in INSTALL_TOOLS:
+        return ""
+    needed = set(NETWORK_PRESETS[INSTALL_PRESET])
+    return "" if needed <= set(plan.profile.allowed_domains()) else INSTALL_WARNING
+
+
+def starting_lines(plan: NewSession, registry: dict[str, AgentSpec]) -> list[str]:
+    """The steps a launch is about to take, for the screen drawn before it blocks on them.
+
+    Only the slow ones earn a line. An msb launch pulls an image and installs the agent in
+    the guest, which is the minute the popup used to sit through with nothing on it.
+    """
+    if plan.backend != MSB:
+        return ["preparing the sandbox"]
+    spec = registry.get(plan.profile.agent, AgentSpec())
+    steps = [f"pulling the {spec.image or 'guest'} image"]
+    if spec.install:
+        steps.append(f"installing {plan.profile.agent} in the guest")
+        steps.append(f"the first start takes about {FIRST_START_SECONDS} seconds")
+    warning = install_warning(plan, registry)
+    return steps + [warning] if warning else steps
+
+
+def starting(plan: NewSession) -> None:
+    """Say what the launch is doing, before the call that blocks until it is done."""
+    screen.progress(f"Starting {plan.name or 'a new sandbox'}", starting_lines(plan, load_agents()))
+
+
+def launch_failed(message: str, log_path: str = "") -> bool:
+    """Show a launch that never opened a pane. True means back to the form, answers and all."""
+    return screen.failed(message, log_path)
 
 
 def _field_values(
@@ -542,6 +715,7 @@ def _field_values(
     registry: dict[str, AgentSpec],
     live: list[sessions.Session],
     cwd: str,
+    shell: bool = False,
 ) -> dict[str, str]:
     """What each field reads as. Every value says the answer, not the question."""
     plan = build_session(base, answers)
@@ -549,7 +723,7 @@ def _field_values(
     opened = str(answers.get("open", NEW))
     tools = " ".join(profile.tools)
     return {
-        "open": _open_value(opened, live),
+        "open": _open_value(opened, live, shell),
         "profile": profile_label(str(answers.get("profile", CUSTOM))),
         "backend": _backend_value(answers),
         "agent": agent_title(profile.agent, registry),
@@ -593,7 +767,7 @@ def _backend_value(answers: dict) -> str:
     return BACKEND_LABELS.get(backend, backend)
 
 
-def _open_value(opened: str, live: list[sessions.Session]) -> str:
+def _open_value(opened: str, live: list[sessions.Session], shell: bool = False) -> str:
     """A session that ended between the list and the form says so, rather than reading as new."""
     if opened == NEW:
         return "New sandbox"
@@ -601,7 +775,8 @@ def _open_value(opened: str, live: list[sessions.Session]) -> str:
         return "Local tab"
     for session in live:
         if session.session_id == opened:
-            return f"Attach: {session.name}"
+            what = "a shell in" if shell else "the agent on"
+            return f"Attach {what} {session.name}"
     return f"session is gone: {opened}"
 
 
@@ -618,38 +793,69 @@ def _files_value(opened: str, profile: Profile, cwd: str) -> str:
 
 
 def _advanced_value(plan: NewSession) -> str:
-    """What has been set under Advanced, or what lives there when nothing has."""
-    set_here = [plan.name, f"saved as {plan.save_as}" if plan.save_as else ""]
-    return ", ".join(part for part in set_here if part) or "name, save as profile, MCP"
+    """What has been set under Advanced, or what lives there when nothing has.
+
+    The two that hand out access say so first: a row reading as untouched while it holds new
+    write grants or fewer denied reads would be the one lie this form may not tell.
+    """
+    profile = plan.profile
+    writable = len(profile.extra_allow_write)
+    set_here = [
+        f"{writable} writable path" + ("" if writable == 1 else "s") if writable else "",
+        "denied reads changed" if profile.deny_read != DEFAULT_DENY_READ else "",
+        "no system PATH" if not profile.include_system_path else "",
+        f"{len(profile.mcp)} MCP" if profile.mcp else "",
+        plan.name,
+        f"saved as {plan.save_as}" if plan.save_as else "",
+        "keeps running" if plan.keep_alive else "",
+    ]
+    said = ", ".join(part for part in set_here if part)
+    return said or "name, save as profile, keep running, MCP"
 
 
 def _profile_line(answers: dict, base: Profile) -> str:
     title = form_title(answers, base)
-    return title if title.endswith("+ changes") else f"{title}, unchanged"
+    if not title.endswith("+ changes"):
+        return f"{title}, unchanged"
+    if answers.get("save_as"):
+        return f"{title}, saving as {answers['save_as']}"
+    return f"{title}. Press s to save these answers"
 
 
-def _writable(profile: Profile) -> str:
+def _writable(profile: Profile, backend: str = SRT) -> str:
+    """What the sandbox may change. A microVM and a policy sandbox mean different things.
+
+    srt wraps a process on this machine, so the answer is a list of host paths. msb boots a
+    guest with a filesystem of its own, so the answer is that guest, and the only host path
+    in the sentence is the one directory mounted into it (SPEC §2.2).
+    """
+    if backend == MSB:
+        shared = profile.shared_dir or "an isolated scratch directory"
+        return f"everything in the guest, which goes when it does, and {shared}, mounted at /work"
     paths = ([profile.shared_dir] if profile.shared_dir else []) + profile.extra_allow_write
     if paths:
         return f"its own workdir, /tmp and /dev/null, plus {', '.join(paths)}"
     return "its own workdir, /tmp and /dev/null. No path of yours."
 
 
-def _readable(profile: Profile) -> str:
+def _readable(profile: Profile, backend: str = SRT) -> str:
+    """What the sandbox may read. On msb your disk is absent rather than denied (SPEC §4.1)."""
+    if backend == MSB:
+        return (
+            "the guest's own filesystem. Your disk is not in there at all, "
+            "so none of it has to be denied"
+        )
     if not profile.deny_read:
         return "your disk, and nothing is denied"
     return f"your disk, except {' '.join(profile.deny_read)}"
 
 
 def _reachable(profile: Profile) -> str:
-    """The count, then as many domains as the line holds. The count is what cannot be cut."""
+    """The count and every domain it names. The screen elides only when the popup makes it."""
     domains = profile.allowed_domains()
     if not domains:
         return "nothing, this sandbox is offline"
-    shown = domains[:SHOWN_DOMAINS]
-    if len(domains) > SHOWN_DOMAINS:
-        shown = shown + [f"+{len(domains) - SHOWN_DOMAINS}"]
-    line = f"{_counted(domains)}: {', '.join(shown)}"
+    line = f"{_counted(domains)}: {', '.join(domains)}"
     if not profile.opens_local_services():
         return line
     # Two names on the list understate the grant: the OS rule behind them takes no port,
@@ -657,9 +863,37 @@ def _reachable(profile: Profile) -> str:
     return f"{line}. Plus {LOCAL_SERVICES_CONSEQUENCE}"
 
 
-def _runnable(profile: Profile) -> str:
-    tools = " ".join(profile.tools) or "nothing by name"
+def _runnable(profile: Profile, registry: dict[str, AgentSpec], backend: str = SRT) -> str:
+    """What the sandbox PATH holds: the ticked tools, and what the agent cannot start without.
+
+    A required tool is not a ticked one. It is on the PATH because the agent was chosen, so
+    it is named with the agent that asked for it rather than folded in among the ticks.
+
+    An msb session has no shim dir at all: the guest holds what its image holds, so the
+    ticked tools decide nothing there and saying they do would be a lie (SPEC §4.1).
+    """
+    if backend == MSB:
+        spec = registry.get(profile.agent, AgentSpec())
+        image = spec.image or "the guest"
+        return f"whatever the {image} image ships, plus {profile.agent} itself"
+    named = profile.tools + [
+        f"{tool} (needed by {profile.agent})" for tool in required_tools(profile, registry)
+    ]
+    tools = " ".join(named) or "nothing by name"
     return f"{tools}, plus /usr/bin:/bin" if profile.include_system_path else tools
+
+
+def required_tools(profile: Profile, registry: dict[str, AgentSpec]) -> list[str]:
+    """What the chosen agent needs on the sandbox PATH beyond what the profile ticked."""
+    spec = registry.get(profile.agent)
+    needed = spec.required_tools if spec else []
+    return [tool for tool in needed if tool not in profile.tools]
+
+
+def required_note(plan: NewSession) -> str:
+    """The same tools as a line for `--dry-run`, so no CLI launch adds one silently."""
+    extra = required_tools(plan.profile, load_agents())
+    return f"plus {', '.join(extra)}, needed by {plan.profile.agent}" if extra else ""
 
 
 def _visible(profile: Profile, registry: dict[str, AgentSpec]) -> str:
@@ -693,18 +927,47 @@ def backend_choices() -> list[tuple[str, str, str]]:
     ]
 
 
-def advanced_choices(answers: dict) -> list[tuple[str, str, str]]:
+ADVANCED_ROWS = (
+    ("Name", "name"),
+    ("Save as profile", "save_as"),
+    ("Keep running", "keep_alive"),
+    ("MCP servers", "mcp"),
+    ("Also writable", "extra_allow_write"),
+    ("Never readable", "deny_read"),
+    ("System PATH", "include_system_path"),
+)
+
+
+def advanced_choices(answers: dict, base: Profile) -> list[tuple[str, str, str]]:
     """What Advanced holds: a label, what it says now, and the answer it edits.
 
-    Section 5.8 has five more rows. They are what nobody has asked about yet, and they come
-    with the screen of their own.
+    Everything here is either something that should never be asked on the way to a sandbox, or
+    something a profile carries that the form has no room to show.
     """
-    name = str(answers.get("name", "")) or "generated at launch"
-    save_as = str(answers.get("save_as", "")) or "not saved"
     return [
-        ("Name", f"{name}. {EDITOR_HINTS['name']}", "name"),
-        ("Save as profile", f"{save_as}. {EDITOR_HINTS['save_as']}", "save_as"),
+        (label, f"{advanced_value(step, answers, base)}. {EDITOR_HINTS[step]}", step)
+        for label, step in ADVANCED_ROWS
     ]
+
+
+def advanced_value(step: str, answers: dict, base: Profile) -> str:
+    """What one Advanced row says as it stands."""
+    if step in ADVANCED_FLAGS:
+        standing = advanced_flag(step, answers, base)
+        return next(label for value, label in ADVANCED_FLAGS[step] if value == standing)
+    if step in ADVANCED_LISTS:
+        return " ".join(advanced_list(step, answers, base)) or ADVANCED_LISTS[step]
+    return str(answers.get(step, "")) or ("generated at launch" if step == "name" else "not saved")
+
+
+def advanced_flag(step: str, answers: dict, base: Profile) -> bool:
+    """A yes or a no: the answer if there is one, else the profile's, else no."""
+    return bool(answers.get(step, getattr(base, step, False)))
+
+
+def advanced_list(step: str, answers: dict, base: Profile) -> list[str]:
+    """A list of words: the answer if there is one, else the profile's."""
+    return list(answers.get(step, getattr(base, step, [])))
 
 
 def open_rule(live: list[sessions.Session]) -> int:
@@ -718,10 +981,13 @@ def open_hint(value: str) -> str:
 
 
 def session_label(session: sessions.Session) -> str:
-    """A session by what it is (agent, permissions, size), not by its name alone (SPEC §3.1)."""
+    """A session by what it is (backend, agent, permissions, size), not by its name (SPEC §3.1).
+
+    The backend is there because attaching means a different thing on each one (SPEC §3.2).
+    """
     panes = len(session.pane_ids)
     return (
-        f"{session.name}: {session.agent} / {session.profile_name}, "
+        f"{session.name} [{session.backend}]: {session.agent} / {session.profile_name}, "
         f"{panes} tab{'' if panes == 1 else 's'}"
     )
 
@@ -762,7 +1028,11 @@ def agent_hint(key: str, registry: dict[str, AgentSpec]) -> str:
     if spec is None:
         return "Type a command. paddock remembers it so a profile can name it later."
     domains = ", ".join(spec.api_domains) or "nothing of its own"
-    return f"Runs {spec.command} in the sandbox. Reaches {domains} whatever you tick."
+    hint = f"Runs {spec.command} in the sandbox. Reaches {domains} whatever you tick."
+    if spec.required_tools:
+        # Choosing the agent is what puts these on the PATH, so the list that chooses says so.
+        hint += f" Cannot start without {', '.join(spec.required_tools)}, which it gets."
+    return hint
 
 
 def key_clash(key: str) -> str:
@@ -776,10 +1046,56 @@ def agent_title(key: str, registry: dict[str, AgentSpec]) -> str:
     return f"{spec.name} ({spec.command})" if spec else key
 
 
-def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str]]:
-    """Registered agents, plus a command typed in by hand."""
-    entries = [(agent_title(key, registry), key) for key in sorted(registry)]
-    return entries + [("Something else...", CUSTOM)]
+def agent_choices(registry: dict[str, AgentSpec], backend: str = SRT) -> list[tuple[str, str, str]]:
+    """Registered agents, plus a command typed in by hand, and why one cannot be chosen.
+
+    An agent this machine has no binary for stays on the list and says so, the way a backend
+    without its binary does: hiding it would leave the user wondering where it went, and
+    choosing it would open a tab that dies on `No such file or directory`.
+    """
+    entries = []
+    for key in sorted(registry):
+        why = agent_refusal(key, registry, backend)
+        title = agent_title(key, registry)
+        entries.append((f"{title} (not installed)" if why else title, key, why))
+    return entries + [("Something else...", CUSTOM, "")]
+
+
+def agent_refusal(key: str, registry: dict[str, AgentSpec], backend: str = SRT) -> str:
+    """Why this agent cannot be chosen on this backend, or nothing when it can.
+
+    What stops an agent is not the same on the two. srt runs the host's own binary, so an
+    agent this machine has not got cannot run, and neither can one whose `required_tools`
+    are missing: `codex` without `node` is a script with nothing to run it. A command
+    written as a path is the user's own answer to where it lives, which is what the shell
+    agent's `$SHELL` is, so it is left alone.
+
+    msb runs whatever its image holds and installs the rest in the guest, so the host PATH
+    says nothing at all there. What stops an agent on msb is having no image to boot, which
+    is what the backend itself refuses on (SPEC §2.2).
+
+    A command paddock cannot parse is treated as one it cannot run, and says so. Nothing
+    here may raise: this is drawn for every agent on the list, before anything is chosen.
+    """
+    spec = registry.get(key)
+    if spec is None or not spec.command:
+        return ""
+    try:
+        words = shlex.split(spec.command)
+    except ValueError as error:
+        return f"{key} has a command paddock cannot read: {error}"
+    if not words:
+        return ""
+    if backend == MSB:
+        if spec.image or key == SHELL_AGENT:
+            return ""
+        return f"{key} has no image, so a microVM has nothing to run it in"
+    if "/" not in words[0] and not shutil.which(words[0]):
+        return f"{words[0]} is not installed, so this machine cannot run it"
+    missing = [tool for tool in spec.required_tools if not shutil.which(tool)]
+    if missing:
+        return f"{key} needs {', '.join(missing)}, which this machine has not got"
+    return ""
 
 
 def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple[str, str, bool]]:
@@ -824,6 +1140,11 @@ def skill_choices(agent: AgentSpec, selected: list[str]) -> list[tuple[str, str,
 def parse_domains(text: str) -> list[str]:
     """Typed-in domains: commas or spaces, blanks dropped, no repeats."""
     return list(dict.fromkeys(text.replace(",", " ").split()))
+
+
+def parse_paths(text: str) -> list[str]:
+    """Typed-in paths: whitespace only, because a comma can be part of a path."""
+    return list(dict.fromkeys(text.split()))
 
 
 def resolve_shared_dir(answer: str, cwd: Path) -> str:
@@ -871,6 +1192,7 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         parse_domains(str(answers.get("domains", " ".join(base.extra_domains)))),
         list(answers.get("skills", carried)),
         _shared_dir(base, answers),
+        advanced=advanced_fields(base, answers),
     )
     return NewSession(
         profile=profile,
@@ -878,7 +1200,54 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         save_as=str(answers.get("save_as", "")),
         agent_command=str(answers.get("command", "")),
         backend=str(answers.get("backend", SRT)),
+        keep_alive=advanced_flag("keep_alive", answers, base),
+        started_from=str(answers.get("profile", CUSTOM)),
     )
+
+
+def answers_from(plan: Plan, saved: dict[str, Profile]) -> dict:
+    """A plan as the answers that made it, so a failed launch comes back to its own form.
+
+    A local or an attached tab permits nothing, so the one answer it has is all it gives
+    back. `started_from` is the profile key the answers stood on, so the form reopens on
+    that profile and not on a guess made from the built profile's name.
+    """
+    if isinstance(plan, Local):
+        return {"open": LOCAL}
+    if isinstance(plan, Attach):
+        return {"open": plan.ref, "shell": plan.shell}
+    profile = plan.profile
+    started_from = plan.started_from or CUSTOM
+    return {
+        "open": NEW,
+        "profile": started_from if started_from in saved else CUSTOM,
+        "backend": plan.backend,
+        "agent": profile.agent,
+        "command": plan.agent_command,
+        "tools": list(profile.tools),
+        "network": list(profile.network_presets),
+        "domains": " ".join(profile.extra_domains),
+        "skills": list(profile.skills),
+        "share": bool(profile.shared_dir),
+        "directory": profile.shared_dir,
+        "name": plan.name,
+        "save_as": plan.save_as,
+        "keep_alive": plan.keep_alive,
+        "mcp": list(profile.mcp),
+        "extra_allow_write": list(profile.extra_allow_write),
+        "deny_read": list(profile.deny_read),
+        "include_system_path": profile.include_system_path,
+    }
+
+
+def advanced_fields(base: Profile, answers: dict) -> dict:
+    """The profile fields Advanced asks about, as they now stand."""
+    return {
+        "mcp": advanced_list("mcp", answers, base),
+        "extra_allow_write": advanced_list("extra_allow_write", answers, base),
+        "deny_read": advanced_list("deny_read", answers, base),
+        "include_system_path": advanced_flag("include_system_path", answers, base),
+    }
 
 
 def _shared_dir(base: Profile, answers: dict) -> str:
@@ -896,6 +1265,7 @@ def build_profile(
     extra_domains: list[str],
     skills: list[str],
     shared_dir: str,
+    advanced: dict | None = None,
 ) -> Profile:
     """The answers as a Profile. Fields the chooser never asks about keep the base's values.
 
@@ -910,6 +1280,7 @@ def build_profile(
         extra_domains=list(extra_domains),
         skills=list(skills),
         shared_dir=shared_dir,
+        **(advanced or {}),
     )
     if built == base or base.name == Profile().name:
         return built

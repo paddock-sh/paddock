@@ -66,8 +66,8 @@ runners, a cost decision), so no test may need Seatbelt, bubblewrap, `srt`,
 contents and command strings instead.
 
 This is cheap because of how the code is arranged: only `herdr_client.py` shells
-out to `herdr`, only the backend shells out to `srt`, and everything else is
-plain functions over a `Profile`.
+out to `herdr`, only a backend shells out to its own runtime (`srt`, `msb`), and
+everything else is plain functions over a `Profile`.
 
 ### Diagrams
 
@@ -139,17 +139,23 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
 - **No framework-building.** No plugin systems, no base classes waiting for
   subclasses. The agent registry is data-driven because users really do need to
   add agents; that is the exception.
-- **v1.1 stays out of v1 code.** microsandbox, portless URLs and shared-runtime
-  sessions are in [docs/SPEC.md](docs/SPEC.md) and the diagrams. They are not
-  stubbed, not `NotImplementedError`-ed, and not allowed for by spare
-  parameters. A spec holds a future design; dead code does not. One carve-out: a
-  **data-schema field** the SPEC already fixes may ship early. The agent
-  registry's `image` ([§2.2](docs/SPEC.md#22-v11-microsandbox-design-record-not-stubbed-in-v1))
-  means user files survive the second backend without a migration. Spare *code*
-  paths stay banned.
+- **Unbuilt design stays out of the code.** Portless URLs, agents inside the
+  microVM guest and workspace bindings are in [docs/SPEC.md](docs/SPEC.md) and
+  the diagrams. They are not stubbed, not `NotImplementedError`-ed, and not
+  allowed for by spare parameters. A spec holds a future design; dead code does
+  not. One carve-out: a **data-schema field** the SPEC already fixes may ship
+  early. The agent registry's
+  `image` ([§2.2](docs/SPEC.md#22-microsandbox-msb-registered-as-msb)) meant user
+  files survived the second backend without a migration, and that backend reads
+  it now. Spare *code* paths stay banned.
 - **Small modules, plain functions.** Prefer a function to a class and a class to
   a hierarchy. Most of this code should take a `Profile` and return a string or a
   dict, which is also what makes it testable without a sandbox.
+- **The layers hold.** `tui.py` and `cli.py` never import a backend, and no
+  backend imports them or `sessions.py`: `sessions` is the one door
+  ([docs/SPEC.md §10](docs/SPEC.md#10-architecture-layers-and-the-one-door-rule)).
+  `tests/test_architecture.py` reads the imports and fails on any edge that
+  breaks it, so this is enforced, not agreed.
 - **Few dependencies.** `prompt_toolkit` is the only runtime dependency, and the
   chooser's screens are written against it directly. Argue for a second one in
   the PR. The standard library covers JSON, paths, subprocess and dataclasses.

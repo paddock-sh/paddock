@@ -25,21 +25,32 @@ User -> Herdr : press prefix+c
 activate Herdr
 Herdr -> CLI : run `paddock` in a popup\nenv: HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID
 activate CLI
-CLI -> TUI : run_chooser(cwd)
+CLI -> TUI : choose(cwd)
 activate TUI
 
 TUI -> Sessions : list live sessions
-TUI -> User : Local / New sandbox session / Attach to existing?
-User --> TUI : New sandbox session
+TUI -> Profiles : load_profiles()
+activate Profiles
+Profiles --> TUI : built-ins + $PADDOCK_CONFIG_DIR/profiles/*.json
+deactivate Profiles
+TUI -> Agents : load_agents()
+TUI -> User : the form: one screen, every field filled in\n(Open, Profile, Backend, Agent, Tools,\nNetwork, Files, Skills, Advanced)
+User --> TUI : L to launch, or a field to open first
+note right
+  One screen, not a wizard. Every field already
+  holds the profile's answer, so the ordinary case
+  is one key press. See chooser_flow.puml.
+end note
 
-alt Local namespace chosen
+alt Open says: Local tab
   TUI -> Sessions : launch_local(cwd)
   Sessions -> Client : create_tab(cwd)
   note right : plain tab, no label, no session, no sandbox. Flow ends here
-else Attach to an existing session chosen
+else Open says: one of the live sessions
   TUI -> Sessions : get_session(name or id)
   TUI -> Sessions : attach(session)
-  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json; the pane runs\nrun_dir/launch.sh, written back here\nwhen the run dir has none
+  Sessions -> Sessions : backend_for(session.backend)\nthe module sessions.BACKENDS maps that name to.\nA name this paddock does not have raises ValueError\nhere, before any pane is opened
+  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json; the pane runs\nrun_dir/launch.sh, written back here when the run\ndir has none or holds one an upgrade has moved on from\n(both backends, through backends/__init__.py)
   Sessions -> Backend : open_pane(run, label="sbx:<session>")
   note right
     msb: exec a shell into the running guest.
@@ -49,28 +60,21 @@ else Attach to an existing session chosen
   end note
 end
 
-TUI -> Profiles : load_profiles()
-activate Profiles
-Profiles --> TUI : built-ins + $PADDOCK_CONFIG_DIR/profiles/*.json
-deactivate Profiles
-TUI -> User : pick a profile (or build a custom one)
-User --> TUI : profile
-
-group Questionnaire (skipped when a saved profile is reused)
-  TUI -> Agents : load_agents()
-  TUI -> User : agent? tools? network? shared dir? skills? MCP servers?
-  User --> TUI : answers
-  opt user names the profile
+group Open says: New sandbox (the rest of this diagram)
+  TUI -> User : the confirm screen: the resolved policy in full
+  User --> TUI : Launch, or Back to the form with every answer kept
+  opt the user saved the answers under a name
     TUI -> Profiles : save_profile(profile)
   end
 end
 
-TUI -> Sessions : launch(profile, name)
+TUI --> CLI : NewSession(profile, name, save as, backend)
 deactivate TUI
+CLI -> Sessions : launch(profile, name, backend)\ncli.py is the only module that acts on a plan
 activate Sessions
-Sessions -> Sessions : create_session(profile, name)\nname unique among live sessions,\nelse profile name + short suffix
+Sessions -> Sessions : create_session(profile, name, backend)\nname unique among live sessions,\nelse profile name + short suffix
 
-Sessions -> Backend : prepare(profile)
+Sessions -> Backend : prepare(profile)\nbackend_for(backend): srt here, microsandbox for msb
 activate Backend
 
 Backend -> Agents : load_agents()[profile.agent]
@@ -79,7 +83,7 @@ Agents --> Backend : AgentSpec (command, api_domains,\nauth_read_paths, config_w
 deactivate Agents
 Backend -> Backend : new_run_dir()\n$PADDOCK_STATE_DIR/runs/<timestamp>-<rand>/
 Backend -> Backend : workdir_for(profile, run_dir)\nshared_dir, else run_dir/work (isolated)
-Backend -> Backend : build_shim_dir(run_dir, tools)\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
+Backend -> Backend : build_shim_dir(run_dir, tools)\nthe ticked tools, the agent's own command, and its\nrequired_tools (node for codex, SPEC section 5);\nsymlink one binary per tool via shutil.which;\ntool names must be bare filenames;\nreturns the ones it could not shim
 Backend -> Synth : build(profile, agent, run_dir)
 activate Synth
 Synth -> Synth : run_dir/config/\nsymlink the key it only reads; copy the config it writes back,\nminus every mcpServers key, at any depth\nno key file on the host? export the login Keychain entry's own\nclaudeAiOauth key, mode 0600 (macOS, deleted when the\nsession is collected)\nsymlink ONLY the ticked skills from <real config>/skills\nwrite .mcp.json with ONLY the ticked MCP servers
@@ -92,7 +96,7 @@ note right of Synth
 end note
 Backend -> Backend : build_settings(profile, agent, workdir, synth)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp, /dev/null,\nand run_dir/config when redirected, else config_write_paths)\nfilesystem.allowRead (what the config dir linked to, since srt\nsees the target, else the agent's own credentials)\nfilesystem.denyRead (~/.ssh, ~/.aws, ..., plus the real config\ndir and what was copied when redirected); denyWrite adds\nevery credential path\nevery configured path expanded here
 Backend -> Backend : pane_command(...)\nfind_srt(): `srt`, else `npx -y @anthropic-ai/sandbox-runtime`\n(composed before any tab exists, so a missing srt\nfails with no empty pane left behind)
-Backend -> Backend : write run_dir/launch.json\n(command, workdir, env: what a later attach replays)\nwrite run_dir/launch.sh, mode 0700\n(the same command as a script: the pane is sent a line,\nand a tty drops one past 1024 bytes)
+Backend -> Backend : write run_dir/launch.json\n(command, workdir, env: what a later attach replays)\nwrite run_dir/launch.sh, mode 0700\n(the same command as a script: the pane is sent a line,\nand a tty drops one past 1024 bytes)\nthe script appends the launch's stderr to run_dir/pane.log\nand holds the pane open when it fails in the first 10 seconds
 Backend --> Sessions : Run
 deactivate Backend
 Sessions -> Sessions : register in <state>/sessions.json\n(written whole, then swapped in)
@@ -141,6 +145,21 @@ note over Backend, Srt
   them in the shell it spawns and that proxy is the sandbox's only
   way out, so `VAR="$VAR"` is left for that shell to expand. No
   value is read from the popup's environment (SPEC section 2.1).
+
+  A launch that fails keeps its pane. launch.sh appends the command's
+  stderr to run_dir/pane.log, and on a non-zero exit in the first 10
+  seconds it runs `stty sane`, prints `paddock: launch failed (exit N),
+  log: <path>`, replays the last 20 lines and waits for a keypress. A
+  non-zero exit later than that is the agent ending, ctrl-c included,
+  so the pane closes as it always did.
+
+  The redirection is a plain `2>>`, never a pipe. A pipe closes when its
+  last writer does, and an agent that backgrounds anything holds stderr
+  for as long as it lives, so the pane would hang on a launch that went
+  perfectly well. stdout is untouched either way: the agent draws its
+  interface there and it has to stay a terminal, which is why stderr is
+  not shown live any more. `paddock logs <session>` prints the file
+  afterwards (SPEC section 9).
 end note
 
 @enduml

@@ -17,7 +17,10 @@ You choose what each sandbox gets:
 - **Files**: writes denied by default, plus one optional shared directory
 
 Enforced by the OS: Seatbelt on macOS, bubblewrap on Linux. Saved profiles make
-it two keystrokes. Per-session VPNs, isolated IPs, and microVMs are on the
+it two keystrokes. A session can run in a microVM instead, with
+`paddock launch <profile> --backend msb`: its own kernel, and only the directory
+you shared. The agent is installed in the guest on the way up, which costs about
+21s for Claude Code. Per-session VPNs and isolated IPs are on the
 [roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
 
 > **Status:** the v1 launcher works end to end. It has had no outside security
@@ -49,8 +52,11 @@ paddock                          claude-default            in ~/dev/paddock
 enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys
 ```
 
-The form is filled in already, so the ordinary case is one key press: `L`. Every
-field is one arrow key or one digit away, and enter opens it. Escape closes what
+The form is filled in already, so the ordinary case is two key presses: `L`, then
+enter on the confirm. The confirm stays even for a repeat launch, because it is
+the whole promise of the tool: the thing that grants the permissions says out
+loud what it is granting. Every field is one arrow key or one digit away, and
+enter opens it. Escape closes what
 it opened without losing what you did there, and every list and checklist draws a
 **← Back** row that does the same thing for anyone who would rather see it than
 know it. Escape on the form itself cancels, because nothing is before it. Ctrl-c
@@ -61,16 +67,35 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Open` | A new sandbox, an ordinary local tab, or a second tab on a session already running |
 | `Profile` | What everything below starts from. Change anything and the session runs as "the profile + changes", never under its name |
 | `Backend` | `srt`, a policy sandbox around the process, or `msb`, a microVM that starts slower and shares less |
-| `Agent` | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or a command you type |
-| `Tools` | The binaries on the sandbox `PATH`. An absolute path still runs anything, so this is convenience, not a boundary |
+| `Agent` | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or a command you type. One this machine has not got says `(not installed)` and cannot be picked |
+| `Tools` | The binaries on the sandbox `PATH`, plus whatever the agent cannot start without, which is named with it. An absolute path still runs anything, so this is convenience, not a boundary |
 | `Network` | The domain allowlist, by group, plus any domain you add. Everything else is refused by the OS |
 | `Files` | An isolated scratch directory, or the one host directory the sandbox may change |
 | `Skills` | Only the ticked ones exist inside the sandbox at all |
-| `Advanced` | The session name, and saving these answers as a profile |
+| `Advanced` | The session name, saving these answers as a profile, keeping the session running after its last tab, MCP servers, extra writable paths, denied reads and the system PATH |
 
-`s` saves the answers as a profile, which makes them one pick next time. It is
-for a sandbox: a local tab and an attached one have no permissions of their own
-to save. Plain new-tab moves to `prefix+shift+c`.
+`Open` lists every live session by its name, backend, agent, profile and
+attached tabs, so a second tab on one of them is a pick and not a screen of its
+own. Picking one asks what goes in the tab: the agent again, or a plain shell
+inside the same sandbox, which is `paddock attach <session> --shell` on the
+command line. A shell tab is labelled `sbx:<name> (shell)` and counts as a tab of
+the session like any other.
+
+Launching a sandbox ends on a confirm: the one screen that shows the policy
+resolved, with the domain groups expanded into the domains they open, and Launch,
+Back to the form and Cancel on it. A local tab has no policy, so it has no
+confirm. A launch that never gets as far as a pane comes back on a screen of its
+own, with the reason, the log path and the way back to the form.
+
+The form opens on the profile that workspace launched last, so the ordinary run
+is the same sandbox as yesterday's, unchanged, in those two presses. `s` saves the
+answers as a profile, which makes them one pick anywhere. Plain new-tab moves to
+`prefix+shift+c`.
+
+The popup herdr opens is smaller than the terminal it is in, so the screens are
+built for a small one: they scroll their rows, they pin what must never scroll
+off, such as the confirm's buttons, and they grow into a bigger popup up to a
+line length that is still comfortable to read.
 
 ## Sessions
 
@@ -89,6 +114,11 @@ Sessions outlive the popup that made them and survive Herdr restarts. With the
 v1 backend, attached tabs share a settings file and a workdir but get **separate
 process trees**: shared files, never a shared runtime. See
 [docs/SPEC.md §3](docs/SPEC.md#3-sandbox-sessions).
+
+When a session's last tab closes it is collected: dropped from the registry, its
+copied credentials deleted, and its microVM destroyed if it had one. Nothing is
+running to watch for that, so it happens at the next `paddock` command rather
+than the instant the tab closes. `paddock gc` forces it.
 
 ## Trust model
 
@@ -123,13 +153,18 @@ The popup is the usual way in. The same jobs work without questions:
 ```sh
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
+paddock attach review --shell   # ... or a plain shell inside its sandbox
 paddock profiles                # list saved profiles
+paddock gc                      # collect sessions whose tabs are all closed,
+                                # and remove any sandbox left running with no session
+paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```
 
 `launch` and `attach` take `--cwd` to say which directory to work in, and
-`--dry-run` prints what would happen instead of doing it. `paddock init` also
-takes `--undo`.
+`--dry-run` prints what would happen instead of doing it. `attach` takes
+`--shell` for a plain shell inside the sandbox instead of the agent. `paddock
+init` also takes `--undo`.
 
 ## Install
 
@@ -166,6 +201,14 @@ longer want them.
 **4. Press `prefix+c` inside herdr.**
 
 To check herdr is happy with the result: `herdr config check`.
+
+## Troubleshooting
+
+`paddock logs` prints where the log is and the last 40 lines of it, and
+`paddock logs <session>` prints what that session's tabs printed: the agent's
+log, the shell tabs' log, or both. A launch that
+fails leaves its pane open with the reason on screen, and one that never got as
+far as a pane says why on a screen of its own, with the way back to the form.
 
 ## Docs
 

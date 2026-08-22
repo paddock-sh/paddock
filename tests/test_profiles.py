@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from paddock.agents import builtin_agents
 from paddock.profiles import (
     DEFAULT_DENY_READ,
     LOCAL_SERVICES,
@@ -48,6 +49,7 @@ def test_defaults_are_not_shared_between_instances() -> None:
 def test_network_presets_cover_the_spec_keys() -> None:
     assert set(NETWORK_PRESETS) == {
         "anthropic",
+        "openai",
         "github",
         "npm",
         "pypi/uv",
@@ -56,6 +58,11 @@ def test_network_presets_cover_the_spec_keys() -> None:
         "homebrew",
         LOCAL_SERVICES,
     }
+
+
+def test_the_openai_preset_opens_what_codex_signs_in_and_talks_to() -> None:
+    """Codex reaches these whatever is ticked. The preset is how any other agent can."""
+    assert NETWORK_PRESETS["openai"] == builtin_agents()["codex"].api_domains
 
 
 def test_the_local_services_preset_names_loopback_and_nothing_else() -> None:
@@ -131,6 +138,11 @@ def test_load_returns_builtins_when_no_user_files_exist() -> None:
     loaded = load_profiles()
     assert set(builtin_profiles()) <= set(loaded)
     assert loaded["claude-default"].agent == "claude"
+
+
+def test_the_claude_profile_allows_npm_so_a_guest_can_install_the_agent() -> None:
+    """On msb the boot script downloads claude, under the same allowlist as everything else."""
+    assert "npm" in builtin_profiles()["claude-default"].network_presets
 
 
 def test_user_file_replaces_a_builtin_wholesale(config_dir: Path) -> None:
