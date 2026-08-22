@@ -987,7 +987,7 @@ def test_the_whole_form_becomes_one_plan(
 
 
 def test_every_list_opens_on_the_answer_it_already_has(
-    press, fake_sessions, config_dir: Path, tmp_path: Path
+    press, fake_sessions, which: dict[str, str], config_dir: Path, tmp_path: Path
 ) -> None:
     """Enter on a list you only meant to look at must not quietly change the answer."""
     save_profile(Profile(name="hardened", agent="codex", tools=["git"], network_presets=[]))
