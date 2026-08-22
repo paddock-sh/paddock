@@ -242,7 +242,9 @@ def _script_text(run_dir: Path, command: str) -> str:
             f"paddock_log={pane_log}",
             "",
             "# One earlier generation is kept, so a run nobody closes cannot fill the disk.",
-            "paddock_size=$(wc -c < \"$paddock_log\" 2>/dev/null | tr -dc '0-9')",
+            "# The braces matter: without them the shell, not wc, reports a log that is not",
+            "# there yet, and the first launch of every run would print an error at the user.",
+            "paddock_size=$( { wc -c < \"$paddock_log\"; } 2>/dev/null | tr -dc '0-9' )",
             '[ -n "$paddock_size" ] && [ "$paddock_size" -gt '
             f'{PANE_LOG_MAX_BYTES} ] && mv -f "$paddock_log" "$paddock_log.1"',
             "",

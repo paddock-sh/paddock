@@ -857,7 +857,11 @@ def test_a_small_pane_log_is_left_where_it_is(
 def test_a_clean_launch_closes_the_pane_as_it_always_did(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Holding a pane open after a good run would be a new annoyance, not a fix."""
+    """Holding a pane open after a good run would be a new annoyance, not a fix.
+
+    The first launch of a run has no pane.log yet, so this is also where a script that
+    complains about that shows up: nothing the script does may reach the pane.
+    """
     stub_srt(tmp_path, monkeypatch, "echo done")
     srt.write_launch_script(tmp_path, "srt")
 
@@ -865,8 +869,7 @@ def test_a_clean_launch_closes_the_pane_as_it_always_did(
 
     assert result.returncode == 0
     assert result.stdout == "done\n"  # stdout is untouched: it is where the agent draws
-    assert "launch failed" not in result.stderr
-    assert "press enter" not in result.stderr
+    assert result.stderr == ""
 
 
 def test_a_second_pane_appends_to_the_same_log(
