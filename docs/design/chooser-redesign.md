@@ -128,6 +128,26 @@ One rule is new: changing anything at all marks the answers custom, and the form
 title shows `claude-default + changes` so it is obvious the session will not be
 what the profile says.
 
+### 3.4 Where the model comes from
+
+None of this is invented. Each part is an idiom a terminal user already has, so
+paddock should not teach a new one:
+
+- **lazygit** opens a menu as a panel over the app, closes it with escape, and
+  keeps a key line at the bottom of every context with `?` for the full set.
+  That is the footer and the escape rule.
+- **`gh pr create`** ends on a small action menu, Submit or Continue in browser
+  or Cancel, rather than a yes or no. That is the confirm screen's three
+  buttons.
+- **charm's `huh`** puts a whole form on one screen, moves between fields with
+  the arrows, carries a description under the field you are on, and ends with a
+  confirm. That is the form, and it is the part questionary cannot do.
+- **fzf** narrows a list as you type instead of growing a second screen, which
+  is why the long lists here take `/`.
+- **Claude Code's own permission prompt** puts the consequence on the same line
+  as the option instead of in a paragraph above it. That is the rewriting rule
+  in section 4.1.
+
 ## 4. Words and keys
 
 ### 4.1 Every label rewritten
