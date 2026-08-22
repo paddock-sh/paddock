@@ -52,20 +52,24 @@ class Readable(PlainTextOutput):
         return self.size
 
 
-def drive(keys: str, show: Callable[[], object], rows: int = 24) -> object:
+def drive(
+    keys: str, show: Callable[[], object], rows: int = 24, columns: int = screen.WIDTH
+) -> object:
     """Run one screen with the keys already typed."""
     with create_pipe_input() as pipe:
         pipe.send_text(keys)
-        with create_app_session(input=pipe, output=Sized(rows)):
+        with create_app_session(input=pipe, output=Sized(rows, columns)):
             return show()
 
 
-def drawn(keys: str, show: Callable[[], object], rows: int = 24) -> str:
+def drawn(
+    keys: str, show: Callable[[], object], rows: int = 24, columns: int = screen.WIDTH
+) -> str:
     """Everything one screen put on the terminal while those keys were pressed."""
     sink = io.StringIO()
     with create_pipe_input() as pipe:
         pipe.send_text(keys)
-        with create_app_session(input=pipe, output=Readable(sink, rows)):
+        with create_app_session(input=pipe, output=Readable(sink, rows, columns)):
             show()
     return sink.getvalue()
 
@@ -272,6 +276,55 @@ def test_the_key_list_names_the_two_promises() -> None:
     assert any(line.startswith("  esc") for line in lines)
     assert any(line.startswith("  ctrl-c") for line in lines)
     assert any("jump straight to that field" in line for line in lines)
+
+
+# --- the room the terminal actually has -------------------------------------
+
+
+def test_the_content_width_grows_with_the_terminal_up_to_a_point() -> None:
+    """A line far past a hundred columns is hard to track back to the start of the next one."""
+    assert screen.content_width(80) == 80
+    assert screen.content_width(60) == 60
+    assert screen.content_width(120) == screen.MAX_CONTENT_WIDTH
+    assert screen.content_width(200) == screen.MAX_CONTENT_WIDTH
+
+
+def test_a_wide_terminal_stops_cutting_what_fits_in_it() -> None:
+    """The complaint was words cut short with the room to spare sitting beside them."""
+    value = "git rg fd jq curl node npm npx uv python3 go cargo make cmake gh docker psql"
+    rows = [("Tools", value, "a hint", "(17)")]
+
+    narrow = screen.form_lines("p", "", rows, 0)
+    wide = screen.form_lines("p", "", rows, 0, width=screen.MAX_CONTENT_WIDTH)
+
+    assert "..." in narrow[2]  # at 80 columns there is nowhere to put the rest of it
+    assert value in wide[2]
+    assert get_cwidth(wide[2]) <= screen.MAX_CONTENT_WIDTH
+
+
+def test_a_wide_screen_puts_the_block_in_the_middle_of_it() -> None:
+    """A form in the top left corner of a 200 column popup reads as a bug, and looked like one."""
+    shown = drawn("\r", lambda: screen.form("p", "", FIELDS), columns=200)
+    indents = [len(line) - len(line.lstrip()) for line in shown.splitlines() if "1 Open" in line]
+
+    assert indents
+    assert indents[0] == (200 - screen.MAX_CONTENT_WIDTH) // 2 + 2  # plus the row's own indent
+
+
+def test_a_checklist_uses_the_room_it_has() -> None:
+    cells = [f"[ ] tool{index}" for index in range(18)]
+
+    assert len(screen.columns(cells, 80)) == 9  # two columns, as the mockups are drawn
+    assert len(screen.columns(cells, screen.MAX_CONTENT_WIDTH)) == 6  # three, given the room
+
+
+def test_eighty_by_twenty_four_is_still_what_the_mockups_show() -> None:
+    """The design is drawn to the smallest terminal anyone has, and that has not moved."""
+    lines = screen.form_lines("claude-default", "in ~/dev/paddock", FIELDS, 1)
+
+    assert [line for line in lines if get_cwidth(line) > 80] == []
+    assert "  > 2 Profile" in lines[3]
+    assert lines[-1].strip().startswith("[ Launch ]")
 
 
 # --- the form ---------------------------------------------------------------
@@ -562,6 +615,60 @@ def test_the_box_and_its_line_are_drawn_under_the_list() -> None:
     assert any("space separated" in line for line in lines)
 
 
+# --- the confirm ------------------------------------------------------------
+
+
+POLICY = [
+    ("session", "claude-default-7f2a"),
+    ("can reach", "12 domains: " + ", ".join(f"host{index}.example.com" for index in range(9))),
+    ("can run", "git rg fd, plus /usr/bin:/bin"),
+]
+
+
+def test_the_confirm_puts_the_policy_over_three_buttons() -> None:
+    """The only screen that says the whole grant out loud, and the last one before it."""
+    lines = screen.confirm_lines_drawn("Launch this sandbox?", POLICY, 0)
+
+    assert lines[0] == "Launch this sandbox?"
+    assert any("session" in line and "claude-default-7f2a" in line for line in lines)
+    assert lines[-1].strip() == "> [ Launch ]      [ ← Back to the form ]      [ Cancel ]"
+    assert [line for line in lines if get_cwidth(line) > screen.WIDTH] == []
+
+
+def test_a_policy_line_too_long_for_the_screen_wraps_under_its_own_label() -> None:
+    """Cutting the domains would be the one place this screen may not be brief."""
+    lines = screen.confirm_lines_drawn("Launch this sandbox?", POLICY, 0)
+    reached = [line for line in lines if "host8.example.com" in line]
+
+    assert reached  # the last domain is on screen, on a line of its own if it has to be
+    assert reached[0].startswith(" " * 12)  # under the label, not beside it
+
+
+def test_the_confirm_starts_on_launch_because_that_is_the_common_case() -> None:
+    """Section 3.1's budget: the same sandbox as last time is enter, then enter."""
+    assert drive("\r", lambda: screen.confirm("Launch?", POLICY)) == screen.LAUNCH
+
+
+def test_the_confirm_moves_between_its_buttons() -> None:
+    right = "\x1b[C"
+    left = "\x1b[D"
+
+    assert drive(f"{right}\r", lambda: screen.confirm("Launch?", POLICY)) == screen.BACK
+    assert drive(f"{right}{right}\r", lambda: screen.confirm("Launch?", POLICY)) == screen.CANCEL
+    assert drive(f"{right}{left}\r", lambda: screen.confirm("Launch?", POLICY)) == screen.LAUNCH
+    assert drive("ll\r", lambda: screen.confirm("Launch?", POLICY)) == screen.CANCEL
+
+
+def test_escape_on_the_confirm_is_the_back_button() -> None:
+    """One level back is the form, with every answer on it as it was."""
+    assert drive(ESC * 2, lambda: screen.confirm("Launch?", POLICY)) == screen.BACK
+
+
+def test_ctrl_c_cancels_the_confirm_too() -> None:
+    with pytest.raises(KeyboardInterrupt):
+        drive(CTRL_C, lambda: screen.confirm("Launch?", POLICY))
+
+
 # --- the text box -----------------------------------------------------------
 
 
@@ -607,3 +714,8 @@ def test_the_error_goes_as_soon_as_the_answer_changes() -> None:
     assert state["error"] == ""
     assert screen.type_footer("not a path") == "not a path"
     assert screen.type_footer("") == screen.footer_line(screen.TYPE_KEYS)
+
+
+def test_a_box_opens_with_the_cursor_after_what_is_in_it() -> None:
+    """Typing into a filled box carries on from the value rather than in front of it."""
+    assert drive("-2\r", lambda: screen.type_in("Name", "review")) == "review-2"

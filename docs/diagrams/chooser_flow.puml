@@ -19,7 +19,7 @@ else (choose)
   :sessions.list_sessions();
   partition "the form: one screen, one field per decision" {
     repeat
-      :the fields, filled in from the profile:\n1 Open: a new sandbox, a local tab, or a live session\n2 Profile: fills in everything below\n3 Backend: srt now, or msb when this machine has one\n4 Agent: the command, and the key it is saved under\n5 Tools: ticked binaries on the sandbox PATH\n6 Network: groups, and any extra domains\n7 Files: an isolated scratch dir, or one shared directory\n8 Skills: from the agent's own config dir\n9 Advanced: the name, and saving these answers;
+      :the fields, filled in from the profile\nthis workspace launched last:\n1 Open: a new sandbox, a local tab, or a live session\n2 Profile: fills in everything below\n3 Backend: srt now, or msb when this machine has one\n4 Agent: the command, and the key it is saved under\n5 Tools: ticked binaries on the sandbox PATH\n6 Network: groups, and any extra domains\n7 Files: an isolated scratch dir, or one shared directory\n8 Skills: from the agent's own config dir\n9 Advanced: the name, saving these answers, keeping\nthe session running, MCP, writes, reads, the system PATH;
       :enter opens an editor for that field,\nesc closes it and keeps what it holds;
       :settle(answers, field) after a change:\nanother profile hands over every value it carries,\nanother agent drops its skills and typed command,\nsharing nothing drops the directory;
     repeat while (another field?) is (yes: the arrows or a digit,\nevery answer kept) not (no: Launch)
@@ -70,10 +70,8 @@ note right
   says so, rather than reading as a new sandbox.
 
   tui.py holds the fields, the words and the rules;
-  screen.py draws them (chooser_keys.puml). Still to
-  come from docs/design/chooser-redesign.md: the
-  confirm screen, and the five Advanced rows nobody
-  has been asked about yet.
+  screen.py draws them (chooser_keys.puml), and
+  recent.py is what the form opens on.
 end note
 
 @enduml

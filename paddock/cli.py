@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import init, sessions, tui
+from paddock import init, recent, sessions, tui
 from paddock.profiles import Profile, load_profiles
 
 
@@ -107,7 +107,10 @@ def perform(plan: tui.Plan) -> int:
     if plan.save_as:
         profile, message = tui.save_answers(profile, plan.save_as)
         print(message, file=sys.stderr)
-    _, pane_id = sessions.launch(profile, plan.name or None, backend=plan.backend)
+    session, pane_id = sessions.launch(profile, plan.name or None, backend=plan.backend)
+    if plan.keep_alive:
+        sessions.set_keep_alive(session, True)
+    recent.remember(profile.name)  # the chooser opens on it next time
     print(pane_id)
     return 0
 
@@ -130,6 +133,8 @@ def describe(plan: tui.Plan) -> str:
         parts.append(f"remembering the command {plan.agent_command!r}")
     if plan.save_as:
         parts.append(f"saving the profile as {plan.save_as}")
+    if plan.keep_alive:
+        parts.append("keeping it running after its last tab")
     return ", ".join(parts)
 
 

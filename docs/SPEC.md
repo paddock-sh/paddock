@@ -361,6 +361,11 @@ offering the last session as a zeroth option: every session is one field away.
 **Backend** is which sandbox runs it (§3.2). A backend this machine has no binary
 for stays on the list and says why it cannot be chosen, rather than vanishing.
 
+The screens are drawn to 80 by 24, which is the smallest terminal anyone has, and
+grow to fill a wider popup up to 110 columns, centred, because a line much past
+that is hard to read back. A checklist takes another column when the width holds
+one.
+
 The keys match herdr's navigate mode: arrows with `hjkl` beside them, enter to
 take, escape to back out one level, and a digit to jump to a field. Every list
 and checklist draws the way back as its first row as well, so the key is never
@@ -413,7 +418,7 @@ Sessions are tracked in `<state>/sessions.json`, a list of records:
 | `agent` | Registry key of the agent it runs |
 | `created_at` | ISO 8601 UTC timestamp |
 | `run_dir` | Its directory under `runs/`: settings, shim dir, config dir, workdir |
-| `keep_alive` | Survives its last pane |
+| `keep_alive` | Survives its last pane. Asked for under the chooser's Advanced screen |
 | `pane_ids` | Pane ids currently attached |
 
 An unnamed session is named after its profile plus a short suffix. A name may not
@@ -662,7 +667,8 @@ no v1.1 concern appears in any of them:
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The chooser's fields, words and rules: answers in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
-| `paddock/screen.py` | The screens: the form, a list, a checklist and a box, over prompt_toolkit | Done; the confirm and the rest of Advanced are next |
+| `paddock/screen.py` | The screens: the form, a list, a checklist, a box and the confirm, over prompt_toolkit | Done |
+| `paddock/recent.py` | What the form opens on: the profile each workspace launched last | Done |
 | `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 
@@ -675,9 +681,8 @@ no sandbox present.
 
 ## 8. Open questions
 
-- Should the form open on the profile used last, rather than on paddock's own
-  defaults? The design says yes (§3.1 of the redesign) and nothing remembers the
-  last launch yet.
+- Should the chooser remember more than the profile per workspace, such as the
+  whole set of answers, or the session a workspace attaches to by default (§3.3)?
 - Should `deny_read` be enforced by the backend rather than the profile, so a
   malformed profile cannot widen it?
 - How should a pane show what permissions it actually got? A written manifest in

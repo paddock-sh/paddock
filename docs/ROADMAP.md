@@ -12,6 +12,11 @@ stubbed in the code until it is built.
 - **Workspace-scoped sessions.** One persistent microVM per workspace, with every
   tab exec'ing into the same guest, so tabs in a group share processes and not
   just files.
+- **Patch-gated writes.** An optional alternative to sharing a directory: the
+  sandbox gets a worktree copy to work in, and what comes back out is a git patch
+  to read before it is applied. Nothing of yours is writable while it runs.
+- **Pre-grant secret scan.** Warn before sharing a directory that holds keys or
+  tokens, at the moment the grant is being made rather than after it.
 - **Hard per-binary blocking.** An opt-in strict mode that puts unselected tools
   in `denyRead`, which the kernel enforces, instead of relying on the `PATH` shim
   dir that an absolute path can walk around.
@@ -37,5 +42,9 @@ stubbed in the code until it is built.
 - **Layer-2 permissions for Claude Code.** Generate the `permissions.allow` and
   `permissions.deny` block that goes with `--settings`, so the agent's own
   prompts match the sandbox instead of fighting it.
+- **Releases and update notices.** Publish to PyPI, check for a newer version
+  once a day, and `paddock update` to take it.
+- **Standalone mode.** `paddock run` without herdr, behind a terminal-adapter
+  seam, so the sandboxing is useful before the multiplexer is.
 - **Cleanup.** Prune run directories that no session uses, and the config backups
   `paddock init` leaves behind.

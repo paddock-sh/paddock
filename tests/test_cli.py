@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from paddock import cli, sessions, tui
+from paddock import cli, recent, sessions, tui
 from paddock.backends.srt import SrtNotFound
 from paddock.herdr_client import HerdrError
 from paddock.profiles import Profile, load_profiles
@@ -369,6 +369,33 @@ def test_the_backend_the_chooser_named_is_what_the_session_runs_on(
     assert fake_sessions.calls == [("launch", Profile(), None, "msb")]
 
 
+def test_a_launch_is_what_the_chooser_opens_on_next_time(
+    fake_sessions, chooser, state_dir: Path
+) -> None:
+    chooser(tui.NewSession(profile=Profile(name="hardened")))
+
+    assert cli.main(["choose"]) == 0
+    assert recent.last_profile() == "hardened"
+
+
+def test_a_session_told_to_keep_running_is_written_down_as_keeping_running(
+    fake_sessions, chooser
+) -> None:
+    """SPEC 3.4's one field a caller sets on purpose, asked for under Advanced."""
+    chooser(tui.NewSession(profile=Profile(), keep_alive=True))
+
+    assert cli.main(["choose"]) == 0
+    assert [call[0] for call in fake_sessions.calls] == ["launch", "set_keep_alive"]
+    assert fake_sessions.calls[-1][2] is True
+
+
+def test_a_session_that_ends_with_its_last_tab_is_left_alone(fake_sessions, chooser) -> None:
+    chooser(tui.NewSession(profile=Profile()))
+
+    assert cli.main(["choose"]) == 0
+    assert [call[0] for call in fake_sessions.calls] == ["launch"]
+
+
 # --- wiring paddock into herdr ---------------------------------------------
 
 
@@ -443,6 +470,7 @@ def test_the_fake_sessions_module_matches_the_real_one() -> None:
         "create_session",
         "attach",
         "launch",
+        "set_keep_alive",
         "remove_pane",
         "launch_local",
     ]:

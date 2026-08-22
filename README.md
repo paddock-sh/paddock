@@ -66,11 +66,20 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Network` | The domain allowlist, by group, plus any domain you add. Everything else is refused by the OS |
 | `Files` | An isolated scratch directory, or the one host directory the sandbox may change |
 | `Skills` | Only the ticked ones exist inside the sandbox at all |
-| `Advanced` | The session name, and saving these answers as a profile |
+| `Advanced` | The session name, saving these answers as a profile, keeping the session running after its last tab, MCP servers, extra writable paths, denied reads and the system PATH |
 
-`s` saves the answers as a profile, which makes them one pick next time. It is
-for a sandbox: a local tab and an attached one have no permissions of their own
-to save. Plain new-tab moves to `prefix+shift+c`.
+Launching a sandbox ends on a confirm: the one screen that shows the policy
+resolved, with the domain groups expanded into the domains they open, and Launch,
+Back to the form and Cancel on it. A local tab has no policy, so it has no
+confirm.
+
+The form opens on the profile that workspace launched last, so the ordinary run
+is the same sandbox as yesterday's, unchanged, in one key press. `s` saves the
+answers as a profile, which makes them one pick anywhere. Plain new-tab moves to
+`prefix+shift+c`.
+
+The screens are drawn to fit an 80 by 24 terminal and grow into a wider popup,
+centred, up to a line length that is still comfortable to read.
 
 ## Sessions
 

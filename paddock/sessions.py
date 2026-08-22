@@ -121,6 +121,12 @@ def launch(profile: Profile, name: str | None = None) -> tuple[Session, str]:
     return session, attach(session)
 
 
+def set_keep_alive(session: Session, keep_alive: bool) -> None:
+    """Whether the session survives its last pane (SPEC 3.4), written down where it is read."""
+    session.keep_alive = keep_alive
+    _record(session)
+
+
 def remove_pane(pane_id: str) -> None:
     """Detach a closed pane, and collect the session when it was the last one."""
     with _locked():

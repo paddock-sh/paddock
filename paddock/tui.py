@@ -17,7 +17,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import screen, sessions
+from paddock import recent, screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
     NETWORK_PRESETS,
@@ -116,8 +116,8 @@ FIELD_HINTS = {
     "is writable. Shared: that one directory is the only thing on your machine it can change.",
     "skills": "Unticked skills are not in the sandbox's config dir at all, so the agent "
     "cannot find them.",
-    "advanced": "The session name, saving these answers as a profile, MCP servers, extra "
-    "writable paths, denied reads and the system PATH.",
+    "advanced": "The session name, saving these answers as a profile, keeping the session "
+    "running, MCP servers, extra writable paths, denied reads and the system PATH.",
 }
 
 # One line per box inside an editor. Merging questions into a field cost them their screen,
@@ -129,6 +129,35 @@ EDITOR_HINTS = {
     "also_allow": "Space separated, for example example.com *.internal.dev",
     "name": "Shown in the tab bar as sbx:<name> and used to attach later. Blank generates one.",
     "save_as": "Save these answers so they are one pick next time.",
+    "keep_alive": "A session normally ends with its last tab. Kept running, it waits with its "
+    "files and its policy until you end it yourself.",
+    "mcp": "Space separated. Only the servers named here are in the sandbox's config dir, so "
+    "the agent cannot reach any other one.",
+    "extra_allow_write": "Space separated paths, beyond the workdir, /tmp and /dev/null. Every "
+    "one of them is a path on this machine the sandbox can change.",
+    "deny_read": "Space separated paths the sandbox may not read at all, whatever else it can. "
+    "Emptying this hands over the credential directories it names.",
+    "include_system_path": "Whether /usr/bin:/bin is appended to the sandbox PATH, which is "
+    "what gives it a shell and the ordinary commands.",
+}
+
+# The Advanced rows that are a yes or a no, with what each answer means and what it holds.
+ADVANCED_FLAGS = {
+    "keep_alive": (
+        (False, "No, the session ends with its last tab"),
+        (True, "Yes, it waits until you end it yourself"),
+    ),
+    "include_system_path": (
+        (True, "Yes, /usr/bin:/bin is appended"),
+        (False, "No, only the tools ticked above"),
+    ),
+}
+
+# The Advanced rows that are a list of words in a box.
+ADVANCED_LISTS = {
+    "mcp": "none",
+    "extra_allow_write": "nothing beyond the workdir, /tmp and /dev/null",
+    "deny_read": "nothing, so the sandbox can read whatever you can",
 }
 
 # The heading of the last screen, which is a question and not an announcement.
@@ -191,6 +220,8 @@ class NewSession:
     agent_command: str = ""
     # Which sandbox runs it (SPEC 3.2). srt wraps the process; msb boots a microVM.
     backend: str = SRT
+    # Whether the session outlives its last tab (SPEC 3.4).
+    keep_alive: bool = False
 
 
 Plan = Local | Attach | NewSession
@@ -204,7 +235,7 @@ def choose(cwd: Path) -> Plan | None:
     """
     saved, registry = load_profiles(), load_agents()
     live = sessions.list_sessions()
-    answers: dict = {}
+    answers = opening_answers(saved)
     cursor = 0
     while True:
         base = base_profile(saved, answers)
@@ -214,13 +245,31 @@ def choose(cwd: Path) -> Plan | None:
             return None
         what, cursor = chosen
         if what == screen.LAUNCH:
-            return plan_from(answers, base, cwd)
+            plan = plan_from(answers, base, cwd)
+            if not isinstance(plan, NewSession):
+                return plan  # a local or an attached tab permits nothing, so there is no policy
+            said = screen.confirm(CONFIRM_TITLE, confirm_lines(answers, base, registry))
+            if said == screen.CANCEL:
+                return None
+            if said == screen.LAUNCH:
+                return plan
+            continue  # back to the form, with every answer where it was
         if what == screen.SAVE:
             # A local or an attached tab permits nothing, so it has nothing to save either.
             if editable(answers, "advanced"):
                 answers = _edit_save_as(answers)
         elif editable(answers, FIELDS[cursor]):
             answers = _edit(FIELDS[cursor], answers, base, saved, registry, live, cwd)
+
+
+def opening_answers(saved: dict[str, Profile]) -> dict:
+    """What the form opens on: the profile this workspace launched last, if it still exists.
+
+    Reusing the last run's answers is the whole saving of a form over a walk, and a profile
+    that has since been deleted is no answer, so paddock's own defaults stand instead.
+    """
+    remembered = recent.last_profile()
+    return {"profile": remembered} if remembered in saved else {}
 
 
 def plan_from(answers: dict, base: Profile, cwd: Path) -> Plan:
@@ -271,7 +320,7 @@ def _edit(
         return _edit_files(answers, base, cwd)
     if field == "skills":
         return _edit_skills(answers, base, registry)
-    return _edit_advanced(answers)
+    return _edit_advanced(answers, base)
 
 
 def _edit_open(answers: dict, live: list[sessions.Session]) -> dict:
@@ -372,14 +421,29 @@ def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -
     return dict(answers, skills=[rows[index][1] for index in ticked])
 
 
-def _edit_advanced(answers: dict) -> dict:
-    rows = advanced_choices(answers)
+def _edit_advanced(answers: dict, base: Profile) -> dict:
+    rows = advanced_choices(answers, base)
     index = screen.pick(FIELD_TITLES["advanced"], [(label, hint) for label, hint, _ in rows])
     if index is None:
         return answers
     label, _, step = rows[index]
-    typed = screen.type_in(label, str(answers.get(step, "")), EDITOR_HINTS[step])
-    return dict(answers, **{step: typed})
+    if step in ADVANCED_FLAGS:
+        return _edit_flag(answers, base, label, step)
+    hint = EDITOR_HINTS[step]
+    if step in ADVANCED_LISTS:
+        typed = screen.type_in(label, " ".join(advanced_list(step, answers, base)), hint)
+        return dict(answers, **{step: parse_domains(typed)})
+    return dict(answers, **{step: screen.type_in(label, str(answers.get(step, "")), hint)})
+
+
+def _edit_flag(answers: dict, base: Profile, label: str, step: str) -> dict:
+    """A yes or a no, as two rows that say what each one means."""
+    rows = ADVANCED_FLAGS[step]
+    standing = advanced_flag(step, answers, base)
+    where = next(place for place, (value, _) in enumerate(rows) if value == standing)
+    choices = [(said, EDITOR_HINTS[step]) for _, said in rows]
+    index = screen.pick(label, choices, cursor=where)
+    return answers if index is None else dict(answers, **{step: rows[index][0]})
 
 
 def _edit_save_as(answers: dict) -> dict:
@@ -618,8 +682,15 @@ def _files_value(opened: str, profile: Profile, cwd: str) -> str:
 
 def _advanced_value(plan: NewSession) -> str:
     """What has been set under Advanced, or what lives there when nothing has."""
-    set_here = [plan.name, f"saved as {plan.save_as}" if plan.save_as else ""]
-    return ", ".join(part for part in set_here if part) or "name, save as profile, MCP"
+    set_here = [
+        plan.name,
+        f"saved as {plan.save_as}" if plan.save_as else "",
+        "keeps running" if plan.keep_alive else "",
+        f"{len(plan.profile.mcp)} MCP" if plan.profile.mcp else "",
+        "no system PATH" if not plan.profile.include_system_path else "",
+    ]
+    said = ", ".join(part for part in set_here if part)
+    return said or "name, save as profile, keep running, MCP"
 
 
 def _profile_line(answers: dict, base: Profile) -> str:
@@ -687,18 +758,47 @@ def backend_choices() -> list[tuple[str, str, str]]:
     ]
 
 
-def advanced_choices(answers: dict) -> list[tuple[str, str, str]]:
+ADVANCED_ROWS = (
+    ("Name", "name"),
+    ("Save as profile", "save_as"),
+    ("Keep running", "keep_alive"),
+    ("MCP servers", "mcp"),
+    ("Also writable", "extra_allow_write"),
+    ("Never readable", "deny_read"),
+    ("System PATH", "include_system_path"),
+)
+
+
+def advanced_choices(answers: dict, base: Profile) -> list[tuple[str, str, str]]:
     """What Advanced holds: a label, what it says now, and the answer it edits.
 
-    Section 5.8 has five more rows. They are what nobody has asked about yet, and they come
-    with the screen of their own.
+    Everything here is either something that should never be asked on the way to a sandbox, or
+    something a profile carries that the form has no room to show.
     """
-    name = str(answers.get("name", "")) or "generated at launch"
-    save_as = str(answers.get("save_as", "")) or "not saved"
     return [
-        ("Name", f"{name}. {EDITOR_HINTS['name']}", "name"),
-        ("Save as profile", f"{save_as}. {EDITOR_HINTS['save_as']}", "save_as"),
+        (label, f"{advanced_value(step, answers, base)}. {EDITOR_HINTS[step]}", step)
+        for label, step in ADVANCED_ROWS
     ]
+
+
+def advanced_value(step: str, answers: dict, base: Profile) -> str:
+    """What one Advanced row says as it stands."""
+    if step in ADVANCED_FLAGS:
+        standing = advanced_flag(step, answers, base)
+        return next(label for value, label in ADVANCED_FLAGS[step] if value == standing)
+    if step in ADVANCED_LISTS:
+        return " ".join(advanced_list(step, answers, base)) or ADVANCED_LISTS[step]
+    return str(answers.get(step, "")) or ("generated at launch" if step == "name" else "not saved")
+
+
+def advanced_flag(step: str, answers: dict, base: Profile) -> bool:
+    """A yes or a no: the answer if there is one, else the profile's, else no."""
+    return bool(answers.get(step, getattr(base, step, False)))
+
+
+def advanced_list(step: str, answers: dict, base: Profile) -> list[str]:
+    """A list of words: the answer if there is one, else the profile's."""
+    return list(answers.get(step, getattr(base, step, [])))
 
 
 def open_rule(live: list[sessions.Session]) -> int:
@@ -865,6 +965,7 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         parse_domains(str(answers.get("domains", " ".join(base.extra_domains)))),
         list(answers.get("skills", carried)),
         _shared_dir(base, answers),
+        advanced=advanced_fields(base, answers),
     )
     return NewSession(
         profile=profile,
@@ -872,7 +973,18 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         save_as=str(answers.get("save_as", "")),
         agent_command=str(answers.get("command", "")),
         backend=str(answers.get("backend", SRT)),
+        keep_alive=advanced_flag("keep_alive", answers, base),
     )
+
+
+def advanced_fields(base: Profile, answers: dict) -> dict:
+    """The profile fields Advanced asks about, as they now stand."""
+    return {
+        "mcp": advanced_list("mcp", answers, base),
+        "extra_allow_write": advanced_list("extra_allow_write", answers, base),
+        "deny_read": advanced_list("deny_read", answers, base),
+        "include_system_path": advanced_flag("include_system_path", answers, base),
+    }
 
 
 def _shared_dir(base: Profile, answers: dict) -> str:
@@ -890,6 +1002,7 @@ def build_profile(
     extra_domains: list[str],
     skills: list[str],
     shared_dir: str,
+    advanced: dict | None = None,
 ) -> Profile:
     """The answers as a Profile. Fields the chooser never asks about keep the base's values.
 
@@ -904,6 +1017,7 @@ def build_profile(
         extra_domains=list(extra_domains),
         skills=list(skills),
         shared_dir=shared_dir,
+        **(advanced or {}),
     )
     if built == base or base.name == Profile().name:
         return built
