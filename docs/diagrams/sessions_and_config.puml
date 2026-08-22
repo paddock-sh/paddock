@@ -48,6 +48,7 @@ database "$PADDOCK_STATE_DIR\n(default $HOME/.local/state/paddock)" as StateDir 
   folder "runs/<timestamp>-<rand>/" as RunDir {
     file "srt-settings.json" as Settings
     file "launch.json\ncommand + workdir + env" as Launch
+    file "launch.sh, mode 0700\nthe command as a script, what every pane execs" as LaunchScript
     folder "bin/: one symlink per ticked tool" as Shim
     folder "work/: scratch workdir" as Work
     folder "config/" as Config {

@@ -39,7 +39,7 @@ alt Local namespace chosen
 else Attach to an existing session chosen
   TUI -> Sessions : get_session(name or id)
   TUI -> Sessions : attach(session)
-  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json
+  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json; the pane runs\nthe run_dir/launch.sh prepare() wrote
   Sessions -> Backend : open_pane(run, label="sbx:<session>")
   note right
     msb: exec a shell into the running guest.
@@ -92,7 +92,7 @@ note right of Synth
 end note
 Backend -> Backend : build_settings(profile, agent, workdir, synth)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp, /dev/null,\nand run_dir/config when redirected, else config_write_paths)\nfilesystem.allowRead (what the config dir linked to, since srt\nsees the target, else the agent's own credentials)\nfilesystem.denyRead (~/.ssh, ~/.aws, ..., plus the real config\ndir and what was copied when redirected); denyWrite adds\nevery credential path\nevery configured path expanded here
 Backend -> Backend : pane_command(...)\nfind_srt(): `srt`, else `npx -y @anthropic-ai/sandbox-runtime`\n(composed before any tab exists, so a missing srt\nfails with no empty pane left behind)
-Backend -> Backend : write run_dir/launch.json\n(command, workdir, env: what a later attach replays)
+Backend -> Backend : write run_dir/launch.json\n(command, workdir, env: what a later attach replays)\nwrite run_dir/launch.sh, mode 0700\n(the same command as a script: the pane is sent a line,\nand a tty drops one past 1024 bytes)
 Backend --> Sessions : Run
 deactivate Backend
 Sessions -> Sessions : register in <state>/sessions.json\n(written whole, then swapped in)
@@ -104,8 +104,8 @@ activate Client
 Client -> Herdr : herdr tab create [~--workspace <id>]\n~--cwd <workdir> ~--label sbx:<session>\n~--env CLAUDE_CONFIG_DIR=<run_dir>/config ~--focus
 Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:p2"}}}
 Client --> Backend : "wA:p2"
-Backend -> Client : run_in_pane("wA:p2", command)
-Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`http_proxy="$http_proxy" ... GIT_SSH_COMMAND="$GIT_SSH_COMMAND"`\n`PATH=<shim>:/usr/bin:/bin <agent> --mcp-config <file> --strict-mcp-config'`
+Backend -> Client : run_in_pane("wA:p2", launch_line(run_dir))
+Client -> Herdr : herdr pane run wA:p2\n`exec /bin/sh <run_dir>/launch.sh`\nthe script holds the whole command:\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`http_proxy="$http_proxy" ... GIT_SSH_COMMAND="$GIT_SSH_COMMAND"`\n`PATH=<shim>:/usr/bin:/bin <agent> --mcp-config <file> --strict-mcp-config'`
 deactivate Client
 Backend --> Sessions : pane_id
 deactivate Backend
@@ -127,6 +127,11 @@ note over Backend, Srt
   the pane exists with the right cwd and label before any
   sandboxed process starts, so a launch failure leaves a
   visible, usable pane rather than a vanished window.
+
+  The pane is sent one short line, not the command. herdr types
+  what it is given into the pane's shell, and a tty drops anything
+  past 1024 bytes, which the composed command passes. `exec` also
+  means closing the agent closes the pane.
 
   CLAUDE_CONFIG_DIR is passed twice on purpose. `tab create --env`
   sets it for the pane; `env -i` wipes the pane's environment for
