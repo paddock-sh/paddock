@@ -128,12 +128,12 @@ def build_settings(
         # is denied both ways — so the skills and MCP servers nobody ticked are not there
         # to read (SPEC §4.3).
         allow_write.append(synth.dir)
-        deny_read += config_dirs
-        # Its credentials and the skills it did tick are symlinks back into that denied
-        # directory, and srt checks the path an access resolves to. Allowing them by name
-        # re-opens exactly those, and no more. The credentials are read-only.
+        # What that dir copied, the sandbox has its own of, so the host's is hidden too.
+        deny_read += config_dirs + synth.copied
         deny_write += config_dirs + auth
-        allow_read += [path for source in synth.skill_sources for path in _both_names(source)]
+        # What it symlinked is reached through the denied directory, and srt checks the
+        # path an access resolves to. Allowing those by name re-opens exactly them.
+        allow_read = [path for source in synth.linked for path in _both_names(source)]
     allow_write += [_expand(path) for path in profile.extra_allow_write]
     return {
         "network": {

@@ -41,23 +41,40 @@ def mcp_config(synth: synth_config.SynthConfig) -> dict:
 # --- credentials -----------------------------------------------------------
 
 
-def test_the_agents_credentials_are_symlinked_in(home: Path, run_dir: Path) -> None:
+def test_the_agents_key_is_a_symlink(home: Path, run_dir: Path) -> None:
     """The agent needs its own key to work at all; nothing else follows it in."""
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
     assert synth.dir == run_dir / "config"
     assert (synth.dir / ".credentials.json").readlink() == home / ".claude/.credentials.json"
-    assert (synth.dir / ".claude.json").readlink() == home / ".claude.json"
 
 
-def test_a_credential_file_the_host_does_not_have_is_left_out(home: Path, run_dir: Path) -> None:
-    """A dangling symlink is worse than a missing one: the agent reads an error, not a file."""
-    (home / ".claude.json").unlink()
+def test_the_config_the_agent_writes_back_to_is_a_copy(home: Path, run_dir: Path) -> None:
+    """The agent keeps working because it can write; the host's file is never touched."""
+    original = (home / ".claude.json").read_text()
 
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
-    assert not (synth.dir / ".claude.json").exists()
-    assert not (synth.dir / ".claude.json").is_symlink()
+    copy = synth.dir / ".claude.json"
+    assert not copy.is_symlink()
+    assert json.loads(copy.read_text()) == json.loads(original)
+
+    copy.write_text('{"changed": true}')
+    assert (home / ".claude.json").read_text() == original
+
+
+@pytest.mark.parametrize("name", [".claude.json", ".claude/.credentials.json"])
+def test_a_credential_file_the_host_does_not_have_is_left_out(
+    name: str, home: Path, run_dir: Path
+) -> None:
+    """A dangling symlink is worse than a missing one: the agent reads an error, not a file."""
+    (home / name).unlink()
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    left_out = synth.dir / Path(name).name
+    assert not left_out.exists()
+    assert not left_out.is_symlink()
 
 
 # --- skills ----------------------------------------------------------------
@@ -72,11 +89,17 @@ def test_only_the_ticked_skills_are_there(home: Path, run_dir: Path) -> None:
     assert (skills / "writing").readlink() == home / ".claude/skills/writing"
 
 
-def test_the_sources_it_linked_come_back_for_the_settings(home: Path, run_dir: Path) -> None:
-    """srt checks the path a symlink resolves to, so the launch has to allow reading it."""
+def test_what_it_linked_and_what_it_copied_come_back_for_the_settings(
+    home: Path, run_dir: Path
+) -> None:
+    """srt checks the path an access resolves to, so the settings need both lists."""
     synth = synth_config.build(Profile(skills=["writing", "nope"]), CLAUDE, run_dir)
 
-    assert synth.skill_sources == [home / ".claude/skills/writing"]
+    assert synth.linked == [
+        home / ".claude/.credentials.json",
+        home / ".claude/skills/writing",
+    ]
+    assert synth.copied == [home / ".claude.json"]
 
 
 def test_no_skills_means_an_empty_skills_dir(home: Path, run_dir: Path) -> None:

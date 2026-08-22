@@ -8,15 +8,28 @@ Nothing else is in it, so unselected skills and MCP servers are not there to be 
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from paddock.agents import AgentSpec
 from paddock.profiles import Profile
 
-# The variable that repoints an agent's config dir. Only Claude Code has one, so every
-# other agent keeps using its real config dir (SPEC §4.3).
-CONFIG_DIR_ENV = {"claude": "CLAUDE_CONFIG_DIR"}
+
+@dataclass(frozen=True)
+class Redirection:
+    """How one agent's config dir is replaced."""
+
+    # The variable that points the agent at the synthesized dir.
+    env_var: str
+    # Credential files the agent writes back to. Copied, so the sandbox works on its own
+    # and the host's file is never touched. Everything else is a read-only symlink.
+    copied: tuple[str, ...] = ()
+
+
+# Only Claude Code can be redirected today, so every other agent keeps its real config
+# dir (SPEC §4.3).
+REDIRECTIONS = {"claude": Redirection("CLAUDE_CONFIG_DIR", copied=(".claude.json",))}
 
 
 @dataclass
@@ -27,24 +40,30 @@ class SynthConfig:
     dir: Path | None = None
     env: dict[str, str] = field(default_factory=dict)
     args: list[str] = field(default_factory=list)
-    # The real directories the skill symlinks point at. srt checks the path an access
-    # resolves to, so the launch has to allow reading these (SPEC §4.3).
-    skill_sources: list[Path] = field(default_factory=list)
+    # Real paths the config dir points at. srt checks the path an access resolves to, so
+    # the launch has to allow reading these (SPEC §4.3).
+    linked: list[Path] = field(default_factory=list)
+    # Real paths the config dir copied. The sandbox has its own, so the host's can be hidden.
+    copied: list[Path] = field(default_factory=list)
     # Skills and MCP servers the profile asked for that the host does not have.
     missing: list[str] = field(default_factory=list)
 
 
 def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
     """Build `run_dir/config` for the agent, or nothing when the agent cannot be redirected."""
-    env_var = CONFIG_DIR_ENV.get(profile.agent)
-    if env_var is None or not agent.config_write_paths:
+    redirect = REDIRECTIONS.get(profile.agent)
+    if redirect is None or not agent.config_write_paths:
         return SynthConfig()
 
     config = run_dir / "config"
     config.mkdir(parents=True, exist_ok=True)
 
+    linked, copied = [], []
     for path in agent.auth_read_paths:
-        _link(Path(path).expanduser(), config / Path(path).name)
+        source = Path(path).expanduser()
+        taken = _take(source, config / source.name, copy=source.name in redirect.copied)
+        if taken:
+            (copied if source.name in redirect.copied else linked).append(source)
     sources, missing = _link_skills(skill_dirs(agent), config / "skills", profile.skills)
 
     servers, unknown = _whitelisted_servers(agent, profile.mcp)
@@ -54,11 +73,12 @@ def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
 
     return SynthConfig(
         dir=config,
-        env={env_var: str(config)},
+        env={redirect.env_var: str(config)},
         # --strict-mcp-config is the important one: without it the agent merges MCP config
         # from its other scopes and the whitelist leaks (SPEC §4.2).
         args=["--mcp-config", str(mcp_file), "--strict-mcp-config"],
-        skill_sources=sources,
+        linked=linked + sources,
+        copied=copied,
         missing=missing + [f"MCP server {name!r}" for name in unknown],
     )
 
@@ -68,10 +88,20 @@ def skill_dirs(agent: AgentSpec) -> list[Path]:
     return [Path(path).expanduser() / "skills" for path in agent.config_write_paths]
 
 
-def _link(target: Path, link: Path) -> None:
-    """Symlink one file in. A missing target is skipped: a dangling link reads as an error."""
-    if target.exists() and not link.exists():
-        link.symlink_to(target)
+def _take(source: Path, dest: Path, copy: bool) -> bool:
+    """Put one credential file in the config dir, by copy or by symlink. Was there one?
+
+    A missing source is skipped: a dangling symlink reads as an error, not as absence.
+    """
+    if not source.exists():
+        return False
+    if dest.exists():
+        return True
+    if copy:
+        shutil.copy2(source, dest)
+    else:
+        dest.symlink_to(source)
+    return True
 
 
 def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[list[Path], list[str]]:

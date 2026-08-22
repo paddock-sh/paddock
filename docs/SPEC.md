@@ -186,14 +186,15 @@ and why the settings have to allow its targets by name.
 
 **The agent's config directory** depends on whether layer 3 can redirect it
 (§4.3). When it can — Claude Code today — the real directory is denied for reading
-and writing, and the synthesized one under the run dir is writable instead. Two
-things are then allowed back by name, because the synthesized dir links to them:
-the agent's own credential files, so it can still authenticate, and the real
-directories of the skills the user ticked. The credentials are in `denyWrite`
-too, so they are read-only inside the sandbox. When the agent cannot be
-redirected, `allowWrite` gets its `config_write_paths`, its real config directory,
-because blocking it breaks the agent. That is a **known gap** for those agents,
-and it closes when they get a redirection.
+and writing, and the synthesized one under the run dir is writable instead. What
+that directory *links* to is allowed back by name, because srt sees the target:
+the agent's key, and the real directories of the skills the user ticked. What it
+*copies* is denied on the host instead, because the sandbox has its own. Every
+credential path is in `denyWrite` either way, so the host's copies are never
+written. When the agent cannot be redirected, `allowWrite` gets its
+`config_write_paths`, its real config directory, because blocking it breaks the
+agent. That is a **known gap** for those agents, and it closes when they get a
+redirection.
 
 Paths are stored as written — `~/.ssh`, not `/Users/me/.ssh`. The backend expands
 `~` for every configured path (`deny_read`, the agent's `auth_read_paths` and
@@ -423,7 +424,10 @@ profile ticked. An empty list means an empty whitelist, not an absent one. The
 The launcher builds a fresh agent config directory per session — `run_dir/config`
 — holding only:
 
-- the credentials that agent needs, symlinked in by filename,
+- the credentials that agent needs, by filename. A file it only reads is a
+  symlink. A file it writes back to is a **copy**, so the agent keeps working and
+  the host's file is never touched: for Claude Code that is `.claude.json`, which
+  it rewrites constantly.
 - the skills the user ticked (symlinked for srt, copied for microsandbox, which
   cannot follow them), and
 - the generated MCP whitelist (§4.2).
@@ -443,6 +447,18 @@ Everything else comes from the agent registry (§5): credentials from
 `auth_read_paths`, skills from `skills/` under any of the agent's
 `config_write_paths`. The chooser offers the same set, so what it lists and what
 the sandbox gets are the same thing.
+
+The copy is a whole file, so whatever else it holds — for Claude Code, the MCP
+server definitions and the project list — travels into the sandbox with it. The
+whitelist still governs what the agent *loads* (§4.2), but "nothing to enumerate"
+is true of the skills and not yet of that file.
+
+**Redirecting the config dir loses a macOS Keychain login.** Claude Code keeps its
+token in the login Keychain when it uses the default config dir, and looks for
+`.credentials.json` inside the directory the variable names. Verified against the
+real binary: with `CLAUDE_CONFIG_DIR` set and no such file, `claude -p` answers
+`Not logged in · Please run /login`, sandbox or no sandbox. Layer 3 therefore
+authenticates only where the credentials are a file. §8 asks what to do about it.
 
 **Only Claude Code has a config-dir variable today.** An agent without one is
 launched as before: no synthesized directory, and its real config dir stays
@@ -562,6 +578,10 @@ no sandbox present.
   malformed profile cannot widen it?
 - How should a pane show what permissions it actually got? A written manifest in
   the workdir is the current favourite.
+- How should layer 3 authenticate an agent whose credentials are in the macOS
+  Keychain rather than a file (§4.3)? Exporting the token into the synthesized
+  config dir would work and would put a token on disk. Skipping the redirection on
+  those machines would work and would give up layer 3.
 - What happens to an srt session's workdir when the session is collected?
   Deleting loses work; keeping it leaks disk.
 - Can a tab move between sessions after creation, or is detach-and-relaunch the

@@ -24,7 +24,8 @@ REDIRECTED = SynthConfig(
     dir=Path("/run/config"),
     env={"CLAUDE_CONFIG_DIR": "/run/config"},
     args=["--mcp-config", "/run/config/.mcp.json", "--strict-mcp-config"],
-    skill_sources=[HOME / ".claude/skills/writing"],
+    linked=[HOME / ".claude/.credentials.json", HOME / ".claude/skills/writing"],
+    copied=[HOME / ".claude.json"],
 )
 
 # What `env -i` keeps, in the order the backend writes it.
@@ -227,6 +228,14 @@ def test_a_redirected_agents_credentials_are_read_only(tmp_path: Path) -> None:
 
     assert str(HOME / ".claude/.credentials.json") in settings["filesystem"]["denyWrite"]
     assert str(HOME / ".claude.json") in settings["filesystem"]["denyWrite"]
+
+
+def test_what_the_config_dir_copied_is_hidden_on_the_host(tmp_path: Path) -> None:
+    """The sandbox has its own copy, so it never needs — and never gets — the host's."""
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", REDIRECTED)
+
+    assert str(HOME / ".claude.json") in settings["filesystem"]["denyRead"]
+    assert str(HOME / ".claude.json") not in settings["filesystem"]["allowRead"]
 
 
 def test_the_skills_the_config_dir_linked_stay_readable(tmp_path: Path) -> None:
@@ -481,6 +490,22 @@ def test_a_ticked_skill_is_readable_end_to_end(which: dict[str, str], fake_home:
     assert (run.run_dir / "config" / "skills" / "writing").readlink() == skill
     assert str(skill) in settings["allowRead"]
     assert str(fake_home / ".claude") in settings["denyRead"]
+
+
+def test_the_agent_writes_its_config_in_the_run_dir_end_to_end(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """The copy is in the writable config dir; the host's file is denied both ways."""
+    (fake_home / ".claude").mkdir()
+    (fake_home / ".claude.json").write_text("{}")
+
+    run = srt.prepare(Profile(agent="claude", tools=[]))
+
+    settings = json.loads((run.run_dir / "srt-settings.json").read_text())["filesystem"]
+    assert (run.run_dir / "config" / ".claude.json").is_file()
+    assert str(run.run_dir / "config") in settings["allowWrite"]
+    assert str(fake_home / ".claude.json") in settings["denyRead"]
+    assert str(fake_home / ".claude.json") in settings["denyWrite"]
 
 
 def test_prepare_opens_no_tab(which: dict[str, str], fake_home: Path, client: FakeClient) -> None:
