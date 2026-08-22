@@ -1,0 +1,54 @@
+@startuml release_flow
+title Cutting a release, and how a user installs (docs/RELEASING.md)
+
+skinparam shadowing false
+
+actor Maintainer
+participant "github.com/desquaredp/paddock" as Repo
+participant ".github/workflows/release.yml" as Actions
+participant "GitHub release vX.Y.Z" as Release
+database PyPI
+actor User
+participant "install.sh" as Install
+participant "uv" as Uv
+
+== Cut ==
+
+Maintainer -> Repo: push tag vX.Y.Z\n(version bumped in pyproject.toml\nand paddock/~__init~__.py)
+Repo -> Actions: tag push
+activate Actions
+Actions -> Actions: uv run pytest
+Actions -> Actions: uv build\n(sdist + wheel)
+Actions -> Actions: tag matches the built version?\ntwine check dist/*
+Actions -> Release: gh release create --generate-notes\nwith both files attached
+Actions -> PyPI: pypa/gh-action-pypi-publish\n(trusted publishing, no stored token)
+note right of Actions
+  The PyPI job is skipped while the
+  PYPI_PUBLISH repository variable is
+  unset. The name "paddock" is taken on
+  PyPI, so nothing is published yet.
+end note
+deactivate Actions
+
+== Install ==
+
+User -> Install: curl -LsSf raw.githubusercontent.com/.../install.sh | sh
+activate Install
+note right of Install
+  Trust boundary: this runs code fetched
+  over the network, on the user's machine,
+  as the user. The script is short so it
+  can be read before it is run.
+end note
+Install -> Uv: uv tool install --force\ngit+https://github.com/desquaredp/paddock
+Uv -> Repo: clone the default branch\n(PADDOCK_REF picks another)
+Install -> User: next: paddock init, then prefix+c
+deactivate Install
+
+note across
+  The install path goes to the repo, not to the release
+  or to PyPI. Until that changes, what users get is
+  whatever is on the default branch.
+end note
+
+@enduml
