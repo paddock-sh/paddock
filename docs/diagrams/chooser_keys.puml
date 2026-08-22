@@ -25,6 +25,11 @@ note right of Tick
   every letter stays a shortcut: that is why
   a checklist can keep `a` for all and `n`
   for none while still narrowing.
+
+  A terminal too short for every row scrolls
+  them around the cursor rather than clipping
+  them, so the cursor, the hint, what you have
+  typed and the buttons are always on screen.
 end note
 
 note right of Type
@@ -32,7 +37,8 @@ note right of Type
   on screen, and any key takes it off again.
 
   ctrl-c cancels the popup from any of these,
-  at any depth, by raising KeyboardInterrupt.
+  at any depth, and from under the key map too,
+  by raising KeyboardInterrupt.
   Nothing has been launched or written by
   then, so backing out costs nothing.
 
