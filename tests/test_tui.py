@@ -434,7 +434,10 @@ def test_an_agent_on_the_list_says_what_it_reaches_whatever_you_tick() -> None:
     assert "remembers it" in tui.agent_hint(tui.CUSTOM, registry)
 
 
-def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers() -> None:
+def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))  # whether this machine has skills is its own test
     base = builtin_profiles()["claude-default"]
 
     rows = tui.form_rows({"profile": "claude-default"}, base, load_agents(), [])
@@ -448,7 +451,7 @@ def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers() -> Non
         "Tools": "git rg fd jq curl node npm npx uv python3",
         "Network": "anthropic, github, npm, pypi/uv",
         "Files": "an isolated scratch directory",
-        "Skills": "none",
+        "Skills": "none for this agent",
         "Advanced": "name, save as profile, MCP",
     }
     assert dict((label, note) for label, _, _, note in rows)["Tools"] == "(10)"
