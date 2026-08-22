@@ -223,7 +223,9 @@ The inner command is the agent, wrapped so it starts from an empty environment:
 
 ```sh
 env -i HOME=... USER=... LOGNAME=... SHELL=... TERM=... LANG=... LC_ALL=... \
-       TMPDIR=... CLAUDE_CONFIG_DIR=... PATH=<shim dir>:/usr/bin:/bin \
+       TMPDIR=... CLAUDE_CONFIG_DIR=... \
+       http_proxy="$http_proxy" ... GIT_SSH_COMMAND="$GIT_SSH_COMMAND" \
+       PATH=<shim dir>:/usr/bin:/bin \
        <agent> <layer-2 flags>
 ```
 
@@ -231,6 +233,16 @@ The keep list is deliberately short. Everything the popup inherited — API toke
 above all — stays outside the sandbox. `PATH` points at the shim dir (§4.1). The
 config dir variable and the flags after the agent come from layer 3 (§4.3); an
 agent with neither gets the line as it was.
+
+**The proxy variables are the exception, and they are passed by name, not by
+value.** srt sets its own proxy environment in the shell it spawns, per
+invocation — `http_proxy`, `HTTP_PROXY`, `https_proxy`, `HTTPS_PROXY`,
+`all_proxy`, `ALL_PROXY`, `no_proxy`, `NO_PROXY`, `ftp_proxy`, `grpc_proxy`,
+`RSYNC_PROXY`, `SANDBOX_RUNTIME`, `GIT_CONFIG_PARAMETERS`, `GIT_SSH_COMMAND` —
+and that proxy is the sandbox's only way out. `env -i` wipes them, and then the
+agent resolves no name at all. So each one is written into the command as
+`VAR="$VAR"`, unquoted, for srt's shell to expand. No value is ever read from the
+popup's own environment.
 
 ### 2.2 v1.1 — `microsandbox` (design record, not stubbed in v1)
 

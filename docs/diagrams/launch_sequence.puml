@@ -105,7 +105,7 @@ Client -> Herdr : herdr tab create [~--workspace <id>]\n~--cwd <workdir> ~--labe
 Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:p2"}}}
 Client --> Backend : "wA:p2"
 Backend -> Client : run_in_pane("wA:p2", command)
-Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`PATH=<shim>:/usr/bin:/bin <agent> --mcp-config <file> --strict-mcp-config'`
+Client -> Herdr : herdr pane run wA:p2\n`srt --settings <file> -c 'env -i <kept vars> CLAUDE_CONFIG_DIR=...`\n`http_proxy="$http_proxy" ... GIT_SSH_COMMAND="$GIT_SSH_COMMAND"`\n`PATH=<shim>:/usr/bin:/bin <agent> --mcp-config <file> --strict-mcp-config'`
 deactivate Client
 Backend --> Sessions : pane_id
 deactivate Backend
@@ -131,6 +131,11 @@ note over Backend, Srt
   CLAUDE_CONFIG_DIR is passed twice on purpose. `tab create --env`
   sets it for the pane; `env -i` wipes the pane's environment for
   the sandboxed process, so the command carries it as well.
+
+  The proxy variables are passed by NAME, not by value: srt sets
+  them in the shell it spawns and that proxy is the sandbox's only
+  way out, so `VAR="$VAR"` is left for that shell to expand. No
+  value is read from the popup's environment (SPEC section 2.1).
 end note
 
 @enduml

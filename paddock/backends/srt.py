@@ -31,6 +31,26 @@ INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
 # All the sandbox inherits from the popup. Anything else — API tokens above all — stays out.
 KEEP_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
+# srt sets these in the shell it spawns, per invocation: they point the sandbox at its own
+# proxy, which is the only way out to the network. `env -i` would wipe them, so each is named
+# in the command and expanded by that shell. No value is ever read from the popup (SPEC §2.1).
+PROXY_ENV = (
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "ftp_proxy",
+    "grpc_proxy",
+    "RSYNC_PROXY",
+    "SANDBOX_RUNTIME",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_SSH_COMMAND",
+)
+
 # The prepared run, written into the run dir so a later tab can attach to the same policy.
 LAUNCH_FILE = "launch.json"
 
@@ -160,7 +180,10 @@ def pane_command(
     # `env -i` wipes what the tab was given, so the config dir variable is set here too.
     keep += [f"{name}={value}" for name, value in synth.env.items()]
     path = "PATH=" + ":".join(entries)
-    inner = shlex.join(["env", "-i", *keep, path, *shlex.split(agent.command), *synth.args])
+    # Unquoted on purpose: srt's own shell is where these have values, and where they expand.
+    proxied = " ".join(f'{name}="${name}"' for name in PROXY_ENV)
+    rest = shlex.join([path, *shlex.split(agent.command), *synth.args])
+    inner = f"{shlex.join(['env', '-i', *keep])} {proxied} {rest}"
     # -c takes the whole command as one string. Passed as bare words, srt's own parser
     # reads the agent's flags as its own.
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])

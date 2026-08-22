@@ -28,6 +28,25 @@ REDIRECTED = SynthConfig(
     copied=[HOME / ".claude.json"],
 )
 
+# What srt injects into the shell it spawns, per invocation, so the sandbox can reach the
+# network through its proxy.
+PROXY_ENV = (
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+    "ftp_proxy",
+    "grpc_proxy",
+    "RSYNC_PROXY",
+    "SANDBOX_RUNTIME",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_SSH_COMMAND",
+)
+
 # What `env -i` keeps, in the order the backend writes it.
 KEEP_ENV = {
     "HOME": "/home/x",
@@ -340,10 +359,52 @@ def test_the_sandbox_starts_from_an_empty_environment(
     assert inner_command(command) == [
         "env", "-i",
         *(f"{name}={value}" for name, value in KEEP_ENV.items()),
+        *(f"{name}=${name}" for name in PROXY_ENV),
         "PATH=/run/bin:/usr/bin:/bin",
         "claude",
     ]
     assert "secret-token" not in command
+
+
+def test_the_proxy_variables_srt_sets_are_passed_through_by_name(which: dict[str, str]) -> None:
+    """srt gives these to the shell it spawns, and `env -i` wipes them: no network at all.
+
+    Each is named and left for that shell to expand, so the live values are its own (SPEC §2.1).
+    """
+    command = srt.pane_command(
+        Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"), NO_REDIRECT
+    )
+
+    inner = shlex.split(command)[4]
+    for name in PROXY_ENV:
+        assert f'{name}="${name}"' in inner
+
+
+def test_no_proxy_value_is_read_from_the_environment_here(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The values that matter are srt's own, and only its shell has them."""
+    monkeypatch.setenv("HTTPS_PROXY", "http://the-popups-proxy:1234")
+
+    command = srt.pane_command(
+        Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"), NO_REDIRECT
+    )
+
+    assert "the-popups-proxy" not in command
+
+
+def test_a_planted_api_key_still_does_not_reach_the_sandbox(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing the proxy variables through must not become a hole for everything else."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-planted")
+
+    command = srt.pane_command(
+        Profile(), CLAUDE, Path("/run/s.json"), Path("/run/bin"), NO_REDIRECT
+    )
+
+    assert "OPENAI_API_KEY" not in command
+    assert "sk-planted" not in command
 
 
 def test_an_unset_variable_is_left_out(
