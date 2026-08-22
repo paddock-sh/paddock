@@ -24,13 +24,14 @@ else (choose)
     :plan = Attach(session id):\nthe session keeps its own workdir;
   else (New sandbox session)
     partition "permissions questionnaire" {
-      :start from a saved profile, or Custom;
-      :agent from the registry,\nor a command typed in;
-      :tools: candidates on PATH plus the\nprofile's own, marked when missing;
-      :network presets, plus typed domains;
-      :skills under the agent's config dir\n(none, or a different agent: skipped);
-      :share a host directory?\n(default: the popup's cwd);
-      :session name, and whether to\nsave the answers as a profile;
+      repeat
+        :ask the next question, in order:\nstart from a saved profile or Custom;\nagent from the registry, or a command typed in;\ntools: candidates on PATH plus the profile's own,\nmarked when missing; network presets and typed\ndomains; skills under the agent's config dir\n(none, or a different agent: skipped);\nshare a host directory?; session name;\nsave the answers as a profile?;
+      repeat while (← Back on a list question?) is (yes: the question before it,\nevery answer so far kept) not (no)
+    }
+    partition "summary" {
+      repeat
+        :one line per answer: start from, agent,\ntyped command, tools, network presets and\ndomains, skills, shared dir, name, save as;
+      repeat while (Launch, Edit a step, or Cancel?) is (Edit a step: ask\nthat one question again) not (Launch)
     }
     :plan = NewSession(profile, name, save as);
   endif
@@ -48,11 +49,21 @@ endif
 stop
 
 note right
-  Ctrl-C or escape answers None at any question:
+  Ctrl-C or escape answers None at any question,
+  and Cancel on the summary says the same thing:
   the chooser returns no plan and cli.py stops.
   Only cli.py acts on a plan; the chooser reads
   the session list and nothing else. So backing
   out cannot leave a pane or a file behind.
+
+  Back on the first question of the questionnaire
+  goes back to "what kind of window?". Text boxes
+  carry no Back entry; the summary edits those.
+  Editing the agent asks for its skills again,
+  because they come from its own config dir.
+  Editing the base profile hands over its own
+  tools, network, domains, skills and directory:
+  another profile means starting over from it.
 end note
 
 @enduml

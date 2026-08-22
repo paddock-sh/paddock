@@ -47,6 +47,9 @@ New window:
 | Share a directory? | A host directory, read-write, or an isolated scratch workdir |
 | Which skills / MCP servers? | Only the ones you tick exist inside the sandbox |
 
+A wrong answer is not a restart: every list question has a **← Back** entry, and
+the last screen is a summary of the answers you can edit before it launches.
+
 **Attach to an existing session** lists live sessions with their name, agent,
 profile and attached tabs.
 
