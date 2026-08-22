@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import init, log, recent, sessions, tui
+from paddock import __version__, init, log, recent, sessions, tui
 from paddock.agents import load_agents
 from paddock.profiles import Profile, load_profiles
 from paddock.sessions import DEFAULT_BACKEND
@@ -72,7 +72,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def parse_args(argv: list[str]) -> Command:
     """argv to a Command. No subcommand means the chooser, which is how the popup runs it."""
-    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
+    # The top-level parser owns --help and --version, so they must reach it, not the chooser.
+    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help", "-V", "--version")):
         argv = ["choose", *argv]
     args = _parser().parse_args(argv)
     return Command(
@@ -320,6 +321,13 @@ def profile_lines(saved: dict[str, Profile]) -> list[str]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paddock", description=__doc__)
+    parser.add_argument(
+        "--version",
+        "-V",
+        action="version",
+        version=f"paddock {__version__}",
+        help="print the version and exit",
+    )
     dry = argparse.ArgumentParser(add_help=False)
     dry.add_argument("--dry-run", action="store_true", help="print what would happen, do nothing")
     where = argparse.ArgumentParser(add_help=False)

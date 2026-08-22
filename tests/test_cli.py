@@ -85,6 +85,15 @@ def test_help_is_still_help() -> None:
         cli.parse_args(["--help"])
 
 
+def test_version_prints_the_version_and_exits(capsys: pytest.CaptureFixture[str]) -> None:
+    """`paddock --version` answers on the top-level parser, not rerouted into the chooser."""
+    with pytest.raises(SystemExit) as exit:
+        cli.main(["--version"])
+
+    assert exit.value.code == 0
+    assert capsys.readouterr().out.strip() == "paddock 0.2.0"
+
+
 def test_each_subcommand_is_recognised() -> None:
     assert cli.parse_args(["choose"]).name == "choose"
     assert cli.parse_args(["profiles"]).name == "profiles"
