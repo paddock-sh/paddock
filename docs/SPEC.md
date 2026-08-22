@@ -312,8 +312,8 @@ Nothing in this section is estimated: it was measured, in that spike or against
 
 | Session operation | `msb` |
 | --- | --- |
-| create | `msb create --name <handle> --mount-dir <workdir>:/work --workdir /work <net rules> <image>` |
-| attach a tab | `msb exec --tty <handle>`, in `launch.sh` like any other pane command |
+| create | `msb create --name <handle> --mount-dir <workdir>:/work --workdir /work [--mount-dir <config>:/paddock-config -e <config var>] <net rules> <image>`, then the boot script for an agent |
+| attach a tab | `msb exec --tty <handle> [-- <agent> <flags>]`, in `launch.sh` like any other pane command |
 | collect | `msb rm -f <handle>`. Without `-f`, `msb rm` refuses a running sandbox: `sandbox still running`, exit 1 |
 
 The handle is `paddock-<run dir name>`. It has to be unique among live sandboxes on
@@ -337,12 +337,13 @@ The same profile maps across:
 
 | Profile field | `srt` | `microsandbox` |
 | --- | --- | --- |
-| `agent` | command on host `PATH` | the agent's `image` (§5), else `alpine` |
+| `agent` | command on host `PATH` | the agent's `image` and `install` (§5); `shell` gets `alpine` |
 | `tools` | PATH shim dir | baked into the image |
 | `shared_dir` | `filesystem.allowWrite` entry | `--mount-dir <resolved path>:/work`, read-write |
 | isolated workdir | scratch dir under the run dir | that same directory, mounted at `/work` |
 | `network_presets` | `network.allowedDomains` | `--net-default deny`, then one allow rule each |
 | `deny_read` | `filesystem.denyRead` | nothing to deny: an unmounted path is not in the guest |
+| `skills`, `mcp` | synthesized config dir (§4.3) | that same directory, mounted at `/paddock-config` |
 
 Four of those differ in kind, not in spelling:
 
@@ -362,10 +363,57 @@ Four of those differ in kind, not in spelling:
   image is the tool selection, and the absolute-path bypass §4.1 documents is not
   available: `/opt/homebrew/bin/docker` is not in the guest to be run.
 
-**This backend runs the `shell` agent only.** Any other agent on an msb profile is
-refused at create, before a VM is booted. Provisioning an agent inside the guest is
-the next feature, and the spike showed layer 3 needs no new mechanism for it: mount
-`run_dir/config` and point the config-dir variable at it with `-e`.
+#### Provisioning an agent in the guest
+
+**An agent needs an image, and usually an install.** Both come from the registry (§5).
+`prepare` boots the image, runs one boot script, and writes a launch script that execs the
+agent itself rather than a shell:
+
+```sh
+msb exec --timeout 110s <handle> -- /bin/sh -c \
+  'command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code'
+msb exec --tty <handle> -- claude --mcp-config /paddock-config/.mcp.json --strict-mcp-config
+```
+
+An agent with no image is refused at create, before a VM is booted: the guest holds what
+the image holds, so there would be nothing to run. `shell` is the exception that needs
+neither, and attaches to whatever shell the image ships.
+
+**The install runs once per session, not once per image.** Measured on `msb` 0.6.13 on
+the spike's machine, with `claude` (`node:22-slim`, msb's default 1 CPU and 512 MiB, which
+it runs in):
+
+| Step | Cold, first session on the image | Warm, image in the layer cache |
+| --- | --- | --- |
+| pull `node:22-slim` | 20.1s | none |
+| `msb create` | 0.15s | 0.15s |
+| `npm install -g @anthropic-ai/claude-code` | 20.9s | 20.9s |
+| to a usable `claude` | about 41s | about 21s |
+
+`paddock launch <profile> --backend msb` measured 22.1s warm, from the command to a tab
+with Claude Code running in the guest.
+
+msb's layer cache saves the pull, not the install. Every session is a new sandbox with its
+own clone of the image, and a sandbox that installed `claude` leaves nothing for the next
+one: `claude` is absent again in a second sandbox from the same image. An image that
+already ships the agent pays neither, which is what the `command -v` guard is for, but
+building one is not paddock's job today. That 21s is the honest price of an msb agent
+session.
+
+**The profile has to allow what the install downloads.** The boot script runs under the
+same deny-by-default network as everything else in the guest, so a `claude` session needs
+the `npm` preset as well as `anthropic`. Nothing is added to the allowlist behind the
+user's back, and a failed install says which command could not reach its registry. It also
+takes the VM down with it: the session is not registered yet, so nothing else would ever
+collect that VM.
+
+**Layer 3 arrives as a mount and one variable.** `run_dir/config` (§4.3) is mounted
+read-write at `/paddock-config`, and `msb create -e CLAUDE_CONFIG_DIR=/paddock-config`
+points the agent at it. Verified on 0.6.13: a variable set on `create` reaches every later
+`exec`, the interactive shell `msb exec --tty` attaches to included, so the host tab passes
+no environment at all. The directory holds copies rather than symlinks, because a link to a
+host path leads outside the mount (§4.3). The host's own config dir needs no deny rule,
+unlike srt: it is simply not in the guest.
 
 #### What the guest actually is
 
@@ -392,7 +440,8 @@ were measured on `msb` 0.6.13.
 
 Not built, and not stubbed:
 
-- **Agents in the guest**, so §4.2 and §4.3 do not apply to an msb session yet.
+- **A prebuilt agent image.** Every session installs the agent again, and no paddock
+  command builds or publishes an image that would skip it.
 - **Port forwarding.** `-p <host port>:<guest port>` on `msb create` works and binds
   loopback, but no profile field asks for one. A per-sandbox `<name>.localhost` URL is
   a portless feature paddock would have to build (see [ROADMAP](ROADMAP.md)), not
@@ -625,6 +674,15 @@ its real config dir is denied for reading and writing. The symlinks stay
 readable because the settings allow their targets by name (§2.1); denying the
 directory and allowing those few paths is what leaves nothing else in it.
 
+**On msb the same directory is built out of copies.** srt reads it where it was
+built, so a symlink is fine and the settings re-open its target by name. msb
+mounts it into the guest at `/paddock-config`, where a link to a host path
+resolves to nothing, so the credentials and the skills are copied in and the
+directory stands on its own. A relative link whose target is inside the mount
+would work; a host skill directory is never inside it. The variable is set with
+`msb create -e`, naming the mount point rather than the run dir, and there is no
+real config dir to deny: it is not in the guest to begin with (§2.2).
+
 This is why it is worth doing: **unselected skills and MCP servers do not exist
 inside the sandbox.** Nothing to enumerate, nothing to load, nothing for a
 prompt-injected agent to reach. Layer 2 tells the agent not to; layer 3 means
@@ -696,7 +754,8 @@ entry:
 | `api_domains` | Domains the agent needs; merged into the allowlist when selected |
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
-| `image` | OCI image the `msb` backend boots for this agent. Blank means `alpine` (§2.2) |
+| `image` | OCI image the `msb` backend boots for this agent. Blank means srt-only, except `shell`, which gets `alpine` (§2.2) |
+| `install` | Shell command that puts `command` in an msb guest that lacks it. Blank means the image ships it |
 
 ### Auth policy
 

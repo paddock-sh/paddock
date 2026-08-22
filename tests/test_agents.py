@@ -27,7 +27,20 @@ def test_claude_entry_has_command_domains_and_paths() -> None:
     assert "api.anthropic.com" in claude.api_domains
     assert claude.auth_read_paths
     assert claude.config_write_paths
-    assert claude.image == ""
+
+
+def test_claude_names_the_image_and_the_install_that_puts_it_in_a_guest() -> None:
+    """The msb backend boots this image and runs this command when the image lacks claude."""
+    claude = builtin_agents()["claude"]
+
+    assert claude.image == "node:22-slim"
+    assert claude.install == "npm install -g @anthropic-ai/claude-code"
+
+
+def test_an_agent_with_no_image_is_srt_only() -> None:
+    """No image means the msb backend refuses it, so the field stays blank until one exists."""
+    assert builtin_agents()["codex"].image == ""
+    assert builtin_agents()["codex"].install == ""
 
 
 def test_only_the_selected_agents_credentials_are_listed() -> None:

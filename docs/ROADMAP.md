@@ -6,11 +6,11 @@ stubbed in the code until it is built.
 
 ## Stronger isolation
 
-- **Agents inside the microVM.** The `msb` backend runs shell sessions today
-  ([SPEC §2.2](SPEC.md#22-microsandbox-msb-registered-as-msb)): its own libkrun
-  microVM per session, an OCI image, and a volume mount where a session shares a
-  host directory. What is left is provisioning an agent in the guest, which needs
-  an image per agent and the config dir mounted in.
+- **A prebuilt agent image.** The `msb` backend runs agents in the guest today
+  ([SPEC §2.2](SPEC.md#22-microsandbox-msb-registered-as-msb)), installing the
+  agent on every session because a new sandbox is a fresh clone of the image:
+  about 21s each time for Claude Code. An image with the agent already in it
+  would skip that, at the cost of building and publishing one per agent.
 - **Workspace-scoped sessions.** One persistent microVM per workspace, with every
   tab exec'ing into the same guest, so tabs in a group share processes and not
   just files.

@@ -4,12 +4,15 @@
 filesystem, so the host is not there to be denied: only what is mounted exists (SPEC §2.2).
 There is no daemon. Each running VM is one `msb` process on the host.
 
-`prepare()` boots the VM and `open_pane()` execs a shell into it, which is why tabs on one
-msb session share a process namespace and tabs on an srt session do not (SPEC §3.2).
+`prepare()` boots the VM and `open_pane()` execs into it, which is why tabs on one msb
+session share a process namespace and tabs on an srt session do not (SPEC §3.2).
 `collect()` destroys the VM, because nothing else will.
 
-v1 of this backend runs the `shell` agent only. `_run` is the one place it shells out to
-msb, and the seam every test stands in for.
+An agent needs two more things than a shell: its image, and a boot script that installs it
+when the image does not ship it. Layer 3 comes in as a mount plus one variable, so the
+guest reads the same synthesized config dir srt does (SPEC §4.3).
+
+`_run` is the one place this shells out to msb, and the seam every test stands in for.
 """
 
 from __future__ import annotations
@@ -22,8 +25,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client
-from paddock.agents import load_agents
+from paddock import herdr_client, synth_config
+from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
     RunNotFound,
@@ -33,6 +36,7 @@ from paddock.backends import (
     write_launch_script,
 )
 from paddock.profiles import Profile
+from paddock.synth_config import SynthConfig
 
 INSTALL_COMMAND = "curl -fsSL https://install.microsandbox.dev | sh"
 
@@ -42,8 +46,18 @@ DEFAULT_IMAGE = "alpine"
 # Where the session's workdir is mounted, and where a tab starts.
 GUEST_WORKDIR = "/work"
 
-# The only agent this backend runs. Provisioning another one inside the guest is next.
+# Where the synthesized config dir is mounted, read-write, and what the agent's config-dir
+# variable is set to. The host side is the run dir, exactly as it is for srt (SPEC §4.3).
+GUEST_CONFIG = "/paddock-config"
+
+# The agent that means "the guest's own shell": there is nothing to install and nothing to
+# point at a config dir, and the image's default shell is what a tab attaches to.
 SHELL_AGENT = "shell"
+
+# The boot script gets its own limit because it is the one slow step: an npm install
+# measured at 21s in the spike, on top of a first image pull. Shorter than COMMAND_TIMEOUT,
+# so a hung install is msb's error, with msb's message, rather than a Python timeout.
+BOOT_TIMEOUT = "110s"
 
 # Sandbox names have to be unique on the host, not just in this registry.
 HANDLE_PREFIX = "paddock-"
@@ -109,9 +123,16 @@ def net_rules(domains: list[str]) -> list[str]:
     return rules
 
 
-def create_argv(handle: str, image: str, workdir: Path, domains: list[str]) -> list[str]:
-    """The command that boots the session's VM. The image is positional, so it comes last."""
-    return [
+def create_argv(
+    handle: str, image: str, workdir: Path, domains: list[str], synth: SynthConfig | None = None
+) -> list[str]:
+    """The command that boots the session's VM. The image is positional, so it comes last.
+
+    A synthesized config dir is mounted read-write, because the agent rewrites files in it,
+    and named by the agent's own variable. `-e` here reaches every later exec, including the
+    shell a tab attaches to, which is why the guest needs nothing from the host tab.
+    """
+    argv = [
         find_msb(),
         "create",
         "--name",
@@ -120,14 +141,50 @@ def create_argv(handle: str, image: str, workdir: Path, domains: list[str]) -> l
         f"{workdir}:{GUEST_WORKDIR}",
         "--workdir",
         GUEST_WORKDIR,
-        *net_rules(domains),
-        image,
+    ]
+    if synth is not None and synth.dir is not None:
+        # Resolved for the same reason the workdir is: msb mounts the source as written.
+        argv += ["--mount-dir", f"{synth.dir.resolve()}:{GUEST_CONFIG}"]
+        for name, value in synth.env.items():
+            argv += ["-e", f"{name}={value}"]
+    return argv + [*net_rules(domains), image]
+
+
+def boot_script(agent: AgentSpec) -> str:
+    """Install the agent in the guest, unless the image already has it.
+
+    Asked first, so a custom image with the agent baked in pays nothing. A stock image
+    pays the install once per session: a new sandbox is a fresh clone of the image, so
+    msb's layer cache saves the pull and not the install (SPEC §2.2).
+    """
+    tool = shlex.split(agent.command)[0]
+    return f"command -v {shlex.quote(tool)} >/dev/null 2>&1 || {agent.install}"
+
+
+def boot_argv(handle: str, agent: AgentSpec) -> list[str]:
+    """The one exec between booting the VM and the first tab: put the agent in the guest."""
+    return [
+        find_msb(),
+        "exec",
+        "--timeout",
+        BOOT_TIMEOUT,
+        handle,
+        "--",
+        "/bin/sh",
+        "-c",
+        boot_script(agent),
     ]
 
 
-def attach_command(handle: str) -> str:
-    """What the launch script holds: a terminal shell in the VM the session already has."""
-    return shlex.join([find_msb(), "exec", "--tty", handle])
+def attach_command(handle: str, agent_argv: list[str]) -> str:
+    """What the launch script holds: a terminal in the VM the session already has.
+
+    Running the agent, or, with nothing to run, the image's own shell.
+    """
+    argv = [find_msb(), "exec", "--tty", handle]
+    if agent_argv:
+        argv += ["--", *agent_argv]
+    return shlex.join(argv)
 
 
 def stop_argv(handle: str) -> list[str]:
@@ -180,14 +237,18 @@ def stop_vm(handle: str) -> None:
 
 
 def prepare(profile: Profile) -> Run:
-    """Boot the session's VM and write what a tab needs to attach to it. Opens no pane."""
+    """Boot the session's VM, put the agent in it, and write what a tab needs to attach.
+
+    Opens no pane. The guest holds what the image holds, so an agent without one is
+    refused here, before a VM exists.
+    """
     agent = load_agents().get(profile.agent)
     if agent is None:
         raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
-    if profile.agent != SHELL_AGENT:
+    if profile.agent != SHELL_AGENT and not agent.image:
         raise ValueError(
-            f"the msb backend runs the {SHELL_AGENT!r} agent only, not {profile.agent!r}: "
-            "agent provisioning inside the guest lands with the next feature"
+            f"agent {profile.agent!r} has no image, so the msb backend has nothing to run it "
+            "in: give the agent an `image` in the registry, or launch it on the srt backend"
         )
     # Before the run dir exists, so a missing msb leaves nothing behind.
     find_msb()
@@ -195,9 +256,16 @@ def prepare(profile: Profile) -> Run:
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
     handle = vm_handle(run_dir)
-    _run(*create_argv(handle, agent.image or DEFAULT_IMAGE, workdir, profile.allowed_domains()))
+    synth = synth_config.build(profile, agent, run_dir, guest_dir=GUEST_CONFIG)
+    if synth.missing:
+        left_out = ", ".join(synth.missing)
+        print(f"paddock: not in the guest config dir: {left_out}", file=sys.stderr)
+    image = agent.image or DEFAULT_IMAGE
+    _run(*create_argv(handle, image, workdir, profile.allowed_domains(), synth))
+    if agent.install:
+        _provision(handle, agent, image)
 
-    command = attach_command(handle)
+    command = attach_command(handle, _agent_argv(profile, agent, synth))
     write_launch_script(run_dir, command)
     (run_dir / LAUNCH_FILE).write_text(
         json.dumps({"vm_handle": handle, "workdir": str(workdir), "command": command}, indent=2)
@@ -241,6 +309,34 @@ def collect(run_dir: Path, vm_handle: str = "") -> None:
         pass  # the run dir lost its record, so the caller's handle is all there is
     if vm_handle:
         stop_vm(vm_handle)
+
+
+def _agent_argv(profile: Profile, agent: AgentSpec, synth: SynthConfig) -> list[str]:
+    """What a tab runs in the guest: the agent and its config flags, or the guest's own shell.
+
+    The shell agent's command is a host path (`$SHELL`), which the image need not have, so
+    a shell session attaches to whatever shell the image ships instead.
+    """
+    if profile.agent == SHELL_AGENT:
+        return []
+    return [*shlex.split(agent.command), *synth.args]
+
+
+def _provision(handle: str, agent: AgentSpec, image: str) -> None:
+    """Run the boot script, and take the VM down with it when it fails.
+
+    Nothing has registered this session yet, so a VM left behind here is one nobody
+    would ever collect. The usual failure is a profile whose network does not reach the
+    install's registry, which the message has to say plainly.
+    """
+    try:
+        _run(*boot_argv(handle, agent))
+    except MsbError as error:
+        stop_vm(handle)
+        raise MsbError(
+            f"could not install {agent.command!r} in the {image} guest. The profile's "
+            f"network has to allow whatever `{agent.install}` downloads: {error}"
+        ) from error
 
 
 def _run(*args: str) -> str:

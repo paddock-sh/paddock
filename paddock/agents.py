@@ -21,6 +21,9 @@ class AgentSpec:
     config_write_paths: list[str] = field(default_factory=list)
     # OCI image for the microsandbox backend (SPEC §2.2). Unused by the srt backend.
     image: str = ""
+    # How the guest installs `command` when the image does not ship it (SPEC §2.2). Run once
+    # per session, and only on the msb backend. Blank means the image is expected to have it.
+    install: str = ""
 
 
 def agent_dir() -> Path:
@@ -35,6 +38,10 @@ def builtin_agents() -> dict[str, AgentSpec]:
             api_domains=["api.anthropic.com", "*.anthropic.com"],
             auth_read_paths=["~/.claude/.credentials.json", "~/.claude.json"],
             config_write_paths=["~/.claude"],
+            # Claude Code is an npm package, so a stock node image plus one install is
+            # the whole provisioning story. Measured in the spike: 21s, 431MB.
+            image="node:22-slim",
+            install="npm install -g @anthropic-ai/claude-code",
         ),
         "codex": AgentSpec(
             name="Codex CLI",
