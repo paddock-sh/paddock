@@ -999,3 +999,15 @@ def test_the_log_path_is_reachable_even_behind_a_short_message() -> None:
         seen |= set(screen.failed_lines("no msb on PATH", log_path, 0, tiny[1], tiny[0], scroll))
 
     assert set(every) <= seen
+
+
+def test_all_does_not_tick_a_row_that_stands_apart_from_all() -> None:
+    """An allow-all row is an answer of its own, and "all of them" is not a way to give it."""
+    assert drive("a\r", lambda: screen.tick("Tools", TOOLS, never_all={2})) == [0, 1, 3, 4]
+
+
+def test_a_row_that_stands_apart_can_still_be_ticked_by_hand() -> None:
+    assert drive(" \r", lambda: screen.tick("Tools", TOOLS, never_all={2})) == [1, 4]
+    assert drive(f"{DOWN}{DOWN} \r", lambda: screen.tick("Tools", TOOLS, never_all={2})) == [
+        0, 1, 2, 4
+    ]

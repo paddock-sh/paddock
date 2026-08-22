@@ -371,7 +371,7 @@ def _parser() -> argparse.ArgumentParser:
         help="show this session's pane log instead of paddock's own",
     )
     setup = subcommands.add_parser(
-        "init", parents=[dry], help="bind the chooser to prefix+c in herdr's config"
+        "init", parents=[dry], help="bind the chooser to prefix+s in herdr's config"
     )
     setup.add_argument(
         "--undo", action="store_true", help="put the newest backed-up herdr config back"

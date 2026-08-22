@@ -849,6 +849,60 @@ def test_a_config_herdr_already_had_warnings_about_is_still_wired_up(
     assert "before paddock edited it" in capsys.readouterr().err
 
 
+def saying(monkeypatch: pytest.MonkeyPatch, before: str, after: str) -> None:
+    """herdr says one thing about the config as it stands and another about the edit."""
+    said: list[str] = []
+
+    def check() -> str:
+        said.append("")
+        reason = before if len(said) == 1 else after
+        if reason:
+            raise herdr_client.HerdrError(reason)
+        return "config: ok"
+
+    monkeypatch.setattr(herdr_client, "check_config", check)
+
+
+COLLISION = "prefix+,: kept keys.settings, disabled keys.command[0].key"
+UNRELATED = "unknown config key ui.wat; ignoring key"
+
+
+def test_a_warning_paddocks_own_edit_added_is_rolled_back(
+    config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A binding paddock's own line disabled is paddock's fault, whatever else was wrong."""
+    saying(monkeypatch, before=UNRELATED, after=f"{UNRELATED}\n{COLLISION}")
+
+    assert init.run() == 1
+
+    assert read(config) == PRISTINE
+    assert backups(config) == []
+
+
+def test_the_rollback_names_the_collision_and_not_the_users_own_warning(
+    config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reporting the whole of what herdr said would bury the one line paddock caused."""
+    saying(monkeypatch, before=UNRELATED, after=f"{UNRELATED}\n{COLLISION}")
+
+    init.run()
+
+    said = capsys.readouterr().err
+    assert COLLISION in said
+    assert "ui.wat" not in said
+
+
+def test_the_same_warnings_before_and_after_are_the_users_own(
+    config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    saying(monkeypatch, before=UNRELATED, after=UNRELATED)
+
+    assert init.run() == 0
+
+    assert "[[keys.command]]" in read(config)
+    assert "before paddock edited it" in capsys.readouterr().err
+
+
 def test_a_pre_existing_warning_is_named_so_nobody_hunts_for_it(
     config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

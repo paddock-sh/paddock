@@ -692,6 +692,7 @@ def tick(
     hint: str = "",
     box: tuple[str, str, str] | None = None,
     refused: dict[int, str] | None = None,
+    never_all: set[int] | None = None,
 ) -> list[int] | tuple[list[int], str]:
     """A checklist. What is ticked, whether it was left with enter, escape or the Back row.
 
@@ -699,6 +700,10 @@ def tick(
 
     With a `box` of (label, value, hint) under the list, tab moves between the two and the
     answer is both: the ticks and what the box holds.
+
+    `never_all` says which rows the `a` key leaves alone. A row that means "all of them"
+    is an answer in its own right, and reaching it with the key for "all of them" would
+    turn a request for every group into a request for no restriction at all.
 
     `refused` says which rows cannot be ticked here and why, the way `pick` refuses a row:
     the reason takes the key line rather than the tick quietly not happening, and it goes
@@ -717,6 +722,7 @@ def tick(
     }
     labels = [label for label, _ in rows]
     why = refused or {}
+    apart = never_all or set()
 
     def shown() -> list[int]:
         return matching(labels, state["filter"])
@@ -739,8 +745,11 @@ def tick(
 
     @keys.add("a", filter=on_list)
     def _(event: object) -> None:
-        # All of what is on screen, so a filter narrows it. A refused row is not "all".
-        state["ticked"] |= {index for index in shown() if index not in why}
+        # All of what is on screen, so a filter narrows it. A refused row is not "all",
+        # and neither is a row that means all by itself.
+        state["ticked"] |= {
+            index for index in shown() if index not in why and index not in apart
+        }
 
     @keys.add("n", filter=on_list)
     def _(event: object) -> None:

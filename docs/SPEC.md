@@ -90,10 +90,13 @@ Three things stand between that splice and the user's config. The result is
 parsed as TOML before anything is written, and a result that will not parse is
 reported and dropped. The old config is copied to
 `config.toml.paddock-backup-<timestamp>` first. `herdr config check` then runs on
-what was written, and a config herdr refuses is put straight back, unless herdr
-already had something to say about the config before paddock touched it: paddock
-runs the same check first, and does not refuse over a problem it did not cause.
-It says so instead and leaves the wiring in place. `herdr server reload-config`
+what was written, and the two answers are compared: paddock runs the same check
+before it writes, and rolls back only when the edit *added* something herdr did
+not say before. A config herdr was already unhappy about keeps its wiring and is
+told so, because that is not a problem paddock caused. A binding of the user's
+that paddock's own line disabled is the other case, and there the rollback names
+that line and nothing else, so the one thing they need to see is not buried in
+warnings they already had. `herdr server reload-config`
 runs last: herdr may not be running, which is a message, not a failure.
 
 `--dry-run` prints the diff and touches nothing. `--undo` restores the newest
@@ -730,7 +733,15 @@ The confirm says what each one granted in words no one can misread: `ANY domain
 (unrestricted)`, `the full host PATH`, `all skills`. And a backend that cannot
 enforce one refuses the row with the reason on the key line, the way the agent
 list refuses an agent this machine has not got: srt has no allow-all network at
-all (§2.1), so on srt that row says so and names msb.
+all (§2.1), so on srt that row says so and names msb. The refusal runs both ways,
+because either field can be answered first: with the allow-all network ticked, the
+Backend list refuses srt for the same reason. A saved profile that names both
+still reaches the confirm, and there it is a warning row rather than a grant the
+screen asserts and the backend then rejects.
+
+The `a` key, which ticks everything on a checklist, never reaches an allow-all
+row. "All of the groups" and "no list at all" are different answers, and the key
+for the first must not hand out the second.
 
 **There is no allow-all for writes.** A sandbox with no filesystem fence is not a
 sandbox, and paddock already has a name for that: a Local tab, which the Files
@@ -1080,6 +1091,26 @@ with (§2.2).
 guest is created and provisioned, and only then is the token placed and the copy
 taken. An install that fails, or a create that times out, leaves no token on disk
 at all, and the VM is removed before the failure is raised.
+
+**A skill has to live where it says it does.** A skills directory is one anyone
+can drop a symlink into, and paddock is the thing that hands what it finds there
+to a sandbox, so what is taken is checked: a skill whose resolved path is not
+inside the skills directory it was found in is refused, and reported the way a
+missing one is. Without that check a link called `deploy` pointing at `~/.ssh` is
+taken as a skill, and then either symlinked into the config dir and named in srt's
+`allowRead`, which re-opens by name exactly what `deny_read` closed, or copied
+into a guest by a copy that follows links. Ticking every skill (`*`) makes that a
+directory listing rather than a per-skill decision, which is why the check is not
+optional.
+
+`build_settings` checks the same thing again from the other end: nothing in
+`allowRead` may be inside a directory the profile listed as never readable. Two
+exceptions are deliberate and both predate this. The agent's own credentials stay
+readable whatever is denied, because choosing an agent is consenting to its login
+and a profile that denies a whole config dir must not lock the agent out of
+itself. And the agent's config dirs, which paddock denies itself as part of layer
+3, are not part of that comparison: the skills that *were* taken live inside one
+of them, and reaching those is the whole point of the list.
 
 This is why it is worth doing: **the session starts with no unselected skill or
 MCP server anywhere in reach.** Nothing to enumerate, nothing to load, nothing

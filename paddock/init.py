@@ -114,11 +114,15 @@ def run(dry_run: bool = False, undo: bool = False) -> int:
     )
 
     rejected = _rejected()
-    if rejected and not already:
-        # herdr knows what a valid binding is, which TOML alone cannot say.
+    caused = _added(already, rejected)
+    if caused:
+        # herdr knows what a valid binding is, which TOML alone cannot say. What it says
+        # now and did not say before is paddock's doing, whatever else it was unhappy
+        # about: a binding of the user's that paddock's own line disabled is not a problem
+        # they can be told to go and fix.
         _put_back(path, backup)
-        logger.info("init put the herdr config back %s", log.context(config=path, why=rejected))
-        print(f"paddock: herdr would not accept the new config ({rejected})", file=sys.stderr)
+        logger.info("init put the herdr config back %s", log.context(config=path, why=caused))
+        print(f"paddock: herdr would not accept the new config ({caused})", file=sys.stderr)
         print(f"paddock: {path} is as it was", file=sys.stderr)
         return 1
     if rejected:
@@ -311,6 +315,20 @@ def _unparsable(text: str) -> str:
     except tomllib.TOMLDecodeError as error:
         return str(error)
     return ""
+
+
+def _added(before: str, after: str) -> str:
+    """What herdr says about the config now that it did not say before paddock edited it.
+
+    The comparison is the whole point: "herdr is unhappy" is not the question, because the
+    config people run `paddock init` on is often one herdr already had something to say
+    about. The question is whether paddock made it worse, and the answer is the lines that
+    were not there before, which is also the only part worth showing them.
+    """
+    said = {line.strip() for line in before.splitlines() if line.strip()}
+    return "\n".join(
+        line for line in after.splitlines() if line.strip() and line.strip() not in said
+    )
 
 
 def _rejected() -> str:

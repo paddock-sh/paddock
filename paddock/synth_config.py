@@ -355,7 +355,11 @@ def _take_skills(
     for name in names:
         # A skill is a bare directory name: `../..` would link the whole config dir in.
         plain = bool(name) and "/" not in name and not name.startswith(".")
-        found = [source / name for source in sources if plain and (source / name).is_dir()]
+        offered = [source / name for source in sources if plain and (source / name).is_dir()]
+        found = [skill for skill in offered if _inside_skills(skill)]
+        if offered and not found:
+            missing.append(f"skill {name!r} links outside the agent's skills directory")
+            continue
         if not found:
             missing.append(f"skill {name!r}")
             continue
@@ -368,6 +372,20 @@ def _take_skills(
                 skill.symlink_to(found[0])
         taken.append(found[0])
     return taken, missing
+
+
+def _inside_skills(skill: Path) -> bool:
+    """Whether the skill really lives in the directory it was found in, symlinks resolved.
+
+    A skills directory is one anyone can drop a symlink into, and paddock is the thing that
+    hands what it finds there to a sandbox. Unchecked, a link called `deploy` pointing at
+    `~/.ssh` gets symlinked into the config dir and then named in srt's `allowRead`, which
+    re-opens by name exactly what `deny_read` closed, or copied into a guest by a copy that
+    follows links. Ticking every skill makes that a directory listing rather than a choice,
+    so the containment is checked here, once, for both backends (SPEC §4.3).
+    """
+    real, root = Path(os.path.realpath(skill)), Path(os.path.realpath(skill.parent))
+    return root in real.parents
 
 
 def _every_skill(sources: list[Path]) -> list[str]:

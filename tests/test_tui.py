@@ -842,12 +842,35 @@ def test_a_live_session_is_on_the_same_field_as_the_new_one(
 def test_the_attach_key_opens_on_the_session_list(
     press, fake_sessions, tmp_path: Path
 ) -> None:
-    """prefix+shift+s is the Open list on its own: one enter on a session launches it."""
+    """prefix+shift+s is the Open list on its own, opened on the first session: enter attaches."""
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
 
-    plan = press(f"{DOWN}{DOWN}\r\r", lambda: tui.choose(tmp_path, attach=True))
+    plan = press("\r\r", lambda: tui.choose(tmp_path, attach=True))
 
     assert plan == tui.Attach(ref="s1")
+
+
+def test_the_attach_key_lands_on_the_first_session_and_not_on_new_sandbox(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """The key means "attach", so the cursor starts where attaching is, not two rows above it."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+    fake_sessions.registry.append(Session(session_id="s2", name="release"))
+
+    plan = press(f"{DOWN}\r\r", lambda: tui.choose(tmp_path, attach=True))
+
+    assert plan == tui.Attach(ref="s2")
+
+
+def test_the_ordinary_chooser_still_opens_the_list_on_the_answer_it_holds(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Only the attach key moves the cursor: opening Open from the form is unchanged."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"{OPEN_FIELD}\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert isinstance(plan, tui.NewSession)
 
 
 def test_the_attach_key_can_ask_for_a_shell_in_the_session(
@@ -855,7 +878,7 @@ def test_the_attach_key_can_ask_for_a_shell_in_the_session(
 ) -> None:
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
 
-    plan = press(f"{DOWN}{DOWN}\r{DOWN}\r", lambda: tui.choose(tmp_path, attach=True))
+    plan = press(f"\r{DOWN}\r", lambda: tui.choose(tmp_path, attach=True))
 
     assert plan == tui.Attach(ref="s1", shell=True)
 
@@ -885,7 +908,7 @@ def test_a_new_sandbox_picked_from_the_attach_list_still_gets_the_form(
 ) -> None:
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
 
-    plan = press(f"\r{GO}", lambda: tui.choose(tmp_path, attach=True))
+    plan = press(f"{UP}{UP}\r{GO}", lambda: tui.choose(tmp_path, attach=True))
 
     assert isinstance(plan, tui.NewSession)
 
@@ -1879,3 +1902,89 @@ def test_the_network_hint_says_what_ticking_nothing_leaves_open() -> None:
 
     assert "the agent's own API" in hint
     assert "Shell agent" in hint
+
+
+# --- the in-guest install warning -------------------------------------------
+
+
+def test_no_install_warning_when_the_network_is_unrestricted() -> None:
+    """Allow-all reaches the npm registry like it reaches everything else."""
+    plan = tui.NewSession(
+        profile=Profile(agent="claude", network_presets=[NETWORK_ALL]), backend="msb"
+    )
+
+    assert tui.install_warning(plan, load_agents()) == ""
+
+
+def test_the_install_warning_still_fires_without_the_registry() -> None:
+    plan = tui.NewSession(profile=Profile(agent="claude", network_presets=[]), backend="msb")
+
+    assert tui.install_warning(plan, load_agents()) == tui.INSTALL_WARNING
+
+
+def test_an_unrestricted_msb_launch_confirms_without_a_warning() -> None:
+    profile = Profile(agent="claude", network_presets=[NETWORK_ALL])
+
+    lines = tui.confirm_lines({"backend": "msb"}, profile, load_agents())
+
+    assert not any(label == "warning" for label, _ in lines)
+
+
+def test_srt_is_refused_while_the_network_is_unrestricted() -> None:
+    """srt cannot express it, so the backend list says so rather than the launch failing."""
+    rows = tui.backend_choices(everything=True)
+
+    refusals = {key: why for key, _, why in rows}
+    assert refusals["srt"] == tui.NO_ALLOW_ALL_ON_SRT
+    assert refusals["msb"] == ""
+
+
+def test_srt_is_refused_for_nothing_when_the_network_is_a_list(which: dict[str, str]) -> None:
+    rows = tui.backend_choices()
+
+    assert {key: why for key, _, why in rows}["srt"] == ""
+
+
+def test_the_confirm_says_srt_will_refuse_an_unrestricted_sandbox() -> None:
+    """The screen that says what was granted may not assert a grant the backend rejects."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    lines = dict(tui.confirm_lines({"backend": "srt"}, profile, load_agents()))
+
+    assert lines["warning"] == tui.NO_ALLOW_ALL_ON_SRT
+
+
+def test_the_confirm_carries_both_warnings_when_both_apply() -> None:
+    """One warning row must not swallow the other."""
+    profile = Profile(agent="claude", network_presets=["github"])
+
+    lines = tui.confirm_lines({"backend": "msb"}, profile, load_agents())
+
+    assert [line for label, line in lines if label == "warning"] == [tui.INSTALL_WARNING]
+
+
+def test_ticking_all_the_network_groups_is_not_the_same_as_no_allowlist(
+    press, fake_sessions, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`a` means all the groups. The row that means "no allowlist" is not one of them.
+
+    On msb, where nothing refuses that row, so the `a` key is the only thing keeping it out.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/opt/bin/msb")
+
+    plan = press(f"{BACKEND}{DOWN}\r{NETWORK}a\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.backend == "msb"
+
+    assert NETWORK_ALL not in plan.profile.network_presets
+    assert "github" in plan.profile.network_presets
+    assert not plan.profile.opens_every_domain()
+
+
+def test_ticking_all_the_tools_is_not_the_same_as_the_whole_host_path(
+    press, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    plan = press(f"{TOOLS}a\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert tui.EVERYTHING not in plan.profile.tools
+    assert "git" in plan.profile.tools

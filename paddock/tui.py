@@ -297,7 +297,9 @@ def choose(cwd: Path, answers: dict | None = None, attach: bool = False) -> Plan
     live = sessions.list_sessions()
     answers = dict(answers) if answers else opening_answers(saved)
     if attach and live:
-        answers = _edit_open(answers, live)
+        # On the first session, not on New sandbox: the key that opens this one means
+        # attaching, and the list is two rows of other answers before it gets there.
+        answers = _edit_open(answers, live, cursor=len(open_choices([])))
         picked = plan_from(answers, base_profile(saved, answers), cwd)
         if isinstance(picked, Attach):
             return picked
@@ -379,7 +381,7 @@ def _edit(
     if field == "profile":
         return _edit_profile(answers, saved, registry)
     if field == "backend":
-        return _edit_backend(answers)
+        return _edit_backend(answers, base)
     if field == "agent":
         return _edit_agent(answers, base, registry)
     if field == "tools":
@@ -393,15 +395,18 @@ def _edit(
     return _edit_advanced(answers, base)
 
 
-def _edit_open(answers: dict, live: list[sessions.Session]) -> dict:
+def _edit_open(answers: dict, live: list[sessions.Session], cursor: int | None = None) -> dict:
     """The Open list, and for a live session the second question of what to put in the tab.
 
     Two screens for one field, so escape from the second backs out to the list, not to the
     form, exactly as the Files field's directory box does.
+
+    `cursor` overrides where the list opens, which is what the attach key uses: a key that
+    means "attach to something" should land on something to attach to.
     """
     choices = open_choices(live)
     rows = [(title, open_hint(value)) for title, value in choices]
-    where = _at(choices, str(answers.get("open", NEW)))
+    where = _at(choices, str(answers.get("open", NEW))) if cursor is None else cursor
     while True:
         index = screen.pick(FIELD_TITLES["open"], rows, cursor=where, rule_after=open_rule(live))
         if index is None:
@@ -427,8 +432,8 @@ def _edit_profile(answers: dict, saved: dict[str, Profile], registry: dict[str, 
     return settle(dict(answers, profile=choices[index][1]), "profile")
 
 
-def _edit_backend(answers: dict) -> dict:
-    rows = backend_choices()
+def _edit_backend(answers: dict, base: Profile) -> dict:
+    rows = backend_choices(build_session(base, answers).profile.opens_every_domain())
     refused = {index: why for index, (_, _, why) in enumerate(rows) if why}
     choices = [(key, hint) for key, hint, _ in rows]
     where = _at([(key, key) for key, _, _ in rows], str(answers.get("backend", SRT)))
@@ -461,7 +466,12 @@ def _edit_tools(answers: dict, base: Profile) -> dict:
     if not rows:  # nothing on this host to offer, so there is nothing to ask
         return answers
     before = [value for _, value, on in rows if on]
-    ticked = screen.tick(FIELD_TITLES["tools"], _boxes(rows), FIELD_HINTS["tools"])
+    ticked = screen.tick(
+        FIELD_TITLES["tools"],
+        _boxes(rows),
+        FIELD_HINTS["tools"],
+        never_all=_apart(rows, EVERYTHING),
+    )
     return dict(answers, tools=exclusive(before, [rows[index][1] for index in ticked], EVERYTHING))
 
 
@@ -475,6 +485,7 @@ def _edit_network(answers: dict, base: Profile) -> dict:
         FIELD_HINTS["network"],
         box=("Also allow", typed, EDITOR_HINTS["also_allow"]),
         refused=network_refusals(rows, str(answers.get("backend", SRT))),
+        never_all=_apart(rows, NETWORK_ALL),
     )
     picked = exclusive(before, [rows[index][1] for index in ticked], NETWORK_ALL)
     return dict(answers, network=picked, domains=extra)
@@ -536,7 +547,12 @@ def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -
     if not rows:  # this agent has no skills directory, so there is nothing to ask
         return answers
     before = [value for _, value, on in rows if on]
-    ticked = screen.tick(FIELD_TITLES["skills"], _boxes(rows), FIELD_HINTS["skills"])
+    ticked = screen.tick(
+        FIELD_TITLES["skills"],
+        _boxes(rows),
+        FIELD_HINTS["skills"],
+        never_all=_apart(rows, EVERYTHING),
+    )
     return dict(answers, skills=exclusive(before, [rows[index][1] for index in ticked], EVERYTHING))
 
 
@@ -576,6 +592,15 @@ def _edit_save_as(answers: dict) -> dict:
     """The `s` key: the same box the Advanced screen opens, one press from the form."""
     saved = str(answers.get("save_as", ""))
     return dict(answers, save_as=screen.type_in("Save as profile", saved, EDITOR_HINTS["save_as"]))
+
+
+def _apart(rows: list[tuple[str, str, bool]], value: str) -> set[int]:
+    """Where the allow-all row is, so the `a` key can leave it alone.
+
+    "All of them" and "no list at all" are different answers, and the key for the first
+    must not hand out the second.
+    """
+    return {index for index, (_, name, _) in enumerate(rows) if name == value}
 
 
 def _boxes(rows: list[tuple[str, str, bool]]) -> list[tuple[str, bool]]:
@@ -723,8 +748,21 @@ def confirm_lines(
         ("can run", _runnable(profile, registry, plan.backend)),
         ("can see", _visible(profile, registry)),
     ]
-    warning = install_warning(plan, registry)
-    return lines + [("warning", warning)] if warning else lines
+    warned = [warning for warning in (policy_warning(plan), install_warning(plan, registry))
+              if warning]
+    return lines + [("warning", warning) for warning in warned]
+
+
+def policy_warning(plan: NewSession) -> str:
+    """Why this backend will refuse this policy, or nothing when it will not.
+
+    The Backend and Network fields refuse each other's answer already, so reaching here
+    takes a saved profile that names both. This screen is the one that says what is being
+    granted, and it may not assert a grant the backend is about to reject (SPEC §2.1).
+    """
+    if plan.backend == SRT and plan.profile.opens_every_domain():
+        return NO_ALLOW_ALL_ON_SRT
+    return ""
 
 
 def install_warning(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
@@ -744,6 +782,8 @@ def install_warning(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
         return ""  # an install nobody can read is one this cannot say anything about
     if not words or words[0] not in INSTALL_TOOLS:
         return ""
+    if plan.profile.opens_every_domain():
+        return ""  # no allowlist at all reaches the registry along with everything else
     needed = set(NETWORK_PRESETS[INSTALL_PRESET])
     return "" if needed <= set(plan.profile.allowed_domains()) else INSTALL_WARNING
 
@@ -1018,15 +1058,20 @@ def open_choices(live: list[sessions.Session]) -> list[tuple[str, str]]:
     return [("New sandbox", NEW), ("Local tab", LOCAL), *session_choices(live)]
 
 
-def backend_choices() -> list[tuple[str, str, str]]:
+def backend_choices(everything: bool = False) -> list[tuple[str, str, str]]:
     """Each backend, what it costs and gives, and why it cannot be chosen when it cannot.
 
     A backend this machine has no binary for stays on the list and says so, the way a tool
     the host lacks does: hiding it would leave the user wondering where the microVM went.
+
+    `everything` is the network's allow-all row, which srt has no way to enforce (SPEC
+    §2.1). Refusing it here is the other half of refusing the row on srt: whichever of the
+    two is picked first, the second one says the two cannot go together, and no plan is
+    built that a backend would only reject later.
     """
     absent = "msb is not installed, so this machine cannot run a microVM session"
     return [
-        (SRT, BACKEND_HINTS[SRT], ""),
+        (SRT, BACKEND_HINTS[SRT], NO_ALLOW_ALL_ON_SRT if everything else ""),
         (MSB, BACKEND_HINTS[MSB], "" if shutil.which(MSB) else absent),
     ]
 

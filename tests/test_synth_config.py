@@ -596,3 +596,65 @@ def test_the_upsell_counters_are_already_past_their_limit(home: Path, run_dir: P
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
     assert seeded(synth)["fullscreenUpsellSeenCount"] == 99
+
+
+# --- a skills dir is a directory anyone can drop a link into --------------------
+
+
+def test_a_skill_that_links_outside_the_skills_dir_is_not_taken(
+    home: Path, run_dir: Path
+) -> None:
+    """Otherwise a link named `deploy` hands the sandbox whatever it points at (SPEC §4.3)."""
+    (home / ".claude" / "skills" / "escape").symlink_to(home / ".ssh")
+    (home / ".ssh").mkdir()
+    (home / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+
+    synth = synth_config.build(Profile(skills=["escape"]), CLAUDE, run_dir)
+
+    assert not (synth.dir / "skills" / "escape").exists()
+    assert home / ".ssh" not in synth.linked
+    assert synth.missing == ["skill 'escape' links outside the agent's skills directory"]
+
+
+def test_every_skill_refuses_a_link_out_too(home: Path, run_dir: Path) -> None:
+    """`*` takes what the directory lists, and a link is what the directory lists."""
+    (home / ".ssh").mkdir()
+    (home / ".claude" / "skills" / "escape").symlink_to(home / ".ssh")
+
+    synth = synth_config.build(Profile(skills=["*"]), CLAUDE, run_dir)
+
+    taken = sorted(path.name for path in (synth.dir / "skills").iterdir())
+    assert taken == ["deploy", "writing"]
+    assert "escape" in synth.missing[0]
+
+
+def test_a_link_out_is_not_copied_into_a_guest_either(home: Path, run_dir: Path) -> None:
+    """The copy follows links, so an unchecked one would put the real files in the guest."""
+    (home / ".ssh").mkdir()
+    (home / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+    (home / ".claude" / "skills" / "escape").symlink_to(home / ".ssh")
+
+    synth = synth_config.build(Profile(skills=["escape"]), CLAUDE, run_dir, guest_dir="/cfg")
+
+    assert list((synth.dir / "skills").iterdir()) == []
+    assert "PRIVATE KEY" not in _every_file(synth.dir)
+
+
+def test_a_skill_that_is_a_link_inside_the_skills_dir_is_fine(
+    home: Path, run_dir: Path
+) -> None:
+    """People do symlink one skill to another. Only leaving the directory is refused."""
+    skills = home / ".claude" / "skills"
+    (skills / "alias").symlink_to(skills / "writing")
+
+    synth = synth_config.build(Profile(skills=["alias"]), CLAUDE, run_dir)
+
+    assert (synth.dir / "skills" / "alias").exists()
+    assert synth.missing == []
+
+
+def _every_file(directory: Path) -> str:
+    """Everything under a directory, as one string, for a test that asks what leaked."""
+    return "".join(
+        path.read_text(errors="replace") for path in directory.rglob("*") if path.is_file()
+    )

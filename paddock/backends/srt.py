@@ -189,7 +189,10 @@ def build_settings(
         allow_write += _both_names(Path(tmpdir))
     if profile.shared_dir:
         allow_write.append(_expand(profile.shared_dir))
-    deny_read = [_expand(path) for path in profile.deny_read]
+    # The profile's own denials, kept apart from the ones added below: this list is the
+    # "never readable" promise the user made, and `allowRead` is checked against it.
+    promised = [_expand(path) for path in profile.deny_read]
+    deny_read = list(promised)
     # What the agent may not read, it may not write either.
     deny_write = list(deny_read)
     auth = [_expand(path) for path in agent.auth_read_paths]
@@ -211,6 +214,15 @@ def build_settings(
         # What it symlinked is reached through the denied directory, and srt checks the
         # path an access resolves to. Allowing those by name re-opens exactly them.
         allow_read = [path for source in synth.linked for path in _both_names(source)]
+    # Belt and braces over the containment check in synth_config: `allowRead` is the one
+    # list that re-opens a path by name, so nothing in it may land inside a directory the
+    # profile said was never readable. Two things are compared and two are not. Only the
+    # profile's own denials count, not the agent config dirs added above, because the
+    # skills that were taken live inside one of those and reaching them is the whole point
+    # of the list. And the agent's own credentials are kept whatever is denied, which is a
+    # rule that predates this: choosing an agent is consenting to its login, and a profile
+    # that denies a whole config dir must not lock the agent out of itself (SPEC §4.3).
+    allow_read = _outside(allow_read, promised, keep=auth)
     allow_write += [_expand(path) for path in profile.extra_allow_write]
     network: dict = {
         "allowedDomains": profile.allowed_domains(),
@@ -485,6 +497,27 @@ def collect(run_dir: Path, vm_handle: str = "") -> None:
 
 def _expand(path: str) -> Path:
     return Path(path).expanduser()
+
+
+def _outside(paths: list[Path], denied: list[Path], keep: list[Path]) -> list[Path]:
+    """The paths that are neither one of the denied directories nor inside one.
+
+    `keep` is what stays whatever is denied: the agent's own credentials, which the user
+    chose by choosing the agent. Both spellings of every path are compared, the way each
+    is written twice, because srt matches the path as written and checks the one an access
+    resolves to.
+    """
+    closed = [name for path in denied for name in _both_names(path)]
+    allowed = {name for path in keep for name in _both_names(path)}
+    return [
+        path
+        for path in paths
+        if path in allowed or not any(_within(path, shut) for shut in closed)
+    ]
+
+
+def _within(path: Path, parent: Path) -> bool:
+    return path == parent or parent in path.parents
 
 
 def _both_names(path: Path) -> list[Path]:

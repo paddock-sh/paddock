@@ -1025,3 +1025,15 @@ def test_a_pane_log_with_something_in_it_explains_nothing(
 
     assert cli.main(["logs", "review"]) == 0
     assert cli.EMPTY_PANE_LOG not in capsys.readouterr().out
+
+
+def test_the_help_describes_the_keys_init_actually_binds(
+    capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It named prefix+c, which is now the one key paddock gives back to herdr."""
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--help"])
+
+    said = capsys.readouterr().out
+    assert "prefix+s" in said
+    assert "prefix+c" not in said

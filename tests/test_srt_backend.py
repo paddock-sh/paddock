@@ -1480,3 +1480,73 @@ def test_the_zsh_startup_file_keeps_the_prompt_the_users_own_rc_wrote(
     )
 
     assert done.stdout == "paddock:theirs%% "  # raw, since printf expands no prompt escape
+
+
+# --- allowRead may never re-open what denyRead closed ------------------------
+
+
+def test_a_linked_path_inside_a_denied_directory_is_not_allowed_back(tmp_path: Path) -> None:
+    """`allowRead` names paths by hand, and a name inside `~/.ssh` would undo the denial."""
+    synth = SynthConfig(dir=tmp_path / "config", linked=[Path("~/.ssh/id_rsa").expanduser()])
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert settings["filesystem"]["allowRead"] == []
+
+
+def test_the_denied_directory_itself_is_not_allowed_back(tmp_path: Path) -> None:
+    synth = SynthConfig(dir=tmp_path / "config", linked=[Path("~/.aws").expanduser()])
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert settings["filesystem"]["allowRead"] == []
+
+
+def test_a_skill_under_the_agents_own_config_dir_is_still_allowed(tmp_path: Path) -> None:
+    """The skills a session did take are reached through a denied dir, and must stay reachable."""
+    skill = Path("~/.claude/skills/writing").expanduser()
+    synth = SynthConfig(dir=tmp_path / "config", linked=[skill])
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert str(skill) in settings["filesystem"]["allowRead"]
+
+
+def test_the_never_readable_promise_holds_under_every_skill(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """End to end: a link out is not taken, so nothing names it in allowRead either."""
+    (fake_home / ".ssh").mkdir(exist_ok=True)
+    (fake_home / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    (fake_home / ".claude" / "skills" / "escape").symlink_to(fake_home / ".ssh")
+
+    run = srt.prepare(Profile(skills=["*"]))
+
+    settings = json.loads((run.run_dir / "srt-settings.json").read_text())
+    assert not any(".ssh" in path for path in settings["filesystem"]["allowRead"])
+    assert str(fake_home / ".ssh") in settings["filesystem"]["denyRead"]
+
+
+def test_the_agents_own_login_survives_a_denied_config_dir_with_a_synth_dir_too(
+    tmp_path: Path,
+) -> None:
+    """The same rule on the other branch: denying ~/.claude must not lock claude out."""
+    credentials = Path("~/.claude/.credentials.json").expanduser()
+    synth = SynthConfig(dir=tmp_path / "config", linked=[credentials])
+
+    settings = srt.build_settings(
+        Profile(deny_read=["~/.claude", "~/.ssh"]), CLAUDE, tmp_path, synth
+    )
+
+    assert str(credentials) in settings["filesystem"]["allowRead"]
+
+
+def test_a_link_out_is_dropped_even_beside_the_agents_own_login(tmp_path: Path) -> None:
+    credentials = Path("~/.claude/.credentials.json").expanduser()
+    synth = SynthConfig(
+        dir=tmp_path / "config", linked=[credentials, Path("~/.ssh/id_rsa").expanduser()]
+    )
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert settings["filesystem"]["allowRead"] == [str(credentials)]
