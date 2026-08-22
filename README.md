@@ -91,14 +91,34 @@ does and does not stop, including known bypasses.
 
 ## Install
 
-Not published yet. Once the first epic lands:
+**1. Prerequisites**
+
+- [herdr](https://herdr.dev) 0.8 or newer.
+- Node.js, so `npx` can fetch the sandbox runtime on first use. To install it
+  instead: `npm i -g @anthropic-ai/sandbox-runtime`.
+- On Linux, also `bubblewrap`, `socat` and `ripgrep`. On Ubuntu 24.04 and newer,
+  AppArmor blocks the unprivileged user namespaces bubblewrap needs — allow them
+  with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (add it to
+  `/etc/sysctl.d/` to make it stick).
+
+**2. Install paddock**
 
 ```sh
-uv tool install paddock   # placeholder — not yet available
+uv tool install git+https://github.com/desquaredp/paddock
 ```
 
-Then add the keybinding to `~/.config/herdr/config.toml`, per
-[docs/SPEC.md §1](docs/SPEC.md#1-herdr-integration).
+**3. Wire it into herdr**
+
+```sh
+paddock init
+```
+
+That backs up `~/.config/herdr/config.toml`, binds the chooser to `prefix+c`,
+moves plain new-tab to `prefix+shift+c`, and asks herdr to reload. Run it twice
+and the second run changes nothing. `paddock init --dry-run` shows the change
+first; `paddock init --undo` puts the old config back.
+
+**4. Press `prefix+c` inside herdr.**
 
 ## Docs
 

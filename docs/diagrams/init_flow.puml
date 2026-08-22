@@ -1,0 +1,73 @@
+@startuml init_flow
+title paddock init — splicing the keybinding into herdr's config (SPEC §1.1)
+
+skinparam shadowing false
+skinparam defaultTextAlignment center
+
+start
+:`paddock init`\n(cli.py -> init.run);
+:config = $HOME/.config/herdr/config.toml;
+
+if (--undo) then (yes)
+  if (a config.toml.paddock-backup-* next to it?) then (no)
+    :error: nothing to restore from;
+    stop
+  else (yes)
+  endif
+  :copy the newest backup over the config,\nthen delete that backup;
+  :herdr_client.reload_config();
+  stop
+else (no)
+endif
+
+if (config file there?) then (no)
+  :error: run herdr once first,\nthen `paddock init`;
+  stop
+else (yes)
+endif
+
+partition "splice — text, not parsed TOML\n(a round-trip would drop the user's comments)" {
+  :drop any old block between the\npaddock (managed) marker comments;
+  if (a [keys] table in what is left?) then (yes)
+    if (new_tab bound in it?) then (to herdr's default "prefix+c")
+      :rewrite that line to "prefix+shift+c";
+    elseif (not bound at all) then
+      :insert new_tab = "prefix+shift+c"\nunder herdr's commented default;
+    elseif (to something of the user's own) then
+      :leave it alone, and say so;
+    else (already "prefix+shift+c")
+    endif
+    :block = one ~[~[keys.command~]~] entry;
+  else (no)
+    :block = [keys] + new_tab + ~[~[keys.command~]~];
+  endif
+  :append the block between the markers;
+}
+
+if (same text as before?) then (yes)
+  :say it is already wired up;
+  stop
+else (no)
+endif
+
+if (--dry-run) then (yes)
+  :print the unified diff;
+  stop
+else (no)
+endif
+
+:copy the config to\nconfig.toml.paddock-backup-<timestamp>;
+:write the spliced config;
+:herdr_client.reload_config()\n— failure is a message, not an error:\nherdr may not be running;
+:say to press prefix+c;
+stop
+
+note right
+  Stripping the old block before looking at
+  the file is what makes a second run a no-op
+  and an older block an update, not a copy.
+  Everything outside the block and the one
+  new_tab line is byte for byte as it was.
+end note
+
+@enduml

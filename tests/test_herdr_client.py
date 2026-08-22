@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from paddock.herdr_client import HerdrError, create_tab, run_in_pane
+from paddock.herdr_client import HerdrError, create_tab, reload_config, run_in_pane
 
 PANE_JSON = json.dumps({"result": {"root_pane": {"pane_id": "wA:p2"}}})
 
@@ -110,6 +110,22 @@ def test_run_in_pane_passes_the_command_as_one_argument(herdr: FakeHerdr) -> Non
     run_in_pane("wA:p2", command)
 
     assert herdr.argv == ["herdr", "pane", "run", "wA:p2", command]
+
+
+def test_reload_config_asks_the_server_to_re_read_its_config(herdr: FakeHerdr) -> None:
+    reload_config()
+
+    assert herdr.argv == ["herdr", "server", "reload-config"]
+
+
+def test_a_reload_with_no_server_running_is_an_error_the_caller_can_catch(
+    herdr: FakeHerdr,
+) -> None:
+    herdr.returncode = 1
+    herdr.stderr = "no herdr server\n"
+
+    with pytest.raises(HerdrError, match="no herdr server"):
+        reload_config()
 
 
 def test_a_missing_herdr_binary_is_a_clear_error(herdr: FakeHerdr, tmp_path: Path) -> None:

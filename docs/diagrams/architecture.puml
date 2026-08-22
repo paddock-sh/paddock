@@ -8,13 +8,14 @@ skinparam defaultTextAlignment center
 actor User
 
 package "Herdr 0.8.0" {
-  [Keybinding\nprefix+c -> popup] as Keybinding
+  [Keybinding\nprefix+c -> popup\n(written by `paddock init`)] as Keybinding
   [herdr CLI\ntab create / pane run] as HerdrCLI
   [Workspace / tabs / panes] as HerdrUI
 }
 
 package "paddock" {
-  [cli.py\nchoose | launch | attach | profiles\n~--cwd, ~--dry-run] as CLI
+  [cli.py\nchoose | launch | attach | profiles | init\n~--cwd, ~--dry-run] as CLI
+  [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
   [tui.py\nquestionary chooser\nanswers -> a plan] as TUI
   [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
@@ -36,6 +37,10 @@ package "Sandbox runtimes" {
   [msb\nlibkrun microVM\nOCI images] as Msb
 }
 
+User --> CLI : runs `paddock init` once, after installing
+CLI --> Init : init (backs the config up first)
+Init --> Keybinding : writes the popup block\nand moves new_tab to prefix+shift+c
+Init --> HerdrClient : herdr server reload-config\n(a failure is a message: herdr may not be running)
 User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
@@ -60,7 +65,7 @@ Agents --> SynthConfig : credentials + whitelisted skills
 
 SrtBackend --> HerdrClient : pane command + env
 MsbBackend ..> HerdrClient : pane command
-HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> <command>
+HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> <command>\nherdr server reload-config
 HerdrCLI --> HerdrUI : creates tab, returns\nresult.root_pane.pane_id
 HerdrUI --> Srt : sandboxed pane process (v1)
 HerdrUI ..> Msb : sandboxed pane process (v1.1)

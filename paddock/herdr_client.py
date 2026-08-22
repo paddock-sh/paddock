@@ -40,6 +40,11 @@ def run_in_pane(pane_id: str, command: str) -> None:
     _run("pane", "run", pane_id, command)
 
 
+def reload_config() -> None:
+    """Ask a running herdr to re-read its config. Raises when there is no server to ask."""
+    _run("server", "reload-config")
+
+
 def _run(*args: str) -> str:
     try:
         completed = subprocess.run(["herdr", *args], capture_output=True, text=True, check=True)

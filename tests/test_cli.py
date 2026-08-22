@@ -51,8 +51,15 @@ def test_help_is_still_help() -> None:
 def test_each_subcommand_is_recognised() -> None:
     assert cli.parse_args(["choose"]).name == "choose"
     assert cli.parse_args(["profiles"]).name == "profiles"
+    assert cli.parse_args(["init"]).name == "init"
     assert cli.parse_args(["launch", "claude-default"]).profile == "claude-default"
     assert cli.parse_args(["attach", "review"]).ref == "review"
+
+
+def test_init_takes_a_dry_run_and_an_undo() -> None:
+    assert cli.parse_args(["init", "--dry-run"]).dry_run is True
+    assert cli.parse_args(["init", "--undo"]).undo is True
+    assert cli.parse_args(["init"]).undo is False
 
 
 def test_cwd_and_dry_run_are_flags_on_the_subcommand() -> None:
@@ -315,6 +322,35 @@ def test_a_launch_that_fails_says_why_instead_of_tracing_back(
 
     assert cli.main(["choose"]) == 1
     assert capsys.readouterr().err.strip() == f"paddock: {error}"
+
+
+# --- wiring paddock into herdr ---------------------------------------------
+
+
+def test_init_hands_its_flags_to_the_init_module(
+    fake_sessions, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[tuple[bool, bool]] = []
+
+    def record(dry_run: bool, undo: bool) -> int:
+        asked.append((dry_run, undo))
+        return 0
+
+    monkeypatch.setattr(cli.init, "run", record)
+
+    assert cli.main(["init", "--undo"]) == 0
+    assert asked == [(False, True)]
+    assert fake_sessions.calls == []
+
+
+def test_init_without_a_herdr_config_says_why(
+    fake_sessions, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cli.main(["init"]) == 1
+    assert "run herdr once" in capsys.readouterr().err
 
 
 # --- listing profiles ------------------------------------------------------

@@ -1,8 +1,8 @@
 # paddock — Specification
 
-Status: **pre-alpha.** Section 7 is being built. Profiles, the agent registry, the
+Status: **pre-alpha.** Section 7 is built. Profiles, the agent registry, the
 herdr client, the srt backend, sessions, the synthesized config dir, the chooser
-TUI and the CLI all exist now; §7 says what each still owes.
+TUI, the CLI and `paddock init` all exist now; §7 says what each still owes.
 
 paddock takes over new-window creation in [herdr](https://herdr.dev) (a terminal
 multiplexer for AI coding agents, **v0.8.0**) and replaces it with a popup
@@ -21,7 +21,8 @@ Diagrams: [`architecture.puml`](diagrams/architecture.puml),
 [`launch_sequence.puml`](diagrams/launch_sequence.puml),
 [`scoping_model.puml`](diagrams/scoping_model.puml),
 [`profiles_and_agents.puml`](diagrams/profiles_and_agents.puml),
-[`chooser_flow.puml`](diagrams/chooser_flow.puml).
+[`chooser_flow.puml`](diagrams/chooser_flow.puml),
+[`init_flow.puml`](diagrams/init_flow.puml).
 
 ---
 
@@ -31,7 +32,7 @@ Verified against a local herdr 0.8.0.
 
 ### 1.1 Keybinding
 
-In `~/.config/herdr/config.toml`:
+**Shipped: `paddock init` writes this.** In `~/.config/herdr/config.toml`:
 
 ```toml
 [[keys.command]]
@@ -49,6 +50,17 @@ new_tab = "prefix+shift+c"
 TUI draws. Plain new-tab moves to `prefix+shift+c`.
 
 The popup is transient: it asks, it creates the pane, it exits.
+
+`paddock init` splices both into the config the user already has. It edits the
+text, not a parsed document, because a TOML round-trip drops comments: the
+`[[keys.command]]` block sits between `# --- paddock (managed) ---` markers, so a
+second run replaces it rather than repeating it, and the `new_tab` line is
+inserted or rewritten on its own. Everything else in the file stays byte for
+byte. The old config is copied to `config.toml.paddock-backup-<timestamp>` first,
+and `herdr server reload-config` runs after — herdr may not be running, which is
+a message, not a failure. `--dry-run` prints the diff and touches nothing;
+`--undo` restores the newest backup. A `new_tab` the user has bound to something
+of their own is left alone and reported: paddock still takes `prefix+c`.
 
 ### 1.2 Environment in the popup
 
@@ -99,13 +111,14 @@ Creation and execution are separate on purpose. The tab exists with the right cw
 and label before anything starts, so a failed launch leaves a usable pane instead
 of no window.
 
-### 1.4 Packaging as a herdr plugin (later)
+### 1.4 v1.1 — packaging as a herdr plugin (design record, not stubbed in v1)
 
 Herdr 0.8.0 has a plugin system (`herdr plugin install|link|enable|list`,
 `herdr plugin action`, `herdr plugin pane`). A later milestone adds a
 `herdr-plugin.toml` manifest so paddock installs as a plugin — `herdr plugin
-link` in development, `herdr plugin install` for users — instead of a hand-edited
-keybinding. The keybinding keeps working; the manifest is sugar over it.
+link` in development, `herdr plugin install` for users — instead of the
+keybinding `paddock init` writes. The keybinding keeps working; the manifest is
+sugar over it. No manifest is written in v1.
 
 ---
 
@@ -599,7 +612,8 @@ no v1.1 concern appears in any of them:
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI — the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles` | Done |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
+| `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
 `herdr`, and only the backend shells out to `srt`.** Everything else is pure
