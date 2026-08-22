@@ -12,6 +12,7 @@ from paddock.agents import AgentSpec, builtin_agents, load_agents
 from paddock.profiles import (
     LOCAL_SERVICES,
     LOCAL_SERVICES_CONSEQUENCE,
+    NETWORK_ALL,
     NETWORK_PRESETS,
     Profile,
     builtin_profiles,
@@ -135,8 +136,8 @@ def test_tools_the_host_has_are_offered_and_ticked_from_the_profile(
 ) -> None:
     rows = tui.tool_choices(Profile(tools=["git", "curl"]))
 
-    assert values(rows) == ["git", "jq", "curl", "node"]
-    assert ticks(rows) == {"git": True, "jq": False, "curl": True, "node": False}
+    assert values(rows) == ["*", "git", "jq", "curl", "node"]
+    assert ticks(rows) == {"*": False, "git": True, "jq": False, "curl": True, "node": False}
 
 
 def test_a_profiles_own_tools_are_offered_too(which: dict[str, str]) -> None:
@@ -162,8 +163,16 @@ def test_a_candidate_the_host_lacks_is_left_out(which: dict[str, str]) -> None:
 def test_network_presets_are_pre_ticked_from_the_base_profile() -> None:
     rows = tui.network_choices(Profile(network_presets=["github"]))
 
-    assert values(rows) == list(NETWORK_PRESETS)
+    assert set(values(rows)) == set(NETWORK_PRESETS)
     assert ticks(rows) == {name: name == "github" for name in NETWORK_PRESETS}
+
+
+def test_the_allow_all_row_is_first_on_the_network_list() -> None:
+    """It is not a domain group, and it is the answer that makes the rest of them moot."""
+    rows = tui.network_choices(Profile())
+
+    assert values(rows)[0] == NETWORK_ALL
+    assert titles(rows)[0] == "everything (any domain, no restriction)"
 
 
 @pytest.mark.parametrize(
@@ -189,7 +198,7 @@ def test_skills_come_from_the_agents_own_config_dir(tmp_path: Path) -> None:
 
     rows = tui.skill_choices(agent, ["reviewer"])
 
-    assert ticks(rows) == {"release": False, "reviewer": True}
+    assert ticks(rows) == {"*": False, "release": False, "reviewer": True}
 
 
 def test_a_skill_already_chosen_stays_on_the_list(tmp_path: Path) -> None:
@@ -199,7 +208,7 @@ def test_a_skill_already_chosen_stays_on_the_list(tmp_path: Path) -> None:
 
     rows = tui.skill_choices(agent, ["reviewer"])
 
-    assert ticks(rows) == {"release": False, "reviewer": True}
+    assert ticks(rows) == {"*": False, "release": False, "reviewer": True}
 
 
 def test_an_agent_with_no_skills_dir_is_fine(tmp_path: Path) -> None:
@@ -830,6 +839,80 @@ def test_a_live_session_is_on_the_same_field_as_the_new_one(
     assert plan == tui.Attach(ref="s1")
 
 
+def test_the_attach_key_opens_on_the_session_list(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """prefix+shift+s is the Open list on its own, opened on the first session: enter attaches."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press("\r\r", lambda: tui.choose(tmp_path, attach=True))
+
+    assert plan == tui.Attach(ref="s1")
+
+
+def test_the_attach_key_lands_on_the_first_session_and_not_on_new_sandbox(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """The key means "attach", so the cursor starts where attaching is, not two rows above it."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+    fake_sessions.registry.append(Session(session_id="s2", name="release"))
+
+    plan = press(f"{DOWN}\r\r", lambda: tui.choose(tmp_path, attach=True))
+
+    assert plan == tui.Attach(ref="s2")
+
+
+def test_the_ordinary_chooser_still_opens_the_list_on_the_answer_it_holds(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Only the attach key moves the cursor: opening Open from the form is unchanged."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"{OPEN_FIELD}\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert isinstance(plan, tui.NewSession)
+
+
+def test_the_attach_key_can_ask_for_a_shell_in_the_session(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"\r{DOWN}\r", lambda: tui.choose(tmp_path, attach=True))
+
+    assert plan == tui.Attach(ref="s1", shell=True)
+
+
+def test_backing_out_of_the_attach_list_leaves_the_form(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Escape there is not "cancel": the list is a shortcut into the chooser, not a screen of it."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"{ESC}k{GO}", lambda: tui.choose(tmp_path, attach=True))
+
+    assert plan == tui.NewSession(profile=Profile(), backend="srt", started_from=tui.CUSTOM)
+
+
+def test_the_attach_key_with_nothing_running_is_the_ordinary_chooser(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """There is no list to open, so the form is what the key gets."""
+    plan = press(GO, lambda: tui.choose(tmp_path, attach=True))
+
+    assert plan == tui.NewSession(profile=Profile(), backend="srt", started_from=tui.CUSTOM)
+
+
+def test_a_new_sandbox_picked_from_the_attach_list_still_gets_the_form(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"{UP}{UP}\r{GO}", lambda: tui.choose(tmp_path, attach=True))
+
+    assert isinstance(plan, tui.NewSession)
+
+
 def test_no_sandbox_means_none_of_the_fields_under_it_open(
     press, fake_sessions, tmp_path: Path
 ) -> None:
@@ -909,7 +992,7 @@ def test_a_typed_command_is_asked_for_on_the_agent_field(
 def test_the_tools_are_ticked_off_a_checklist(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
-    plan = press(f"{TOOLS} \r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS}{DOWN} \r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]  # git was ticked, and the space unticked it
 
@@ -918,7 +1001,7 @@ def test_escape_from_an_editor_keeps_what_was_done_in_it(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
     """The promise that the questionnaire could not keep: escape loses no answer."""
-    plan = press(f"{TOOLS} {ESC}{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS}{DOWN} {ESC}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]
 
@@ -927,7 +1010,7 @@ def test_the_network_groups_and_the_extra_domains_are_one_screen(
     press, fake_sessions, tmp_path: Path
 ) -> None:
     """Section 5.5: the box under the checklist is what killed the extra-domains question."""
-    keys = f"{NETWORK} {TAB}example.com\r{GO}"
+    keys = f"{NETWORK}{DOWN} {TAB}example.com\r{GO}"
 
     plan = press(keys, lambda: tui.choose(tmp_path))
 
@@ -964,7 +1047,7 @@ def test_the_skills_are_ticked_off_the_agents_own_list(
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude" / "skills" / "reviewer").mkdir(parents=True)
 
-    plan = press(f"{SKILLS} \r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{SKILLS}{DOWN} \r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.skills == ["reviewer"]
 
@@ -989,8 +1072,8 @@ def test_the_whole_form_becomes_one_plan(
     monkeypatch.setenv("HOME", str(tmp_path))  # no skills, so that field opens nothing
     keys = (
         f"{AGENT}{DOWN}\r"  # codex
-        f"{TOOLS} \r"  # untick git
-        f"{NETWORK} {TAB}example.com\r"  # github only, plus a domain
+        f"{TOOLS}{DOWN} \r"  # untick git
+        f"{NETWORK}{DOWN} {TAB}example.com\r"  # github only, plus a domain
         f"{FILES}{DOWN}\r\r"  # share this directory
         f"{ADVANCED}\rreview\r{LEAVE}"  # name it, and leave Advanced
         "sreview-profile\r"  # save the answers
@@ -1109,7 +1192,7 @@ def test_taking_the_back_row_leaves_a_field_as_it_was(
 def test_the_back_row_on_a_checklist_keeps_the_ticks(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
-    plan = press(f"{TOOLS} {UP * 4}\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS}{DOWN} {UP * 4}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]
 
@@ -1132,7 +1215,7 @@ def test_the_confirm_can_send_you_back_to_the_form_with_every_answer_on_it(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
     """Back is one level, so the answers are still there, and the second launch takes them."""
-    plan = press(f"{TOOLS} \rL{RIGHT}\r{GO}", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS}{DOWN} \rL{RIGHT}\r{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.tools == ["rg", "curl"]
 
@@ -1283,7 +1366,7 @@ def test_the_confirm_can_save_the_answers_it_is_about_to_launch(
     press, fake_sessions, which: dict[str, str], tmp_path: Path
 ) -> None:
     """Section 5.7 puts the offer here, because here is where the answers are worth keeping."""
-    plan = press(f"{TOOLS} \rLsreview-profile\r\r", lambda: tui.choose(tmp_path))
+    plan = press(f"{TOOLS}{DOWN} \rLsreview-profile\r\r", lambda: tui.choose(tmp_path))
 
     assert plan.save_as == "review-profile"
     assert plan.profile.tools == ["rg", "curl"]
@@ -1684,3 +1767,226 @@ def test_an_install_that_cannot_be_parsed_warns_about_nothing_rather_than_raisin
     plan = tui.NewSession(profile=Profile(agent="odd", network_presets=[]), backend="msb")
 
     assert tui.install_warning(plan, load_agents()) == ""
+
+
+# --- the allow-all rows -----------------------------------------------------
+
+
+def test_ticking_everything_clears_the_rest() -> None:
+    """The two answers contradict each other, so the one just given is the one that stands."""
+    assert tui.exclusive(["github"], ["github", NETWORK_ALL], NETWORK_ALL) == [NETWORK_ALL]
+
+
+def test_ticking_a_group_takes_everything_back_off() -> None:
+    assert tui.exclusive([NETWORK_ALL], [NETWORK_ALL, "github"], NETWORK_ALL) == ["github"]
+
+
+def test_everything_on_its_own_stays_on() -> None:
+    assert tui.exclusive([NETWORK_ALL], [NETWORK_ALL], NETWORK_ALL) == [NETWORK_ALL]
+
+
+def test_a_list_without_everything_in_it_is_left_alone() -> None:
+    assert tui.exclusive(["github"], ["github", "npm"], NETWORK_ALL) == ["github", "npm"]
+
+
+def test_the_exclusivity_rule_is_the_same_for_tools_and_skills() -> None:
+    assert tui.exclusive(["git"], ["git", "*"], tui.EVERYTHING) == ["*"]
+    assert tui.exclusive(["*"], ["*", "git"], tui.EVERYTHING) == ["git"]
+
+
+def test_srt_refuses_the_allow_all_row_and_says_why() -> None:
+    """srt has no settings file that means unrestricted egress, so the row cannot be ticked."""
+    rows = tui.network_choices(Profile())
+
+    refused = tui.network_refusals(rows, "srt")
+
+    assert list(refused) == [0]
+    assert refused[0] == tui.NO_ALLOW_ALL_ON_SRT
+
+
+def test_msb_refuses_no_network_row() -> None:
+    """A microVM takes a default rather than a rule, so allow-all is a thing it can do."""
+    assert tui.network_refusals(tui.network_choices(Profile()), "msb") == {}
+
+
+def test_the_network_row_says_everything_when_everything_is_ticked() -> None:
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    values = tui._field_values({"network": [NETWORK_ALL]}, profile, load_agents(), [], "/work")
+    notes = tui._field_notes({"network": [NETWORK_ALL]}, profile)
+
+    assert values["network"] == "everything (any domain)"
+    assert notes["network"] == "(unrestricted)"
+
+
+def test_the_confirm_says_any_domain_loudly() -> None:
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    lines = dict(tui.confirm_lines({}, profile, load_agents()))
+
+    assert lines["can reach"] == "ANY domain (unrestricted)"
+
+
+def test_the_tools_row_and_the_confirm_say_the_whole_host_path() -> None:
+    profile = Profile(tools=[tui.EVERYTHING])
+
+    values = tui._field_values({"tools": [tui.EVERYTHING]}, profile, load_agents(), [], "/work")
+    lines = dict(tui.confirm_lines({"tools": [tui.EVERYTHING]}, profile, load_agents()))
+
+    assert values["tools"] == "everything on the host path"
+    assert lines["can run"] == "the full host PATH"
+
+
+def test_the_skills_row_and_the_confirm_say_all_skills() -> None:
+    profile = Profile(skills=[tui.EVERYTHING])
+
+    values = tui._field_values({"skills": [tui.EVERYTHING]}, profile, load_agents(), [], "/work")
+    lines = dict(tui.confirm_lines({"skills": [tui.EVERYTHING]}, profile, load_agents()))
+
+    assert values["skills"] == "all installed skills"
+    assert "all skills" in lines["can see"]
+
+
+def test_the_tools_note_counts_nothing_when_everything_is_ticked() -> None:
+    assert tui._field_notes({"tools": [tui.EVERYTHING]}, Profile())["tools"] == "(all)"
+
+
+def test_the_allow_all_rows_survive_a_round_trip_through_a_profile(
+    config_dir: Path, tmp_path: Path
+) -> None:
+    """A profile file is the only place these answers live, so they have to read back."""
+    save_profile(
+        Profile(
+            name="wide-open",
+            tools=[tui.EVERYTHING],
+            skills=[tui.EVERYTHING],
+            network_presets=[NETWORK_ALL],
+        )
+    )
+
+    loaded = load_profiles()["wide-open"]
+    answers = tui.answers_from(tui.NewSession(profile=loaded), {"wide-open": loaded})
+    built = tui.build_session(loaded, answers).profile
+
+    assert built.tools == [tui.EVERYTHING]
+    assert built.skills == [tui.EVERYTHING]
+    assert built.network_presets == [NETWORK_ALL]
+    assert built.opens_every_domain()
+
+
+def test_the_allow_all_row_is_on_the_tools_and_skills_lists(
+    which: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude" / "skills" / "reviewer").mkdir(parents=True)
+    agent = AgentSpec(command="claude", config_write_paths=[str(tmp_path / ".claude")])
+
+    assert titles(tui.tool_choices(Profile()))[0] == "Everything on the host PATH"
+    assert titles(tui.skill_choices(agent, []))[0] == "All installed skills"
+
+
+def test_an_agent_with_no_skills_is_still_not_asked(tmp_path: Path) -> None:
+    """One row saying "all of nothing" is worse than the question being skipped."""
+    agent = AgentSpec(command="codex", config_write_paths=[str(tmp_path / "nothing-here")])
+
+    assert tui.skill_choices(agent, []) == []
+
+
+def test_the_files_hint_points_at_the_local_tab_for_no_fence_at_all() -> None:
+    """There is no allow-all for writes: that is what a Local tab is."""
+    assert "Local tab" in tui.FIELD_HINTS["files"]
+
+
+def test_the_network_hint_says_what_ticking_nothing_leaves_open() -> None:
+    hint = tui.FIELD_HINTS["network"]
+
+    assert "the agent's own API" in hint
+    assert "Shell agent" in hint
+
+
+# --- the in-guest install warning -------------------------------------------
+
+
+def test_no_install_warning_when_the_network_is_unrestricted() -> None:
+    """Allow-all reaches the npm registry like it reaches everything else."""
+    plan = tui.NewSession(
+        profile=Profile(agent="claude", network_presets=[NETWORK_ALL]), backend="msb"
+    )
+
+    assert tui.install_warning(plan, load_agents()) == ""
+
+
+def test_the_install_warning_still_fires_without_the_registry() -> None:
+    plan = tui.NewSession(profile=Profile(agent="claude", network_presets=[]), backend="msb")
+
+    assert tui.install_warning(plan, load_agents()) == tui.INSTALL_WARNING
+
+
+def test_an_unrestricted_msb_launch_confirms_without_a_warning() -> None:
+    profile = Profile(agent="claude", network_presets=[NETWORK_ALL])
+
+    lines = tui.confirm_lines({"backend": "msb"}, profile, load_agents())
+
+    assert not any(label == "warning" for label, _ in lines)
+
+
+def test_srt_is_refused_while_the_network_is_unrestricted() -> None:
+    """srt cannot express it, so the backend list says so rather than the launch failing."""
+    rows = tui.backend_choices(everything=True)
+
+    # Never `== ""` for msb: whether that row is refused at all depends on whose machine
+    # draws it, and what this is about is which backend allow-all rules out.
+    refusals = {key: why for key, _, why in rows}
+    assert refusals["srt"] == tui.NO_ALLOW_ALL_ON_SRT
+    assert refusals["msb"] != tui.NO_ALLOW_ALL_ON_SRT
+
+
+def test_srt_is_refused_for_nothing_when_the_network_is_a_list() -> None:
+    rows = tui.backend_choices()
+
+    assert {key: why for key, _, why in rows}["srt"] == ""
+
+
+def test_the_confirm_says_srt_will_refuse_an_unrestricted_sandbox() -> None:
+    """The screen that says what was granted may not assert a grant the backend rejects."""
+    profile = Profile(network_presets=[NETWORK_ALL])
+
+    lines = dict(tui.confirm_lines({"backend": "srt"}, profile, load_agents()))
+
+    assert lines["warning"] == tui.NO_ALLOW_ALL_ON_SRT
+
+
+def test_the_confirm_carries_both_warnings_when_both_apply() -> None:
+    """One warning row must not swallow the other."""
+    profile = Profile(agent="claude", network_presets=["github"])
+
+    lines = tui.confirm_lines({"backend": "msb"}, profile, load_agents())
+
+    assert [line for label, line in lines if label == "warning"] == [tui.INSTALL_WARNING]
+
+
+def test_ticking_all_the_network_groups_is_not_the_same_as_no_allowlist(
+    press, fake_sessions, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`a` means all the groups. The row that means "no allowlist" is not one of them.
+
+    On msb, where nothing refuses that row, so the `a` key is the only thing keeping it out.
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: "/opt/bin/msb")
+
+    plan = press(f"{BACKEND}{DOWN}\r{NETWORK}a\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert plan.backend == "msb"
+
+    assert NETWORK_ALL not in plan.profile.network_presets
+    assert "github" in plan.profile.network_presets
+    assert not plan.profile.opens_every_domain()
+
+
+def test_ticking_all_the_tools_is_not_the_same_as_the_whole_host_path(
+    press, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    plan = press(f"{TOOLS}a\r{GO}", lambda: tui.choose(tmp_path))
+
+    assert tui.EVERYTHING not in plan.profile.tools
+    assert "git" in plan.profile.tools

@@ -1,6 +1,7 @@
 """The one seam that shells out to herdr: exact argv, pane id parsing, clear errors."""
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 
@@ -229,6 +230,92 @@ def test_a_failing_herdr_command_reports_its_stderr(herdr: FakeHerdr, tmp_path: 
 
     with pytest.raises(HerdrError, match="no such workspace"):
         create_tab(tmp_path)
+
+
+def test_a_failure_reports_what_herdr_printed_on_stdout(herdr: FakeHerdr) -> None:
+    """`herdr config check` prints its diagnostics on stdout and says nothing on stderr.
+
+    Reading stderr alone showed the user an empty pair of parentheses and no reason at all.
+    """
+    herdr.returncode = 1
+    herdr.stdout = "config: issues found\nunknown config key keys.bogus_key; ignoring key\n"
+    herdr.stderr = ""
+
+    with pytest.raises(HerdrError, match="unknown config key keys.bogus_key"):
+        check_config()
+
+
+def test_a_refusal_shows_the_message_out_of_herdr_json_and_not_the_blob(
+    herdr: FakeHerdr,
+) -> None:
+    """A tab that could not be created says why, not `{"error":{"code":...}}`."""
+    herdr.returncode = 1
+    herdr.stdout = json.dumps(
+        {"error": {"code": "pane_not_found", "message": "pane bogus:pane not found"}}
+    )
+
+    with pytest.raises(HerdrError) as raised:
+        run_in_pane("bogus:pane", "echo hi")
+
+    assert "pane bogus:pane not found" in str(raised.value)
+    assert "{" not in str(raised.value)
+
+
+def test_a_reload_that_is_refused_says_why_in_a_sentence(herdr: FakeHerdr) -> None:
+    herdr.returncode = 1
+    herdr.stdout = json.dumps({"error": {"code": "no_server", "message": "no herdr server"}})
+
+    with pytest.raises(HerdrError) as raised:
+        reload_config()
+
+    assert str(raised.value).endswith("no herdr server")
+
+
+def test_a_tab_that_cannot_be_created_says_why_in_a_sentence(
+    herdr: FakeHerdr, tmp_path: Path
+) -> None:
+    herdr.returncode = 1
+    herdr.stdout = json.dumps({"error": {"code": "bad_workspace", "message": "no such workspace"}})
+
+    with pytest.raises(HerdrError) as raised:
+        create_tab(tmp_path)
+
+    assert "no such workspace" in str(raised.value)
+    assert "bad_workspace" not in str(raised.value)
+
+
+def test_the_whole_blob_is_kept_in_the_debug_log(
+    herdr: FakeHerdr, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The message is for the screen; everything herdr said is for the log."""
+    herdr.returncode = 1
+    herdr.stdout = json.dumps({"error": {"code": "pane_not_found", "message": "gone"}})
+    caplog.set_level(logging.DEBUG, logger="paddock")
+
+    with pytest.raises(HerdrError):
+        reload_config()
+
+    assert "pane_not_found" in caplog.text
+
+
+def test_a_failure_with_nothing_printed_at_all_still_says_something(herdr: FakeHerdr) -> None:
+    herdr.returncode = 1
+    herdr.stdout = ""
+    herdr.stderr = ""
+
+    with pytest.raises(HerdrError, match="said nothing about why"):
+        reload_config()
+
+
+def test_both_streams_are_reported_when_both_hold_something(herdr: FakeHerdr) -> None:
+    herdr.returncode = 1
+    herdr.stdout = "config: issues found"
+    herdr.stderr = "warning: cannot reach the server"
+
+    with pytest.raises(HerdrError) as raised:
+        check_config()
+
+    assert "cannot reach the server; config: issues found" in str(raised.value)
 
 
 def test_a_pane_id_that_is_not_a_string_is_a_clear_error(

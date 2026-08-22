@@ -41,6 +41,7 @@ def reset() -> None:
     registry.clear()
     collects.clear()
     orphans.clear()
+    stale_runs.clear()
 
 
 def list_sessions() -> list[Session]:
@@ -103,6 +104,15 @@ orphans: list[str] = []
 def collect_orphans() -> list[str]:
     calls.append(("collect_orphans",))
     return list(orphans)
+
+
+# Run dirs a test wants the sweep to find with no session claiming them.
+stale_runs: list[Path] = []
+
+
+def collect_run_dirs() -> list[Path]:
+    calls.append(("collect_run_dirs",))
+    return list(stale_runs)
 
 
 def launch_local(cwd: Path | None = None) -> str:

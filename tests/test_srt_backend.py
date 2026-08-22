@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -12,7 +13,7 @@ import pytest
 from paddock import backends
 from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
-from paddock.profiles import LOCAL_SERVICES, NETWORK_ALL, Profile
+from paddock.profiles import EVERYTHING, LOCAL_SERVICES, NETWORK_ALL, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
 
@@ -1104,7 +1105,7 @@ def test_open_pane_passes_the_config_dir_to_the_tab(
 
     srt.open_pane(run, label="sbx:demo")
 
-    assert client.tabs[0][2] == {"CLAUDE_CONFIG_DIR": str(run.run_dir / "config")}
+    assert client.tabs[0][2]["CLAUDE_CONFIG_DIR"] == str(run.run_dir / "config")
 
 
 def test_open_pane_can_start_the_tab_elsewhere(
@@ -1221,6 +1222,25 @@ def test_a_shell_tab_keeps_its_own_log(which: dict[str, str], fake_home: Path) -
     assert "shell.log" not in (run.run_dir / "launch.sh").read_text()
 
 
+def test_a_shell_tab_says_paddock_in_its_prompt(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """A sandboxed shell that looks like an ordinary one is the thing to avoid (SPEC §3.2)."""
+    run = srt.prepare(Profile())
+
+    shell = (run.run_dir / "shell.sh").read_text()
+    assert 'PS1="paddock:${PS1:-\\$ }"' in shell
+    assert 'PROMPT="$PS1"' in shell
+    assert "export PS1 PROMPT" in shell
+
+
+def test_the_agent_tab_gets_no_prompt_of_paddocks(which: dict[str, str], fake_home: Path) -> None:
+    """The agent draws its own interface; a prompt variable there would say nothing to anyone."""
+    run = srt.prepare(Profile())
+
+    assert "PS1" not in (run.run_dir / "launch.sh").read_text()
+
+
 def test_a_shell_that_said_nothing_on_its_way_out_does_not_hold_the_pane(
     which: dict[str, str], fake_home: Path, real_subprocess: None, tmp_path: Path
 ) -> None:
@@ -1273,3 +1293,260 @@ def test_an_agent_tab_is_held_on_any_quick_failure_as_it_always_was(
     )
 
     assert "launch failed (exit 3)" in done.stderr
+
+
+# --- every tool on the host -------------------------------------------------
+
+
+def test_every_tool_means_the_hosts_own_path(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No shim dir to name, so the sandbox is handed the PATH the launcher was started on."""
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
+
+    command = srt.pane_command(
+        Profile(tools=[EVERYTHING]), CLAUDE, Path("/run/s.json"), None, NO_REDIRECT
+    )
+
+    assert "PATH=/opt/homebrew/bin:/usr/bin:/bin" in inner_command(command)
+
+
+def test_a_host_with_no_path_at_all_still_gets_a_usable_one(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PATH", raising=False)
+
+    assert srt.sandbox_path(Profile(tools=[EVERYTHING]), None) == "/usr/bin:/bin"
+
+
+def test_the_shim_dir_is_still_the_path_when_tools_are_ticked(which: dict[str, str]) -> None:
+    assert srt.sandbox_path(Profile(), Path("/run/bin")) == "/run/bin:/usr/bin:/bin"
+    assert srt.sandbox_path(Profile(include_system_path=False), Path("/run/bin")) == "/run/bin"
+
+
+def test_preparing_with_every_tool_builds_no_shim_dir(
+    which: dict[str, str], fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+
+    run = srt.prepare(Profile(tools=[EVERYTHING]))
+
+    assert not (run.run_dir / "bin").exists()
+    assert "PATH=/opt/homebrew/bin:/usr/bin" in inner_command(run.command)
+
+
+def test_every_tool_reports_nothing_left_off_the_path(
+    which: dict[str, str], fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """There is no list of names, so nothing can be missing from it and nothing is warned about."""
+    srt.prepare(Profile(tools=[EVERYTHING]))
+
+    assert "left off the sandbox PATH" not in capsys.readouterr().err
+
+
+def test_a_ticked_tool_the_host_lacks_is_still_reported(
+    which: dict[str, str], fake_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ordinary path is untouched: a name that shims to nothing is still said out loud."""
+    srt.prepare(Profile(tools=["git", "nosuchtool"]))
+
+    assert "left off the sandbox PATH: nosuchtool" in capsys.readouterr().err
+
+
+def test_every_tool_changes_nothing_about_what_the_sandbox_may_do(
+    which: dict[str, str], fake_home: Path, tmp_path: Path
+) -> None:
+    """PATH was always the soft layer. The writes and the domains are the actual boundary."""
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    wide = srt.build_settings(Profile(tools=[EVERYTHING]), CLAUDE, workdir, NO_REDIRECT)
+    narrow = srt.build_settings(Profile(tools=["git"]), CLAUDE, workdir, NO_REDIRECT)
+
+    assert wide == narrow
+
+
+# --- the prompt a shell tab gets --------------------------------------------
+
+
+def test_the_shell_rc_files_are_written_into_the_run_dir(tmp_path: Path) -> None:
+    directory = srt.write_shell_rc(tmp_path)
+
+    assert directory == tmp_path / "shellrc"
+    assert (directory / ".zshrc").is_file()
+    assert (directory / "env.sh").is_file()
+
+
+def test_the_zsh_rc_runs_the_users_own_files_before_it_touches_the_prompt(
+    tmp_path: Path,
+) -> None:
+    """Taking the user's zsh setup away to change a prompt would be a poor trade."""
+    written = (srt.write_shell_rc(tmp_path) / ".zshrc").read_text()
+
+    assert '. "$ZDOTDIR/.zshrc"' in written
+    assert '. "$ZDOTDIR/.zshenv"' in written
+    assert written.index("ZDOTDIR=$HOME") < written.index("PROMPT=")
+    assert 'PROMPT="paddock:$PROMPT"' in written
+
+
+def test_a_shell_tab_is_pointed_at_all_three_places_a_prompt_can_come_from(
+    tmp_path: Path,
+) -> None:
+    env = srt.prompt_env(tmp_path / "shellrc")
+
+    assert env["ZDOTDIR"] == str(tmp_path / "shellrc")
+    assert env["ENV"] == str(tmp_path / "shellrc" / "env.sh")
+    assert env["PS1"] == "paddock:$ "
+
+
+def test_the_shell_command_carries_the_prompt_and_the_agents_does_not(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    run = srt.prepare(Profile())
+
+    assert "PS1=paddock:$ " in inner_command(run.shell_command)
+    assert f"ZDOTDIR={run.run_dir / 'shellrc'}" in inner_command(run.shell_command)
+    assert "PS1" not in run.command
+    assert "ZDOTDIR" not in run.command
+
+
+def test_the_prompt_variables_are_not_given_to_the_tab_itself(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """`run.env` is what `herdr tab create --env` gets, and that is the agent's."""
+    run = srt.prepare(Profile())
+
+    assert "PS1" not in run.env
+    assert "ZDOTDIR" not in run.env
+
+
+def test_a_session_that_lost_its_shell_rc_gets_it_back(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """The stored command points a shell at these files; without them it loses the user's own."""
+    run = srt.prepare(Profile())
+    (run.run_dir / "shellrc" / ".zshrc").unlink()
+
+    srt.load_run(run.run_dir)
+
+    assert (run.run_dir / "shellrc" / ".zshrc").is_file()
+
+
+def test_the_sh_startup_file_prefixes_the_prompt_for_real(
+    real_subprocess: None, tmp_path: Path
+) -> None:
+    """Run by a real sh, because a prompt nobody measured is a prompt nobody has."""
+    directory = srt.write_shell_rc(tmp_path)
+
+    done = subprocess.run(
+        ["/bin/sh", "-c", f'PS1="mine$ "; . {directory / "env.sh"}; printf %s "$PS1"'],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    assert done.stdout == "paddock:mine$ "
+
+
+def test_the_sh_startup_file_never_says_paddock_twice(
+    real_subprocess: None, tmp_path: Path
+) -> None:
+    """Two shells that both read it, or a re-source, must not stack the prefix up."""
+    directory = srt.write_shell_rc(tmp_path)
+    source = f'. {directory / "env.sh"}'
+
+    done = subprocess.run(
+        ["/bin/sh", "-c", f'PS1="mine$ "; {source}; {source}; printf %s "$PS1"'],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    assert done.stdout == "paddock:mine$ "
+
+
+@pytest.mark.skipif(not shutil.which("zsh"), reason="no zsh on this machine to measure with")
+def test_the_zsh_startup_file_keeps_the_prompt_the_users_own_rc_wrote(
+    real_subprocess: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason for the file: an exported prompt alone is overwritten by any rc that sets one."""
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".zshrc").write_text('PROMPT="theirs%% "\n')
+    directory = srt.write_shell_rc(tmp_path)
+
+    done = subprocess.run(
+        ["zsh", "-c", f'source {directory / ".zshrc"}; printf %s "$PROMPT"'],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={"HOME": str(home), "PATH": os.environ["PATH"]},
+    )
+
+    assert done.stdout == "paddock:theirs%% "  # raw, since printf expands no prompt escape
+
+
+# --- allowRead may never re-open what denyRead closed ------------------------
+
+
+def test_a_linked_path_inside_a_denied_directory_is_not_allowed_back(tmp_path: Path) -> None:
+    """`allowRead` names paths by hand, and a name inside `~/.ssh` would undo the denial."""
+    synth = SynthConfig(dir=tmp_path / "config", linked=[Path("~/.ssh/id_rsa").expanduser()])
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert settings["filesystem"]["allowRead"] == []
+
+
+def test_the_denied_directory_itself_is_not_allowed_back(tmp_path: Path) -> None:
+    synth = SynthConfig(dir=tmp_path / "config", linked=[Path("~/.aws").expanduser()])
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert settings["filesystem"]["allowRead"] == []
+
+
+def test_a_skill_under_the_agents_own_config_dir_is_still_allowed(tmp_path: Path) -> None:
+    """The skills a session did take are reached through a denied dir, and must stay reachable."""
+    skill = Path("~/.claude/skills/writing").expanduser()
+    synth = SynthConfig(dir=tmp_path / "config", linked=[skill])
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert str(skill) in settings["filesystem"]["allowRead"]
+
+
+def test_the_never_readable_promise_holds_under_every_skill(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """End to end: a link out is not taken, so nothing names it in allowRead either."""
+    (fake_home / ".ssh").mkdir(exist_ok=True)
+    (fake_home / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
+    (fake_home / ".claude" / "skills" / "escape").symlink_to(fake_home / ".ssh")
+
+    run = srt.prepare(Profile(skills=["*"]))
+
+    settings = json.loads((run.run_dir / "srt-settings.json").read_text())
+    assert not any(".ssh" in path for path in settings["filesystem"]["allowRead"])
+    assert str(fake_home / ".ssh") in settings["filesystem"]["denyRead"]
+
+
+def test_the_agents_own_login_survives_a_denied_config_dir_with_a_synth_dir_too(
+    tmp_path: Path,
+) -> None:
+    """The same rule on the other branch: denying ~/.claude must not lock claude out."""
+    credentials = Path("~/.claude/.credentials.json").expanduser()
+    synth = SynthConfig(dir=tmp_path / "config", linked=[credentials])
+
+    settings = srt.build_settings(
+        Profile(deny_read=["~/.claude", "~/.ssh"]), CLAUDE, tmp_path, synth
+    )
+
+    assert str(credentials) in settings["filesystem"]["allowRead"]
+
+
+def test_a_link_out_is_dropped_even_beside_the_agents_own_login(tmp_path: Path) -> None:
+    credentials = Path("~/.claude/.credentials.json").expanduser()
+    synth = SynthConfig(
+        dir=tmp_path / "config", linked=[credentials, Path("~/.ssh/id_rsa").expanduser()]
+    )
+
+    settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
+
+    assert settings["filesystem"]["allowRead"] == [str(credentials)]

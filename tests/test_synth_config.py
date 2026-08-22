@@ -88,29 +88,31 @@ def test_the_copy_leaves_every_mcp_server_behind(home: Path, run_dir: Path) -> N
 
     copy = json.loads((synth.dir / ".claude.json").read_text())
     assert "mcpServers" not in json.dumps(copy)
-    assert copy == {"numStartups": 7, "projects": {"/repo": {"history": ["hello"]}}}
+    assert copy["numStartups"] == 7
+    assert copy["projects"]["/repo"]["history"] == ["hello"]
     assert mcp_config(synth) == {"mcpServers": {"github": {"command": "gh-mcp"}}}
 
 
-def test_a_copy_with_no_mcp_servers_is_left_exactly_as_it_was(home: Path, run_dir: Path) -> None:
-    """Nothing to take out, so nothing is rewritten."""
-    (home / ".claude.json").write_text('{"numStartups":   7}\n')
+def test_a_copy_keeps_everything_the_host_config_held(home: Path, run_dir: Path) -> None:
+    """Only the first-run answers are added: nothing of the user's is dropped or changed."""
+    (home / ".claude.json").write_text('{"numStartups": 7, "theme": "dark"}\n')
 
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
-    assert (synth.dir / ".claude.json").read_text() == '{"numStartups":   7}\n'
+    copy = json.loads((synth.dir / ".claude.json").read_text())
+    assert copy["numStartups"] == 7
+    assert copy["theme"] == "dark"
 
 
-@pytest.mark.parametrize("name", [".claude.json", ".claude/.credentials.json"])
 def test_a_credential_file_the_host_does_not_have_is_left_out(
-    name: str, home: Path, run_dir: Path
+    home: Path, run_dir: Path
 ) -> None:
     """A dangling symlink is worse than a missing one: the agent reads an error, not a file."""
-    (home / name).unlink()
+    (home / ".claude" / ".credentials.json").unlink()
 
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
-    left_out = synth.dir / Path(name).name
+    left_out = synth.dir / ".credentials.json"
     assert not left_out.exists()
     assert not left_out.is_symlink()
 
@@ -334,7 +336,7 @@ def test_an_unreadable_host_config_leaves_the_whitelist_empty(home: Path, run_di
 def test_claude_is_pointed_at_the_synthesized_dir(home: Path, run_dir: Path) -> None:
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
-    assert synth.env == {"CLAUDE_CONFIG_DIR": str(run_dir / "config")}
+    assert synth.env["CLAUDE_CONFIG_DIR"] == str(run_dir / "config")
     assert synth.args == [
         "--mcp-config",
         str(run_dir / "config" / ".mcp.json"),
@@ -384,7 +386,7 @@ def test_the_agent_is_pointed_at_the_path_the_guest_will_see(home: Path, run_dir
     synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg")
 
     assert synth.dir == run_dir / "config"  # the host side, which is what gets mounted
-    assert synth.env == {"CLAUDE_CONFIG_DIR": "/cfg"}
+    assert synth.env["CLAUDE_CONFIG_DIR"] == "/cfg"
     assert synth.args == ["--mcp-config", "/cfg/.mcp.json", "--strict-mcp-config"]
 
 
@@ -470,3 +472,189 @@ def test_a_skill_the_host_does_not_have_is_reported_in_copy_mode_too(
 
     assert list((synth.dir / "skills").iterdir()) == []
     assert synth.missing == ["skill 'nope'"]
+
+
+# --- the agent's first-run questions ----------------------------------------
+
+
+def seeded(synth: synth_config.SynthConfig) -> dict:
+    return json.loads((synth.dir / ".claude.json").read_text())
+
+
+def test_the_generated_workdir_is_already_trusted(home: Path, run_dir: Path) -> None:
+    """A sandboxed session is a directory the agent has never seen, so it asks. Once is enough."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    projects = seeded(synth)["projects"]
+    assert projects[str(run_dir / "work")]["hasTrustDialogAccepted"] is True
+
+
+def test_a_shared_directory_is_trusted_by_the_name_it_is_started_in(
+    home: Path, run_dir: Path, tmp_path: Path
+) -> None:
+    shared = tmp_path / "repo"
+    shared.mkdir()
+
+    synth = synth_config.build(Profile(shared_dir=str(shared)), CLAUDE, run_dir)
+
+    assert str(shared) in seeded(synth)["projects"]
+
+
+def test_a_backend_that_starts_the_agent_elsewhere_names_that_directory(
+    home: Path, run_dir: Path
+) -> None:
+    """An msb tab opens in the guest mount, which is the path the agent writes down."""
+    synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", workdir="/work")
+
+    projects = json.loads((run_dir / "config" / ".claude.json").read_text())["projects"]
+    assert "/work" in projects
+    assert str(run_dir / "work") not in projects
+
+
+def test_the_auto_updater_is_off_in_the_sandbox(home: Path, run_dir: Path) -> None:
+    """It cannot write to the install from in there, and a failed update is a banner over it."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert seeded(synth)["autoUpdates"] is False
+    assert seeded(synth)["hasCompletedOnboarding"] is True
+
+
+def test_the_answers_are_written_even_when_the_host_has_no_config(
+    home: Path, run_dir: Path
+) -> None:
+    """A fresh install has no `.claude.json`, which is the case the interstitials come from."""
+    (home / ".claude.json").unlink()
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert seeded(synth)["autoUpdates"] is False
+    assert str(run_dir / "work") in seeded(synth)["projects"]
+
+
+def test_the_hosts_own_config_is_never_touched(home: Path, run_dir: Path) -> None:
+    original = (home / ".claude.json").read_text()
+
+    synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert (home / ".claude.json").read_text() == original
+
+
+def test_a_trust_entry_keeps_what_that_project_already_said(home: Path, run_dir: Path) -> None:
+    """The host's own entry for a shared directory carries its history, and that stays."""
+    synth = synth_config.build(Profile(shared_dir="/repo"), CLAUDE, run_dir)
+
+    entry = seeded(synth)["projects"]["/repo"]
+    assert entry["history"] == ["hello"]
+    assert entry["hasTrustDialogAccepted"] is True
+
+
+def test_an_agent_with_no_first_run_file_gets_none(home: Path, run_dir: Path) -> None:
+    """Only Claude Code is redirected, and only it has answers paddock knows."""
+    synth = synth_config.build(Profile(agent="codex"), CODEX, run_dir)
+
+    assert synth.dir is None
+
+
+# --- every skill ------------------------------------------------------------
+
+
+def test_all_skills_takes_every_one_the_agent_has(home: Path, run_dir: Path) -> None:
+    synth = synth_config.build(Profile(skills=["*"]), CLAUDE, run_dir)
+
+    taken = sorted(path.name for path in (synth.dir / "skills").iterdir())
+    assert taken == ["deploy", "writing"]
+    assert synth.missing == []
+
+
+def test_all_skills_on_an_agent_with_none_takes_nothing(home: Path, run_dir: Path) -> None:
+    """It names no skill of its own, so nothing about it can go missing."""
+    (home / ".claude" / "skills" / "writing").rmdir()
+    (home / ".claude" / "skills" / "deploy").rmdir()
+
+    synth = synth_config.build(Profile(skills=["*"]), CLAUDE, run_dir)
+
+    assert list((synth.dir / "skills").iterdir()) == []
+    assert synth.missing == []
+
+
+def test_ticked_skills_are_still_only_the_ticked_ones(home: Path, run_dir: Path) -> None:
+    synth = synth_config.build(Profile(skills=["writing"]), CLAUDE, run_dir)
+
+    assert [path.name for path in (synth.dir / "skills").iterdir()] == ["writing"]
+
+
+def test_the_sandbox_is_told_not_to_auto_update(home: Path, run_dir: Path) -> None:
+    """The config key alone is not enough for a native install, which updates anyway."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert synth.env["DISABLE_AUTOUPDATER"] == "1"
+    assert synth.env["CLAUDE_CONFIG_DIR"] == str(run_dir / "config")
+
+
+def test_the_upsell_counters_are_already_past_their_limit(home: Path, run_dir: Path) -> None:
+    """A config dir per session makes every session the first one to see the offer."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert seeded(synth)["fullscreenUpsellSeenCount"] == 99
+
+
+# --- a skills dir is a directory anyone can drop a link into --------------------
+
+
+def test_a_skill_that_links_outside_the_skills_dir_is_not_taken(
+    home: Path, run_dir: Path
+) -> None:
+    """Otherwise a link named `deploy` hands the sandbox whatever it points at (SPEC §4.3)."""
+    (home / ".claude" / "skills" / "escape").symlink_to(home / ".ssh")
+    (home / ".ssh").mkdir()
+    (home / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+
+    synth = synth_config.build(Profile(skills=["escape"]), CLAUDE, run_dir)
+
+    assert not (synth.dir / "skills" / "escape").exists()
+    assert home / ".ssh" not in synth.linked
+    assert synth.missing == ["skill 'escape' links outside the agent's skills directory"]
+
+
+def test_every_skill_refuses_a_link_out_too(home: Path, run_dir: Path) -> None:
+    """`*` takes what the directory lists, and a link is what the directory lists."""
+    (home / ".ssh").mkdir()
+    (home / ".claude" / "skills" / "escape").symlink_to(home / ".ssh")
+
+    synth = synth_config.build(Profile(skills=["*"]), CLAUDE, run_dir)
+
+    taken = sorted(path.name for path in (synth.dir / "skills").iterdir())
+    assert taken == ["deploy", "writing"]
+    assert "escape" in synth.missing[0]
+
+
+def test_a_link_out_is_not_copied_into_a_guest_either(home: Path, run_dir: Path) -> None:
+    """The copy follows links, so an unchecked one would put the real files in the guest."""
+    (home / ".ssh").mkdir()
+    (home / ".ssh" / "id_rsa").write_text("PRIVATE KEY")
+    (home / ".claude" / "skills" / "escape").symlink_to(home / ".ssh")
+
+    synth = synth_config.build(Profile(skills=["escape"]), CLAUDE, run_dir, guest_dir="/cfg")
+
+    assert list((synth.dir / "skills").iterdir()) == []
+    assert "PRIVATE KEY" not in _every_file(synth.dir)
+
+
+def test_a_skill_that_is_a_link_inside_the_skills_dir_is_fine(
+    home: Path, run_dir: Path
+) -> None:
+    """People do symlink one skill to another. Only leaving the directory is refused."""
+    skills = home / ".claude" / "skills"
+    (skills / "alias").symlink_to(skills / "writing")
+
+    synth = synth_config.build(Profile(skills=["alias"]), CLAUDE, run_dir)
+
+    assert (synth.dir / "skills" / "alias").exists()
+    assert synth.missing == []
+
+
+def _every_file(directory: Path) -> str:
+    """Everything under a directory, as one string, for a test that asks what leaked."""
+    return "".join(
+        path.read_text(errors="replace") for path in directory.rglob("*") if path.is_file()
+    )

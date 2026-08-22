@@ -26,7 +26,7 @@ def chooser(terminal, monkeypatch: pytest.MonkeyPatch):
     """Answer the popup with a fixed plan: the TUI itself is tested in test_tui.py."""
 
     def answer(plan: object | None):
-        monkeypatch.setattr(tui, "choose", lambda cwd, answers=None: plan)
+        monkeypatch.setattr(tui, "choose", lambda cwd, answers=None, attach=False: plan)
 
     return answer
 
@@ -92,6 +92,47 @@ def test_each_subcommand_is_recognised() -> None:
     assert cli.parse_args(["launch", "claude-default"]).profile == "claude-default"
     assert cli.parse_args(["attach", "review"]).ref == "review"
     assert cli.parse_args(["gc"]).name == "gc"
+
+
+def test_choose_takes_an_attach_flag() -> None:
+    """What prefix+shift+s runs: the chooser, opened on the list of live sessions."""
+    assert cli.parse_args(["choose", "--attach"]).attach is True
+    assert cli.parse_args(["choose"]).attach is False
+
+
+def test_the_attach_flag_reaches_the_chooser(
+    fake_sessions, terminal, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[bool] = []
+
+    def record(cwd: Path, answers: dict | None = None, attach: bool = False) -> None:
+        asked.append(attach)
+        return None
+
+    monkeypatch.setattr(tui, "choose", record)
+
+    cli.main(["choose", "--attach"])
+
+    assert asked == [True]
+
+
+def test_a_failed_launch_comes_back_to_the_form_not_to_the_attach_list(
+    fake_sessions, terminal, failure_screen, quiet_start, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The list was a way in. The second time round the answers are what matters."""
+    asked: list[bool] = []
+
+    def record(cwd: Path, answers: dict | None = None, attach: bool = False):
+        asked.append(attach)
+        return tui.NewSession(profile=Profile())
+
+    monkeypatch.setattr(tui, "choose", record)
+    monkeypatch.setattr(fake_sessions_module, "launch", raising(RuntimeError("no srt")))
+    failure_screen(True, False)
+
+    cli.main(["choose", "--attach"])
+
+    assert asked == [True, False]
 
 
 def test_init_takes_a_dry_run_and_an_undo() -> None:
@@ -190,7 +231,7 @@ def test_the_chooser_opens_in_the_current_directory_by_default(
 ) -> None:
     seen: list[Path] = []
 
-    def record(cwd: Path, answers: dict | None = None) -> tui.Local:
+    def record(cwd: Path, answers: dict | None = None, attach: bool = False) -> tui.Local:
         seen.append(cwd)
         return tui.Local(cwd=str(cwd))
 
@@ -357,7 +398,7 @@ def test_a_command_the_registry_already_runs_is_not_written_again(
 def test_ctrl_c_leaves_no_traceback(
     fake_sessions, terminal, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def interrupt(cwd: Path, answers: dict | None = None) -> None:
+    def interrupt(cwd: Path, answers: dict | None = None, attach: bool = False) -> None:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(tui, "choose", interrupt)
@@ -381,7 +422,7 @@ def test_a_launch_that_fails_says_why_instead_of_tracing_back(
 ) -> None:
     """The popup closes with the process, so a traceback is never seen by anyone."""
 
-    def fail(cwd: Path, answers: dict | None = None) -> None:
+    def fail(cwd: Path, answers: dict | None = None, attach: bool = False) -> None:
         raise error
 
     monkeypatch.setattr(tui, "choose", fail)
@@ -436,7 +477,7 @@ def test_back_to_the_form_asks_again_with_every_answer_still_there(
     plan = tui.NewSession(profile=Profile(agent="codex", tools=["git"]), name="review")
     asked: list[dict] = []
 
-    def ask(cwd: Path, answers: dict | None = None) -> object:
+    def ask(cwd: Path, answers: dict | None = None, attach: bool = False) -> object:
         asked.append(dict(answers or {}))
         return plan if len(asked) == 1 else None
 
@@ -492,6 +533,31 @@ def test_the_launch_command_draws_no_progress_screen(
     """It is a script's entry point, not a popup: its stdout is the pane id and nothing else."""
     assert cli.main(["launch", "claude-default"]) == 0
     assert "Starting" not in capsys.readouterr().err
+
+
+def test_a_slow_launch_says_what_it_is_doing_before_it_blocks(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The chooser has a screen for this; the command line printed nothing for 22 seconds."""
+    assert cli.main(["launch", "claude-default", "--backend", "msb"]) == 0
+
+    said = capsys.readouterr().err
+    assert "pulling the node:22-slim image" in said
+    assert "installing claude in the guest" in said
+
+
+def test_an_srt_launch_stays_quiet_because_it_starts_at_once(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["launch", "claude-default"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_a_dry_run_says_what_would_happen_and_announces_nothing(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["launch", "claude-default", "--backend", "msb", "--dry-run"]) == 0
+    assert capsys.readouterr().err == ""
 
 
 class Redirected:
@@ -569,15 +635,36 @@ def test_gc_reconciles_and_names_what_it_collected(
     fake_sessions.collects.append(Session(name="review"))
 
     assert cli.main(["gc"]) == 0
-    assert names(fake_sessions.calls) == ["reconcile", "collect_orphans"]
+    assert names(fake_sessions.calls) == ["reconcile", "collect_orphans", "collect_run_dirs"]
     assert "review" in capsys.readouterr().out
 
 
-def test_gc_with_nothing_to_collect_says_nothing(
+def test_gc_with_nothing_to_collect_says_so(
     fake_sessions, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """Saying nothing is what a command that did not run looks like, and gc is asked on a hunch."""
     assert cli.main(["gc"]) == 0
-    assert capsys.readouterr().out == ""
+    assert capsys.readouterr().out == "paddock: nothing to collect\n"
+
+
+def test_gc_that_collected_something_does_not_say_there_was_nothing(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sessions.collects.append(Session(name="review"))
+
+    assert cli.main(["gc"]) == 0
+    assert "nothing to collect" not in capsys.readouterr().out
+
+
+def test_gc_names_the_run_dirs_it_swept(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A launch that failed leaves a directory nothing else would ever remove."""
+    fake_sessions.stale_runs.append(Path("/state/runs/20260822-000000-abcd"))
+
+    assert cli.main(["gc"]) == 0
+    said = capsys.readouterr().out
+    assert "removed the orphaned run dir /state/runs/20260822-000000-abcd" in said
 
 
 def test_gc_takes_no_arguments() -> None:
@@ -911,3 +998,42 @@ def test_a_session_with_no_log_yet_still_says_where_it_will_be(
 
     assert cli.main(["logs", "review"]) == 0
     assert "pane.log" in capsys.readouterr().out
+
+
+def test_an_empty_pane_log_says_what_empty_means(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The script keeps stderr, and a healthy agent draws on stdout, so empty is the good case.
+
+    Printing the path and then nothing at all is what a broken command looks like.
+    """
+    (tmp_path / "pane.log").write_text("")
+    fake_sessions.registry.append(Session(name="review", run_dir=str(tmp_path)))
+
+    assert cli.main(["logs", "review"]) == 0
+
+    said = capsys.readouterr().out
+    assert "nothing logged yet" in said
+    assert cli.EMPTY_PANE_LOG in said
+
+
+def test_a_pane_log_with_something_in_it_explains_nothing(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "pane.log").write_text("the agent said this\n")
+    fake_sessions.registry.append(Session(name="review", run_dir=str(tmp_path)))
+
+    assert cli.main(["logs", "review"]) == 0
+    assert cli.EMPTY_PANE_LOG not in capsys.readouterr().out
+
+
+def test_the_help_describes_the_keys_init_actually_binds(
+    capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It named prefix+c, which is now the one key paddock gives back to herdr."""
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--help"])
+
+    said = capsys.readouterr().out
+    assert "prefix+s" in said
+    assert "prefix+c" not in said

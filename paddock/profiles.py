@@ -15,6 +15,11 @@ TOOL_CANDIDATES = [
     "go", "cargo", "make", "cmake", "gh", "docker", "psql", "sqlite3",
 ]
 
+# The entry in `tools` or `skills` that is not one of them: everything the host has, rather
+# than a list of names. A sentinel like NETWORK_ALL, because no list means "all of them",
+# and a backend reads it rather than expanding it (SPEC §4.1).
+EVERYTHING = "*"
+
 # The one checklist entry that is not a domain group: it names this machine (SPEC §2.1).
 LOCAL_SERVICES = "local services (localhost)"
 
@@ -106,6 +111,19 @@ class Profile:
         default instead of a rule. What the backends share is the question, not the answer.
         """
         return NETWORK_ALL in self.network_presets
+
+    def opens_every_tool(self) -> bool:
+        """Whether the sandbox runs on the host's own PATH rather than a shim dir (§4.1).
+
+        The shim dir was always the soft layer: an absolute path reaches any binary on the
+        machine whatever is in it. So this drops the dir rather than filling it with every
+        name on the host, and what the sandbox may write and reach is untouched.
+        """
+        return EVERYTHING in self.tools
+
+    def opens_every_skill(self) -> bool:
+        """Whether the config dir gets every skill the agent has, rather than a list (§4.3)."""
+        return EVERYTHING in self.skills
 
 
 def profile_dir() -> Path:

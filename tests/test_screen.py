@@ -613,6 +613,37 @@ def test_letters_inside_the_filter_stay_text() -> None:
     assert drive("/an\r \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 4]
 
 
+def test_a_refused_row_cannot_be_ticked_and_says_why() -> None:
+    """The reason takes the key line, the way a refused row on a list does."""
+    why = {2: "srt cannot do that"}
+
+    assert drive(" \r", lambda: screen.tick("Tools", TOOLS, refused=why)) == [1, 4]  # git, unticked
+    assert drive(f"{DOWN}{DOWN} \r", lambda: screen.tick("Tools", TOOLS, refused=why)) == [0, 1, 4]
+    shown = drawn(f"{DOWN}{DOWN} \r", lambda: screen.tick("T", TOOLS, refused=why))
+    assert "srt cannot do that" in shown
+
+
+def test_a_refused_row_that_is_already_ticked_stays_ticked() -> None:
+    """It is an answer the profile gave, and this screen is not the place it is taken away."""
+    why = {0: "srt cannot do that"}
+
+    assert drive("\r", lambda: screen.tick("Tools", TOOLS, refused=why)) == [0, 1, 4]
+    assert drive(" \r", lambda: screen.tick("Tools", TOOLS, refused=why)) == [1, 4]
+
+
+def test_all_does_not_tick_a_refused_row() -> None:
+    assert drive("a\r", lambda: screen.tick("Tools", TOOLS, refused={2: "no"})) == [0, 1, 3, 4]
+
+
+def test_the_refusal_goes_when_the_cursor_moves_on() -> None:
+    """The last line drawn is the key line again, not the reason for a key press two ago."""
+    why = {2: "srt cannot do that"}
+
+    shown = drawn(f"{DOWN}{DOWN} {UP}\r", lambda: screen.tick("T", TOOLS, refused=why))
+
+    assert not shown.rstrip().endswith("srt cannot do that")
+
+
 def test_a_filtered_checklist_ticks_the_row_it_shows() -> None:
     assert drive("/fd\r \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 4]
 
@@ -968,3 +999,15 @@ def test_the_log_path_is_reachable_even_behind_a_short_message() -> None:
         seen |= set(screen.failed_lines("no msb on PATH", log_path, 0, tiny[1], tiny[0], scroll))
 
     assert set(every) <= seen
+
+
+def test_all_does_not_tick_a_row_that_stands_apart_from_all() -> None:
+    """An allow-all row is an answer of its own, and "all of them" is not a way to give it."""
+    assert drive("a\r", lambda: screen.tick("Tools", TOOLS, never_all={2})) == [0, 1, 3, 4]
+
+
+def test_a_row_that_stands_apart_can_still_be_ticked_by_hand() -> None:
+    assert drive(" \r", lambda: screen.tick("Tools", TOOLS, never_all={2})) == [1, 4]
+    assert drive(f"{DOWN}{DOWN} \r", lambda: screen.tick("Tools", TOOLS, never_all={2})) == [
+        0, 1, 2, 4
+    ]

@@ -157,9 +157,14 @@ def scrub(text: str) -> str:
 
 
 def tail(path: Path, count: int) -> str:
-    """The last `count` lines of a file, or a line saying there is nothing there yet."""
+    """The last `count` lines of a file, or a line saying there is nothing there yet.
+
+    An empty file gets that line too. A pane log with nothing in it is the ordinary case,
+    not a broken one, and printing nothing after naming the file looks like a command that
+    failed silently.
+    """
     try:
         lines = path.read_text(errors="replace").splitlines(keepends=True)
     except OSError:
-        return f"paddock: nothing logged yet at {path}\n"
-    return "".join(lines[-count:])
+        lines = []
+    return "".join(lines[-count:]) or f"paddock: nothing logged yet at {path}\n"

@@ -8,7 +8,7 @@ skinparam defaultTextAlignment center
 actor User
 
 package "Herdr 0.8.0" {
-  [Keybinding\nprefix+c -> popup\n(written by `paddock init`)] as Keybinding
+  [Keybindings\nprefix+s -> the chooser\nprefix+shift+s -> the attach list\n(written by `paddock init`)] as Keybinding
   [herdr CLI\ntab create / pane run] as HerdrCLI
   [Workspace / tabs / panes] as HerdrUI
 }
@@ -44,9 +44,9 @@ package "Sandbox runtimes" {
 
 User --> CLI : runs `paddock init` once, after installing
 CLI --> Init : init (backs the config up first)
-Init --> Keybinding : writes the popup block\nand moves new_tab to prefix+shift+c
+Init --> Keybinding : writes the popup blocks\nand moves herdr settings to prefix+comma
 Init --> HerdrClient : herdr config check, then reload-config\n(a refused config is put back;\nno herdr to ask is only a message)
-User --> Keybinding : presses prefix+c
+User --> Keybinding : presses prefix+s
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
 TUI --> CLI : one plan:\nlocal | attach | new session

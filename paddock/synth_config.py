@@ -12,6 +12,7 @@ caller that names a `guest_dir` gets copies (SPEC §2.2).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from pathlib import Path, PurePosixPath
 
 from paddock import log
 from paddock.agents import AgentSpec
-from paddock.profiles import Profile
+from paddock.profiles import EVERYTHING, Profile
 
 logger = log.get_logger(__name__)
 
@@ -44,6 +45,12 @@ class Redirection:
     # macOS Keychain service holding the token when the agent kept none in a file. A
     # fallback source for CREDENTIALS_FILE, never a replacement for one (SPEC §4.3).
     keychain: str = ""
+    # The file the agent keeps its first-run answers in, inside the config dir. paddock
+    # seeds it so a sandboxed session opens on the agent and not on an interstitial.
+    first_run: str = ""
+    # Variables the sandbox gets besides the config dir one, for what the config file
+    # cannot say. Never a secret: these are settings, and the log prints them.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 # Only Claude Code can be redirected today, so every other agent keeps its real config
@@ -53,8 +60,34 @@ REDIRECTIONS = {
         "CLAUDE_CONFIG_DIR",
         copied=(".claude.json",),
         keychain="Claude Code-credentials",
+        first_run=".claude.json",
+        # `autoUpdates: false` in the config file is not enough for a native install,
+        # which keeps updating anyway (`autoUpdatesProtectedForNative`) and then fails,
+        # because the install directory is outside the sandbox. Measured live on
+        # 2.1.240: with this set, the red banner is gone (SPEC §4.3).
+        env=(("DISABLE_AUTOUPDATER", "1"),),
     )
 }
+
+# What Claude Code writes in `.claude.json` once its first-run questions are answered, as
+# read off a real one on this machine. A sandboxed session is a fresh workdir every time,
+# so without these the user meets the trust dialog before the prompt, and the auto-updater
+# behind it: the sandbox cannot write to the install, so it fails and leaves a red banner
+# over the session. Neither question is one the user can answer usefully here, and neither
+# is a permission: the trust dialog asks about a directory paddock generated, and the
+# updater is asking to write outside the sandbox (SPEC §4.3).
+FIRST_RUN = {
+    "hasCompletedOnboarding": True,
+    "autoUpdates": False,
+    # An upsell counter, not a permission: a session gets a config dir of its own, so
+    # without this every session is the first one this offer has ever been made to, and
+    # it stands between the user and the prompt every single time. Measured live on
+    # 2.1.240: the offer is gone once the count is past its limit.
+    "fullscreenUpsellSeenCount": 99,
+}
+
+# The same, for the directory the agent is started in.
+FIRST_RUN_PROJECT = {"hasTrustDialogAccepted": True, "hasCompletedProjectOnboarding": True}
 
 
 @dataclass
@@ -80,6 +113,7 @@ def build(
     run_dir: Path,
     guest_dir: str = "",
     defer_credentials: bool = False,
+    workdir: str = "",
 ) -> SynthConfig:
     """Build `run_dir/config` for the agent, or nothing when the agent cannot be redirected.
 
@@ -90,6 +124,10 @@ def build(
 
     `defer_credentials` leaves the token out, for a caller that has more that can fail
     before the agent could use one. `place_credentials` puts it in afterwards.
+
+    `workdir` is where the agent will be started, which is the directory it asks about
+    trusting. A backend that starts it somewhere else (a mount point inside a guest) names
+    that path; the rest get the workdir this profile and run dir imply.
     """
     redirect = REDIRECTIONS.get(profile.agent)
     if redirect is None or not agent.config_write_paths:
@@ -110,6 +148,8 @@ def build(
     if redirect.keychain and not defer_credentials and not (config / CREDENTIALS_FILE).exists():
         # The host keeps no credential file, so the redirected agent has nothing to read.
         _export_token(redirect.keychain, config / CREDENTIALS_FILE)
+    if redirect.first_run:
+        _seed_first_run(config / redirect.first_run, _workdirs(profile, run_dir, workdir))
     sources, missing = _take_skills(
         skill_dirs(agent), config / "skills", profile.skills, copy=in_guest
     )
@@ -136,7 +176,7 @@ def build(
     )
     return SynthConfig(
         dir=config,
-        env={redirect.env_var: str(seen_as)},
+        env={redirect.env_var: str(seen_as), **dict(redirect.env)},
         # --strict-mcp-config is the important one: without it the agent merges MCP config
         # from its other scopes and the whitelist leaks (SPEC §4.2).
         args=["--mcp-config", str(seen_as / ".mcp.json"), "--strict-mcp-config"],
@@ -177,6 +217,40 @@ def discard_credentials(run_dir: Path) -> None:
     token must not outlive the session. A symlinked one loses only the link.
     """
     (run_dir / "config" / CREDENTIALS_FILE).unlink(missing_ok=True)
+
+
+def _workdirs(profile: Profile, run_dir: Path, named: str) -> list[str]:
+    """The directories the agent may be started in, for the trust entries it reads.
+
+    Both spellings of the path, because macOS has two for everything under /var and the
+    agent writes down the one it was given. A backend that starts the agent somewhere its
+    own (a mount point in a guest) names that instead.
+    """
+    if named:
+        return [named]
+    workdir = Path(profile.shared_dir).expanduser() if profile.shared_dir else run_dir / "work"
+    return list(dict.fromkeys([str(workdir), os.path.realpath(workdir)]))
+
+
+def _seed_first_run(path: Path, workdirs: list[str]) -> None:
+    """Answer the agent's first-run questions in the synthesized config, and only there.
+
+    The host's own config is never touched: this writes the copy in the run dir, and a
+    session that has no copy to write in gets one with these answers and nothing else.
+    """
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    projects = data.get("projects")
+    projects = dict(projects) if isinstance(projects, dict) else {}
+    for workdir in workdirs:
+        entry = projects.get(workdir)
+        projects[workdir] = {**(entry if isinstance(entry, dict) else {}), **FIRST_RUN_PROJECT}
+    path.write_text(json.dumps({**data, **FIRST_RUN, "projects": projects}, indent=2) + "\n")
+    logger.debug("first-run answers seeded %s", log.context(path=path, dirs=", ".join(workdirs)))
 
 
 def _paths(paths: list[Path]) -> str:
@@ -269,13 +343,23 @@ def _export_token(service: str, dest: Path) -> None:
 def _take_skills(
     sources: list[Path], dest: Path, names: list[str], copy: bool
 ) -> tuple[list[Path], list[str]]:
-    """Put the ticked skills in the dir. Returns what was taken, and what the host lacks."""
+    """Put the ticked skills in the dir. Returns what was taken, and what the host lacks.
+
+    `*` means every skill the agent has, which is the chooser's allow-all row. It names no
+    skill of its own, so nothing about it can go missing.
+    """
     dest.mkdir(parents=True, exist_ok=True)
+    if EVERYTHING in names:
+        names = _every_skill(sources)
     taken, missing = [], []
     for name in names:
         # A skill is a bare directory name: `../..` would link the whole config dir in.
         plain = bool(name) and "/" not in name and not name.startswith(".")
-        found = [source / name for source in sources if plain and (source / name).is_dir()]
+        offered = [source / name for source in sources if plain and (source / name).is_dir()]
+        found = [skill for skill in offered if _inside_skills(skill)]
+        if offered and not found:
+            missing.append(f"skill {name!r} links outside the agent's skills directory")
+            continue
         if not found:
             missing.append(f"skill {name!r}")
             continue
@@ -288,6 +372,29 @@ def _take_skills(
                 skill.symlink_to(found[0])
         taken.append(found[0])
     return taken, missing
+
+
+def _inside_skills(skill: Path) -> bool:
+    """Whether the skill really lives in the directory it was found in, symlinks resolved.
+
+    A skills directory is one anyone can drop a symlink into, and paddock is the thing that
+    hands what it finds there to a sandbox. Unchecked, a link called `deploy` pointing at
+    `~/.ssh` gets symlinked into the config dir and then named in srt's `allowRead`, which
+    re-opens by name exactly what `deny_read` closed, or copied into a guest by a copy that
+    follows links. Ticking every skill makes that a directory listing rather than a choice,
+    so the containment is checked here, once, for both backends (SPEC §4.3).
+    """
+    real, root = Path(os.path.realpath(skill)), Path(os.path.realpath(skill.parent))
+    return root in real.parents
+
+
+def _every_skill(sources: list[Path]) -> list[str]:
+    """Every skill directory the agent has, in name order and with no repeats."""
+    found: list[str] = []
+    for source in sources:
+        if source.is_dir():
+            found += sorted(entry.name for entry in source.iterdir() if entry.is_dir())
+    return list(dict.fromkeys(found))
 
 
 def _whitelisted_servers(agent: AgentSpec, wanted: list[str]) -> tuple[dict, list[str]]:

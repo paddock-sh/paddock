@@ -11,6 +11,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 3.11 is the floor `requires-python` sets: `paddock init` needs tomllib to
+        # parse the config it is about to write, and a skipped check is no check.
         python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
