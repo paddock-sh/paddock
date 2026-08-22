@@ -453,11 +453,22 @@ def failed_lines(
     it is one nobody can open.
     """
     buttons = _failed_buttons(cursor, width)
+    said = failure_lines(message, log_path, width)
+    room = height - (3 + len(buttons))  # the title, a blank, a blank, and the buttons
+    return [FAILED_TITLE, "", *window(said, room, scroll), "", *buttons]
+
+
+def failure_lines(message: str, log_path: str = "", width: int = WIDTH) -> list[str]:
+    """What a failed launch has to say, as lines: what went wrong, then where the log is.
+
+    One block, so what scrolls is all of it. Counting only the message would put the log
+    path out of reach on a short message in a small popup, which is the one line whose
+    whole job is being copied somewhere else.
+    """
     said = [f"  {part}" for part in _wrap(message, width - 2)]
     if log_path:
         said += ["", *(f"  log: {part}" for part in _wrap(log_path, width - 8, split_long=True))]
-    room = height - (3 + len(buttons))  # the title, a blank, a blank, and the buttons
-    return [FAILED_TITLE, "", *window(said, room, scroll), "", *buttons]
+    return said
 
 
 def progress_lines(title: str, steps: list[str], width: int = WIDTH) -> list[str]:
@@ -795,7 +806,7 @@ def failed(message: str, log_path: str = "") -> bool:
     """
     state: dict = {"cursor": 0, "keys": False, "scroll": 0}
     keys = KeyBindings()
-    _scroll_keys(keys, state, lambda: len(_wrap(message, _room()[1] - 2)))
+    _scroll_keys(keys, state, lambda: len(failure_lines(message, log_path, _room()[1])))
 
     @keys.add("left")
     @keys.add("h")

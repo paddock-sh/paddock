@@ -955,3 +955,16 @@ def test_the_form_header_keeps_both_ends_when_there_is_room() -> None:
 
     assert line.startswith("paddock   custom")
     assert line.endswith("in /work")
+
+
+def test_the_log_path_is_reachable_even_behind_a_short_message() -> None:
+    """It is the one line whose job is being copied somewhere else, so it may not be stranded."""
+    log_path = "/Users/someone/.local/state/paddock/runs/20260822-000000-abcdefgh/pane.log"
+    every = screen.failure_lines("no msb on PATH", log_path, 40)
+    tiny = (8, 40)
+
+    seen: set[str] = set()
+    for scroll in range(len(every)):
+        seen |= set(screen.failed_lines("no msb on PATH", log_path, 0, tiny[1], tiny[0], scroll))
+
+    assert set(every) <= seen
