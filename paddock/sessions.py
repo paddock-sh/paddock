@@ -24,7 +24,7 @@ from pathlib import Path
 from types import ModuleType
 
 from paddock import herdr_client, log, state_dir, synth_config
-from paddock.backends import SandboxGone, microsandbox, srt
+from paddock.backends import SandboxGone, Swept, microsandbox, srt
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
@@ -221,28 +221,55 @@ def launch(
         raise RuntimeError(f"{_describe(session)} could not open its first tab: {error}") from error
 
 
-def collect_orphans() -> list[str]:
-    """Remove what a launch nobody could roll back left running (SPEC §8). Returns the handles.
+def collect_orphans() -> Swept:
+    """Remove what a launch nobody could roll back left running (SPEC §8, §3.4).
 
     `prepare` rolls its own boot back, ctrl-c included, but a process killed outright cannot.
     What that leaves is a sandbox no session claims, which nothing else would ever collect,
     so `paddock gc` asks each backend what it is running that the registry has never heard of.
+
+    A sandbox is only this gc's to remove when a run of this state dir made it. The registry
+    is per state dir and a backend's sandboxes are per host, so the handles alone cannot tell
+    a session nobody rolled back from a live session belonging to another paddock context:
+    sweeping on the registry alone reaped a running VM out of another context. What this
+    state dir cannot claim comes back named instead, for the caller to say so.
     """
     claimed = {session.vm_handle for session in list_sessions() if session.vm_handle}
-    removed = []
+    ours = owned_runs()
+    swept = Swept()
     for name in sorted(BACKENDS):
         module = BACKENDS[name]
         try:
-            found = module.sweep(claimed)
+            found = module.sweep(claimed, ours)
         except RuntimeError as error:
             # A backend that will not answer is a message, not a failed gc: the sessions
             # this has already collected are collected, and the rest is next time's job.
             print(f"paddock: could not sweep the {name} backend: {error}", file=sys.stderr)
             continue
-        for handle in found:
+        for handle in found.removed:
             logger.info("orphan swept %s", log.context(backend=name, vm=handle))
-        removed += found
-    return removed
+        for handle in found.unowned:
+            logger.info("orphan left alone %s", log.context(backend=name, vm=handle))
+        swept.removed += found.removed
+        swept.unowned += found.unowned
+    return swept
+
+
+def owned_runs() -> set[str]:
+    """The names of the runs this state dir answers for, which is what a sweep may touch.
+
+    A directory under `<state>/runs/`, or a run a record in this registry claims: the second
+    is the session whose directory has been taken from under it while its sandbox runs on.
+    Any other name was made by a paddock running on another state dir (SPEC §3.4).
+    """
+    runs = state_dir() / RUNS
+    on_disk = {path.name for path in runs.glob("*") if path.is_dir()}
+    registered = {
+        Path(session.run_dir).name
+        for session in list_sessions()
+        if Path(session.run_dir).parent == runs
+    }
+    return on_disk | registered
 
 
 def collect_run_dirs() -> list[Path]:

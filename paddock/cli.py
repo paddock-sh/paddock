@@ -158,15 +158,35 @@ def gc() -> int:
         done += 1
     # Only here, not at every invocation: it asks each backend what it is running,
     # and a launch nobody could roll back is rare enough to sweep for on request.
-    for handle in sessions.collect_orphans():
+    swept = sessions.collect_orphans()
+    for handle in swept.removed:
         print(f"removed the orphaned sandbox {handle}")
         done += 1
+    if swept.unowned:
+        # Not counted as done: nothing was collected, and a gc that says "nothing to
+        # collect" alongside this is telling the truth about both.
+        print(left_alone(swept.unowned))
     for path in sessions.collect_run_dirs():
         print(f"removed the orphaned run dir {path}")
         done += 1
     if not done:
         print("paddock: nothing to collect")
     return 0
+
+
+def left_alone(handles: list[str]) -> str:
+    """The one line gc says about a sandbox it will not touch, and how to remove it by hand.
+
+    It is named like paddock's own, but no run of this state dir made it, so it belongs to
+    another paddock context on this host or to a test run (SPEC §3.4). Removing it would
+    destroy someone else's live session, so gc says which and leaves the choice with them.
+    """
+    named = ", ".join(handles)
+    remedy = "; ".join(f"msb rm -f {handle}" for handle in handles)
+    return (
+        f"paddock: leaving {named} alone: owned by another paddock state dir or a test run. "
+        f"Remove by hand with: {remedy}"
+    )
 
 
 def choose(cwd: Path, dry_run: bool = False, attach: bool = False) -> int:

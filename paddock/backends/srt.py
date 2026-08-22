@@ -26,6 +26,7 @@ from paddock.backends import (
     LAUNCH_SCRIPT,
     SHELL_SCRIPT,
     RunNotFound,
+    Swept,
     ensure_launch_script,
     launch_line,
     new_run_dir,
@@ -486,9 +487,9 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = 
     return pane_id
 
 
-def sweep(known: set[str]) -> list[str]:
+def sweep(known: set[str], ours: set[str]) -> Swept:
     """Nothing outlives the process here, so a sweep finds nothing and removes nothing."""
-    return []
+    return Swept()
 
 
 def collect(run_dir: Path, vm_handle: str = "") -> None:

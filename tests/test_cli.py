@@ -972,6 +972,20 @@ def test_gc_names_the_orphans_it_swept(
     assert "removed the orphaned sandbox paddock-20260822-000000-abcd" in capsys.readouterr().out
 
 
+def test_gc_says_which_sandbox_it_left_alone_and_how_to_remove_it(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A paddock-named VM no run of this state dir made is another context's (SPEC §3.4)."""
+    fake_sessions.unowned.append("paddock-20260822-155634-other")
+
+    assert cli.main(["gc"]) == 0
+    said = capsys.readouterr().out
+    assert "paddock-20260822-155634-other" in said
+    assert "msb rm -f paddock-20260822-155634-other" in said
+    # It removed nothing, so the idle line stands: saying what it saw is not collecting.
+    assert "paddock: nothing to collect" in said
+
+
 def test_logs_names_both_of_a_sessions_logs_when_both_exist(
     fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

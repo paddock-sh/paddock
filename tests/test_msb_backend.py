@@ -11,7 +11,7 @@ import pytest
 
 from paddock import backends
 from paddock.agents import AgentSpec
-from paddock.backends import RunNotFound, SandboxGone
+from paddock.backends import RunNotFound, SandboxGone, Swept
 from paddock.backends import microsandbox as msb
 from paddock.backends.microsandbox import GUEST_CONFIG_SRC
 from paddock.profiles import NETWORK_ALL, Profile
@@ -988,9 +988,9 @@ def test_a_sweep_removes_a_sandbox_no_session_claims(
     """A process killed outright rolls nothing back, so gc asks msb what it is still running."""
     run = msb.prepare(SHELL)
 
-    removed = msb.sweep(set())
+    swept = msb.sweep(set(), {run.run_dir.name})
 
-    assert removed == [run.vm_handle]
+    assert swept == Swept(removed=[run.vm_handle], unowned=[])
     assert msb_calls[-1] == msb.stop_argv(run.vm_handle)
 
 
@@ -999,7 +999,7 @@ def test_a_sweep_leaves_the_sandbox_its_session_still_claims(
 ) -> None:
     run = msb.prepare(SHELL)
 
-    assert msb.sweep({run.vm_handle}) == []
+    assert msb.sweep({run.vm_handle}, {run.run_dir.name}) == Swept(removed=[], unowned=[])
     assert "rm" not in commands(msb_calls)
 
 
@@ -1009,7 +1009,20 @@ def test_a_sweep_never_touches_a_sandbox_paddock_did_not_make(
     """Another tool's microVMs are none of paddock's business."""
     calls = stub_msb(monkeypatch, [{"name": "someone-elses", "status": "Running"}])
 
-    assert msb.sweep(set()) == []
+    assert msb.sweep(set(), set()) == Swept(removed=[], unowned=[])
+    assert "rm" not in commands(calls)
+
+
+def test_a_sweep_names_a_paddock_sandbox_this_state_dir_does_not_own(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No run of this state dir made it, so it is another context's VM, or a test's."""
+    theirs = "paddock-20260822-155634-elsewhere"
+    calls = stub_msb(monkeypatch, [{"name": theirs, "status": "Running"}])
+
+    swept = msb.sweep(set(), {"20260822-000000-ours"})
+
+    assert swept == Swept(removed=[], unowned=[theirs])
     assert "rm" not in commands(calls)
 
 
@@ -1020,5 +1033,5 @@ def test_a_machine_with_no_msb_is_swept_without_asking_it_anything(
     monkeypatch.setattr(msb.shutil, "which", lambda name: None)
     calls = stub_msb(monkeypatch, [])
 
-    assert msb.sweep(set()) == []
+    assert msb.sweep(set(), set()) == Swept(removed=[], unowned=[])
     assert calls == []

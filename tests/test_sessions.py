@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from paddock import herdr_client, sessions
-from paddock.backends import SandboxGone, microsandbox, srt
+from paddock.backends import SandboxGone, Swept, microsandbox, srt
 from paddock.profiles import Profile
 from tests.conftest import FakeClient, launch_command
 
@@ -998,28 +998,74 @@ def test_a_launch_that_fails_for_any_other_reason_still_says_which_session(
 
 
 class SweepingBackend(FakeBackend):
-    """A backend with something running that no session claims."""
+    """A backend with something running that no session claims.
+
+    It applies the rule the real backends apply, on handles named the way msb names its
+    own, so what these tests are really about is the ownership set sessions hands it.
+    """
 
     def __init__(self, running: list[str]) -> None:
         super().__init__()
         self.running = running
-        self.swept: list[set[str]] = []
+        self.swept: list[tuple[set[str], set[str]]] = []
 
-    def sweep(self, known: set[str]) -> list[str]:
-        self.swept.append(set(known))
-        return [name for name in self.running if name not in known]
+    def sweep(self, known: set[str], ours: set[str]) -> Swept:
+        self.swept.append((set(known), set(ours)))
+        loose = [name for name in self.running if name not in known]
+        return Swept(
+            removed=[name for name in loose if name.removeprefix("paddock-") in ours],
+            unowned=[name for name in loose if name.removeprefix("paddock-") not in ours],
+        )
+
+
+def owned_run(state_dir: Path, name: str) -> Path:
+    """A run dir under this state dir, which is what makes `paddock-<name>` ours to sweep."""
+    path = state_dir / "runs" / name
+    path.mkdir(parents=True)
+    return path
 
 
 def test_gc_sweeps_what_no_session_claims(
     state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: None)  # no msb on this host to ask
+    owned_run(state_dir, "orphan")
+    kept = owned_run(state_dir, "kept")
     backend = SweepingBackend(["paddock-orphan", "paddock-kept"])
     monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
-    write_registry(state_dir, [record(backend="fake", vm_handle="paddock-kept")])
+    write_registry(
+        state_dir,
+        [record(backend="fake", vm_handle="paddock-kept", run_dir=str(kept))],
+    )
 
-    assert sessions.collect_orphans() == ["paddock-orphan"]
-    assert backend.swept == [{"paddock-kept"}]
+    assert sessions.collect_orphans() == Swept(removed=["paddock-orphan"], unowned=[])
+    assert backend.swept == [({"paddock-kept"}, {"orphan", "kept"})]
+
+
+def test_gc_leaves_a_sandbox_no_run_of_this_state_dir_made(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two paddock state dirs on one host must not reap each other's VMs (SPEC §3.4)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    backend = SweepingBackend(["paddock-20260822-155634-elsewhere"])
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+
+    swept = sessions.collect_orphans()
+
+    assert swept == Swept(removed=[], unowned=["paddock-20260822-155634-elsewhere"])
+    assert backend.swept == [(set(), set())]
+
+
+def test_a_run_only_the_registry_still_remembers_is_this_state_dirs_to_sweep(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run dir removed under a live session leaves a VM that is still this paddock's."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    backend = SweepingBackend(["paddock-gone"])
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+    write_registry(state_dir, [record(backend="fake", run_dir=str(state_dir / "runs" / "gone"))])
+
+    assert sessions.collect_orphans() == Swept(removed=["paddock-gone"], unowned=[])
 
 
 def test_a_backend_that_will_not_answer_a_sweep_is_a_message_not_a_failure(
@@ -1030,12 +1076,12 @@ def test_a_backend_that_will_not_answer_a_sweep_is_a_message_not_a_failure(
     monkeypatch.setattr(shutil, "which", lambda name: None)
 
     class Sulking(FakeBackend):
-        def sweep(self, known: set[str]) -> list[str]:
+        def sweep(self, known: set[str], ours: set[str]) -> Swept:
             raise RuntimeError("msb ls did not answer")
 
     monkeypatch.setitem(sessions.BACKENDS, "fake", Sulking())
 
-    assert sessions.collect_orphans() == []
+    assert sessions.collect_orphans() == Swept(removed=[], unowned=[])
     assert "could not sweep" in capsys.readouterr().err
 
 

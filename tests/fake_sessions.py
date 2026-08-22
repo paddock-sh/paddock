@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from paddock.backends import Swept
 from paddock.profiles import Profile
 
 
@@ -41,6 +42,7 @@ def reset() -> None:
     registry.clear()
     collects.clear()
     orphans.clear()
+    unowned.clear()
     stale_runs.clear()
 
 
@@ -99,11 +101,13 @@ def reconcile() -> list[Session]:
 
 # Sandboxes a test wants the backend sweep to find running with no session behind them.
 orphans: list[str] = []
+# Paddock-named sandboxes a test wants the sweep to find that this state dir does not own.
+unowned: list[str] = []
 
 
-def collect_orphans() -> list[str]:
+def collect_orphans() -> Swept:
     calls.append(("collect_orphans",))
-    return list(orphans)
+    return Swept(removed=list(orphans), unowned=list(unowned))
 
 
 # Run dirs a test wants the sweep to find with no session claiming them.

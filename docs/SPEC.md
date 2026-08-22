@@ -945,6 +945,14 @@ the next paddock invocation. So the §8 guarantee is that the token does not out
 the session, enforced at every paddock invocation, and the same holds for the VM an
 msb session leaves running. `paddock gc` is how to force it.
 
+**Whose sandbox is it.** The sweep `paddock gc` runs (§8) only removes a sandbox
+whose run belongs to this state dir, a directory under `<state>/runs/` or one a
+record in this registry claims, because sandbox names are unique per host while
+the registry is per `PADDOCK_STATE_DIR` and two paddock contexts on one machine
+must not reap each other's live microVMs; a paddock-named sandbox this state dir
+cannot account for is named at the user, with the `msb rm -f <handle>` that would
+remove it by hand, and left running.
+
 Two reconciles at once are safe. The pane list and the registry are both read with the
 lock held, so a tab another paddock opened and registered a moment earlier is in the
 pane list too and never reads as closed. A session with no panes at all is left alone:
@@ -1307,9 +1315,10 @@ takes its microVM and its token with it. A process killed outright cannot roll
 anything back, and what that leaves is a sandbox no session claims. `paddock gc`
 sweeps for them: it asks each backend what it is running, and removes what the
 registry has never heard of. Only handles paddock would have made are touched
-(`paddock-<run dir name>`), because another tool's sandboxes are none of its
-business, and a backend whose binary is not on this machine is skipped without a
-word rather than reported as unsweepable.
+(`paddock-<run dir name>`), and only ones naming a run this state dir owns
+(§3.4), because another tool's sandboxes are none of its business and neither are
+another paddock context's, and a backend whose binary is not on this machine is
+skipped without a word rather than reported as unsweepable.
 
 - Should the chooser remember more than the profile per workspace, such as the
   whole set of answers, or the session a workspace attaches to by default (§3.3)?
