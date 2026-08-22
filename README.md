@@ -17,7 +17,10 @@ You choose what each sandbox gets:
 - **Files**: writes denied by default, plus one optional shared directory
 
 Enforced by the OS: Seatbelt on macOS, bubblewrap on Linux. Saved profiles make
-it two keystrokes. Per-session VPNs, isolated IPs, and microVMs are on the
+it two keystrokes. A session can run in a microVM instead, with
+`paddock launch <profile> --backend msb`: its own kernel, and only the directory
+you shared. The agent is installed in the guest on the way up, which costs about
+21s for Claude Code. Per-session VPNs and isolated IPs are on the
 [roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
 
 > **Status:** the v1 launcher works end to end. It has had no outside security
@@ -68,6 +71,10 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Skills` | Only the ticked ones exist inside the sandbox at all |
 | `Advanced` | The session name, and saving these answers as a profile |
 
+`Open` lists every live session by its name, backend, agent, profile and
+attached tabs, so a second tab on one of them is a pick and not a screen of its
+own.
+
 `s` saves the answers as a profile, which makes them one pick next time. It is
 for a sandbox: a local tab and an attached one have no permissions of their own
 to save. Plain new-tab moves to `prefix+shift+c`.
@@ -89,6 +96,11 @@ Sessions outlive the popup that made them and survive Herdr restarts. With the
 v1 backend, attached tabs share a settings file and a workdir but get **separate
 process trees**: shared files, never a shared runtime. See
 [docs/SPEC.md §3](docs/SPEC.md#3-sandbox-sessions).
+
+When a session's last tab closes it is collected: dropped from the registry, its
+copied credentials deleted, and its microVM destroyed if it had one. Nothing is
+running to watch for that, so it happens at the next `paddock` command rather
+than the instant the tab closes. `paddock gc` forces it.
 
 ## Trust model
 
@@ -124,6 +136,8 @@ The popup is the usual way in. The same jobs work without questions:
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock profiles                # list saved profiles
+paddock gc                      # collect sessions whose tabs are all closed
+paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```
 
@@ -166,6 +180,12 @@ longer want them.
 **4. Press `prefix+c` inside herdr.**
 
 To check herdr is happy with the result: `herdr config check`.
+
+## Troubleshooting
+
+`paddock logs` prints where the log is and the last 40 lines of it, and
+`paddock logs <session>` prints what that session's pane printed. A launch that
+fails leaves its pane open with the reason on screen.
 
 ## Docs
 

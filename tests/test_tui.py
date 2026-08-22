@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from paddock import tui
+from paddock import sessions, tui
 from paddock.agents import AgentSpec, builtin_agents, load_agents
 from paddock.profiles import (
     NETWORK_PRESETS,
@@ -53,7 +53,7 @@ def test_local_new_and_every_live_session_are_on_one_list() -> None:
 def test_a_session_on_the_open_list_is_shown_by_what_it_is() -> None:
     live = [Session(session_id="s1", name="review", agent="claude", pane_ids=["wA:p1"])]
 
-    assert tui.open_choices(live)[-1][0] == "review: claude / claude-default, 1 tab"
+    assert tui.open_choices(live)[-1][0] == "review [srt]: claude / claude-default, 1 tab"
 
 
 def test_attaching_says_the_tabs_do_not_share_a_process_tree() -> None:
@@ -69,7 +69,14 @@ def test_a_session_is_shown_by_what_it_is() -> None:
         name="review", agent="claude", profile_name="hardened", pane_ids=["wA:p1", "wA:p2"]
     )
 
-    assert tui.session_label(session) == "review: claude / hardened, 2 tabs"
+    assert tui.session_label(session) == "review [srt]: claude / hardened, 2 tabs"
+
+
+def test_the_label_says_which_backend_the_session_runs_on() -> None:
+    """Attaching means a different thing per backend, so the list says which (SPEC §3.2)."""
+    label = tui.session_label(Session(name="build", backend="microsandbox"))
+
+    assert label.startswith("build [microsandbox]: ")
 
 
 def test_one_tab_is_not_two() -> None:
@@ -821,6 +828,16 @@ def test_a_backend_this_machine_cannot_run_is_not_chosen(
 
     assert plan.backend == "srt"
     assert tui.backend_choices()[1][2].startswith("msb is not installed")
+
+
+def test_every_backend_the_field_offers_is_one_sessions_can_actually_run() -> None:
+    """The field names a backend and `sessions` looks it up, so a typo here is a dead launch.
+
+    `tests/fake_sessions` stands in for the real module everywhere else in this file, which
+    is why the registry is read from the real one here. The order is the field's own: the
+    cheapest first, not whatever order the registry happens to be written in.
+    """
+    assert {key for key, _, _ in tui.backend_choices()} == set(sessions.BACKENDS)
 
 
 def test_choosing_another_agent_drops_the_skills_that_came_with_the_last_one(

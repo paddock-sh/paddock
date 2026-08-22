@@ -7,8 +7,14 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import init, sessions, tui
+from paddock import init, log, sessions, tui
 from paddock.profiles import Profile, load_profiles
+from paddock.sessions import DEFAULT_BACKEND
+
+logger = log.get_logger(__name__)
+
+# How much of a log `paddock logs` shows. Enough to hold a launch, short enough to read.
+TAIL_LINES = 40
 
 
 @dataclass
@@ -19,19 +25,36 @@ class Command:
     profile: str = ""
     ref: str = ""
     cwd: str = ""
+    backend: str = DEFAULT_BACKEND
     dry_run: bool = False
     undo: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.setup()
     command = parse_args(sys.argv[1:] if argv is None else argv)
+    logger.debug(
+        "paddock %s",
+        log.context(
+            command=command.name,
+            profile=command.profile,
+            ref=command.ref,
+            cwd=command.cwd,
+            dry_run=command.dry_run,
+        ),
+    )
     try:
         return run(command)
     except KeyboardInterrupt:
         return 130
     except (RuntimeError, ValueError) as error:
         # HerdrError and SrtNotFound are RuntimeErrors. The popup closes with the process,
-        # so a traceback is never read by anyone: say what went wrong instead.
+        # so a traceback is never read by anyone: say what went wrong instead. No traceback
+        # in the log either: it would carry the arguments of every frame, and those are the
+        # argv and environment values that redact_env exists to keep out.
+        logger.debug(
+            "failed %s", log.context(error=type(error).__name__, message=log.scrub(str(error)))
+        )
         return _fail(str(error))
 
 
@@ -45,6 +68,7 @@ def parse_args(argv: list[str]) -> Command:
         profile=getattr(args, "profile", ""),
         ref=getattr(args, "ref", ""),
         cwd=getattr(args, "cwd", ""),
+        backend=getattr(args, "backend", "") or DEFAULT_BACKEND,
         dry_run=getattr(args, "dry_run", False),
         undo=getattr(args, "undo", False),
     )
@@ -58,6 +82,19 @@ def run(command: Command) -> int:
         return 0
     if command.name == "init":
         return init.run(dry_run=command.dry_run, undo=command.undo)
+
+    if command.name == "gc":
+        for session in sessions.reconcile():
+            print(f"collected {session.name}")
+        return 0
+    # Every command left here opens or lists sessions, so first drop the ones whose tabs
+    # are gone (SPEC §3.4). A dry run changes nothing, so it collects nothing either.
+    if not command.dry_run:
+        sessions.reconcile()
+    # Below the reconcile like every other session lookup: a ref that named a session whose
+    # tabs are all gone says so, rather than printing the pane log of a session that is over.
+    if command.name == "logs":
+        return logs(command.ref)
 
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
@@ -76,7 +113,7 @@ def run(command: Command) -> int:
         profile = saved[command.profile]
         if command.cwd:
             profile = replace(profile, shared_dir=str(cwd))
-        plan = tui.NewSession(profile=profile)
+        plan = tui.NewSession(profile=profile, backend=command.backend)
 
     if command.dry_run:
         print(describe(plan))
@@ -109,6 +146,24 @@ def perform(plan: tui.Plan) -> int:
         print(message, file=sys.stderr)
     _, pane_id = sessions.launch(profile, plan.name or None, backend=plan.backend)
     print(pane_id)
+    return 0
+
+
+def logs(ref: str = "") -> int:
+    """Say where the log is, then show the end of it. A session ref shows that pane's log."""
+    if not ref:
+        path = log.log_path()
+    else:
+        session = sessions.get_session(ref)
+        if session is None:
+            return _fail(f"no session named {ref!r}")
+        print(f"session {session.session_id} {session.name} run dir {session.run_dir}")
+        # paddock keeps secrets out of its own lines. A pane log is the agent's output,
+        # unread and unfiltered, and paddock can promise nothing about what is in it.
+        print("paddock: below is the agent's own output, not paddock's log: it can hold anything")
+        path = log.pane_log_path(Path(session.run_dir))
+    print(path)
+    print(log.tail(path, TAIL_LINES), end="")
     return 0
 
 
@@ -166,11 +221,27 @@ def _parser() -> argparse.ArgumentParser:
         help="share this host directory with the sandbox, read-write "
         "(overrides the profile's shared_dir)",
     )
+    launch.add_argument(
+        "--backend",
+        default=DEFAULT_BACKEND,
+        help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
+    )
     attach = subcommands.add_parser(
         "attach", parents=[dry, where], help="put a new tab on a running session"
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
     subcommands.add_parser("profiles", help="list saved profiles")
+    subcommands.add_parser(
+        "gc", help="collect sessions whose tabs are all closed (every command does this first)"
+    )
+    tail = subcommands.add_parser("logs", help="where paddock logged what it did, and the end")
+    tail.add_argument(
+        "ref",
+        metavar="session",
+        nargs="?",
+        default="",
+        help="show this session's pane log instead of paddock's own",
+    )
     setup = subcommands.add_parser(
         "init", parents=[dry], help="bind the chooser to prefix+c in herdr's config"
     )

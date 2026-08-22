@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from paddock import cli, sessions, tui
+from paddock import cli, log, sessions, tui
 from paddock.backends.srt import SrtNotFound
 from paddock.herdr_client import HerdrError
 from paddock.profiles import Profile, load_profiles
@@ -35,6 +35,11 @@ def names(calls: list[tuple]) -> list[str]:
     return [call[0] for call in calls]
 
 
+def rest(calls: list[tuple]) -> list[tuple]:
+    """The calls besides the reconcile every session command starts with, tested on its own."""
+    return [call for call in calls if call[0] != "reconcile"]
+
+
 # --- argv ------------------------------------------------------------------
 
 
@@ -60,6 +65,7 @@ def test_each_subcommand_is_recognised() -> None:
     assert cli.parse_args(["init"]).name == "init"
     assert cli.parse_args(["launch", "claude-default"]).profile == "claude-default"
     assert cli.parse_args(["attach", "review"]).ref == "review"
+    assert cli.parse_args(["gc"]).name == "gc"
 
 
 def test_init_takes_a_dry_run_and_an_undo() -> None:
@@ -139,7 +145,7 @@ def test_local_opens_a_plain_tab(
     chooser(tui.Local(cwd=str(tmp_path)))
 
     assert cli.main(["choose"]) == 0
-    assert fake_sessions.calls == [("launch_local", tmp_path)]
+    assert rest(fake_sessions.calls) == [("launch_local", tmp_path)]
     assert capsys.readouterr().out.strip() == "wA:p1"
 
 
@@ -149,7 +155,7 @@ def test_backing_out_of_the_chooser_does_nothing(
     chooser(None)
 
     assert cli.main(["choose"]) == 0
-    assert fake_sessions.calls == []
+    assert rest(fake_sessions.calls) == []
     assert capsys.readouterr().out == ""
 
 
@@ -176,7 +182,10 @@ def test_attach_finds_the_session_then_puts_a_tab_on_it(
     fake_sessions.registry.append(session)
 
     assert cli.main(["attach", "review", "--cwd", "/work"]) == 0
-    assert fake_sessions.calls == [("get_session", "review"), ("attach", session, Path("/work"))]
+    assert rest(fake_sessions.calls) == [
+        ("get_session", "review"),
+        ("attach", session, Path("/work")),
+    ]
     assert capsys.readouterr().out.strip() == "wA:p9"
 
 
@@ -186,14 +195,14 @@ def test_attach_without_a_cwd_leaves_the_session_its_own_workdir(fake_sessions) 
     fake_sessions.registry.append(session)
 
     assert cli.main(["attach", "review"]) == 0
-    assert fake_sessions.calls[1] == ("attach", session, None)
+    assert rest(fake_sessions.calls)[1] == ("attach", session, None)
 
 
 def test_attaching_to_a_session_that_is_gone_says_so(
     fake_sessions, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["attach", "review"]) == 1
-    assert names(fake_sessions.calls) == ["get_session"]
+    assert names(rest(fake_sessions.calls)) == ["get_session"]
     assert "review" in capsys.readouterr().err
 
 
@@ -202,24 +211,46 @@ def test_launch_starts_a_session_from_a_saved_profile(
 ) -> None:
     assert cli.main(["launch", "claude-default"]) == 0
 
-    call = fake_sessions.calls[0]
+    call = rest(fake_sessions.calls)[0]
     assert call[0] == "launch"
     assert call[1] == load_profiles()["claude-default"]
     assert call[2] is None  # no name given, so sessions picks one
     assert capsys.readouterr().out.strip() == "wA:p3"
 
 
+def test_launch_can_ask_for_the_other_backend(fake_sessions) -> None:
+    """Manual testing of msb until the chooser offers it."""
+    assert cli.main(["launch", "offline-shell", "--backend", "msb"]) == 0
+
+    assert rest(fake_sessions.calls)[0][3] == "msb"
+
+
+def test_launch_is_an_srt_session_unless_another_backend_is_named(fake_sessions) -> None:
+    assert cli.main(["launch", "offline-shell"]) == 0
+
+    assert rest(fake_sessions.calls)[0][3] == "srt"
+
+
+def test_a_dry_run_launch_names_a_backend_that_is_not_the_default(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["launch", "offline-shell", "--backend", "msb", "--dry-run"]) == 0
+
+    assert "msb" in capsys.readouterr().out
+    assert rest(fake_sessions.calls) == []
+
+
 def test_launch_can_share_the_directory_it_is_run_from(fake_sessions) -> None:
     assert cli.main(["launch", "claude-default", "--cwd", "/work/repo"]) == 0
 
-    assert fake_sessions.calls[0][1].shared_dir == "/work/repo"
+    assert rest(fake_sessions.calls)[0][1].shared_dir == "/work/repo"
 
 
 def test_launch_with_no_such_profile_says_so(
     fake_sessions, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert cli.main(["launch", "nope"]) == 1
-    assert fake_sessions.calls == []
+    assert rest(fake_sessions.calls) == []
     assert "nope" in capsys.readouterr().err
 
 
@@ -227,7 +258,7 @@ def test_a_new_session_is_launched_with_the_name_that_was_typed(fake_sessions, c
     chooser(tui.NewSession(profile=Profile(name="custom"), name="review"))
 
     assert cli.main(["choose"]) == 0
-    assert fake_sessions.calls[0][2] == "review"
+    assert rest(fake_sessions.calls)[0][2] == "review"
 
 
 def test_answers_are_saved_as_a_profile_before_the_launch(
@@ -237,7 +268,8 @@ def test_answers_are_saved_as_a_profile_before_the_launch(
 
     assert cli.main(["choose"]) == 0
     assert (config_dir / "profiles" / "review.json").is_file()
-    assert fake_sessions.calls[0][1].name == "review"  # launched under the name it was saved as
+    # launched under the name it was saved as
+    assert rest(fake_sessions.calls)[0][1].name == "review"
     assert "review.json" in capsys.readouterr().err
 
 
@@ -248,7 +280,7 @@ def test_a_profile_name_that_will_not_save_is_reported_and_the_launch_goes_on(
 
     assert cli.main(["choose"]) == 0
     assert "not saved" in capsys.readouterr().err
-    assert names(fake_sessions.calls) == ["launch"]
+    assert names(rest(fake_sessions.calls)) == ["launch"]
 
 
 def test_a_typed_command_is_remembered_before_the_launch(
@@ -261,7 +293,7 @@ def test_a_typed_command_is_remembered_before_the_launch(
 
     entry = json.loads((config_dir / "agents" / "wrapped.json").read_text())
     assert entry["command"] == "npx claude-code"
-    assert names(fake_sessions.calls) == ["launch"]
+    assert names(rest(fake_sessions.calls)) == ["launch"]
 
 
 def test_a_typed_command_with_an_unusable_key_launches_nothing(
@@ -270,7 +302,7 @@ def test_a_typed_command_with_an_unusable_key_launches_nothing(
     chooser(tui.NewSession(profile=Profile(agent="../escape"), agent_command="claude"))
 
     assert cli.main(["choose"]) == 1
-    assert fake_sessions.calls == []
+    assert rest(fake_sessions.calls) == []
     assert "plain filename" in capsys.readouterr().err
 
 
@@ -281,7 +313,7 @@ def test_a_typed_command_that_would_overwrite_an_agent_launches_nothing(
     chooser(tui.NewSession(profile=Profile(agent="claude"), agent_command="claude --model opus"))
 
     assert cli.main(["choose"]) == 1
-    assert fake_sessions.calls == []
+    assert rest(fake_sessions.calls) == []
     assert "already runs" in capsys.readouterr().err
     assert not (config_dir / "agents").exists()
 
@@ -293,7 +325,7 @@ def test_a_command_the_registry_already_runs_is_not_written_again(
 
     assert cli.main(["choose"]) == 0
     assert "remembered" not in capsys.readouterr().err
-    assert names(fake_sessions.calls) == ["launch"]
+    assert names(rest(fake_sessions.calls)) == ["launch"]
 
 
 def test_ctrl_c_leaves_no_traceback(
@@ -305,7 +337,7 @@ def test_ctrl_c_leaves_no_traceback(
     monkeypatch.setattr(tui, "choose", interrupt)
 
     assert cli.main(["choose"]) == 130
-    assert fake_sessions.calls == []
+    assert rest(fake_sessions.calls) == []
 
 
 @pytest.mark.parametrize(
@@ -356,7 +388,7 @@ def test_without_a_terminal_the_chooser_says_which_flag_does_the_job(
 
     assert cli.main(["choose"]) == 1
     assert "paddock launch" in capsys.readouterr().err
-    assert fake_sessions.calls == []
+    assert rest(fake_sessions.calls) == []
 
 
 def test_the_backend_the_chooser_named_is_what_the_session_runs_on(
@@ -366,7 +398,61 @@ def test_the_backend_the_chooser_named_is_what_the_session_runs_on(
     chooser(tui.NewSession(profile=Profile(), backend="msb"))
 
     assert cli.main(["choose"]) == 0
-    assert fake_sessions.calls == [("launch", Profile(), None, "msb")]
+    assert rest(fake_sessions.calls) == [("launch", Profile(), None, "msb")]
+
+
+# --- collecting sessions whose tabs are gone -------------------------------
+
+
+def test_the_chooser_reconciles_before_it_lists_anything(
+    fake_sessions, chooser, tmp_path: Path
+) -> None:
+    """A session whose last tab closed must not still be on offer to attach to."""
+    chooser(tui.Local(cwd=str(tmp_path)))
+
+    assert cli.main(["choose"]) == 0
+    assert names(fake_sessions.calls) == ["reconcile", "launch_local"]
+
+
+def test_launch_reconciles_first(fake_sessions) -> None:
+    assert cli.main(["launch", "claude-default"]) == 0
+    assert names(fake_sessions.calls) == ["reconcile", "launch"]
+
+
+def test_attach_reconciles_first(fake_sessions) -> None:
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    assert cli.main(["attach", "review"]) == 0
+    assert names(fake_sessions.calls) == ["reconcile", "get_session", "attach"]
+
+
+def test_a_dry_run_collects_nothing(fake_sessions) -> None:
+    """A dry run says what would happen. Destroying a microVM is not saying."""
+    assert cli.main(["launch", "claude-default", "--dry-run"]) == 0
+    assert fake_sessions.calls == []
+
+
+def test_gc_reconciles_and_names_what_it_collected(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The explicit run, for a shell outside herdr or a session you think is stuck."""
+    fake_sessions.collects.append(Session(name="review"))
+
+    assert cli.main(["gc"]) == 0
+    assert names(fake_sessions.calls) == ["reconcile"]
+    assert "review" in capsys.readouterr().out
+
+
+def test_gc_with_nothing_to_collect_says_nothing(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["gc"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_gc_takes_no_arguments() -> None:
+    with pytest.raises(SystemExit):
+        cli.parse_args(["gc", "review"])
 
 
 # --- wiring paddock into herdr ---------------------------------------------
@@ -423,6 +509,106 @@ def test_a_profile_line_says_where_it_works_and_what_it_can_reach() -> None:
     assert "no network" in lines[0]
 
 
+# --- reading the log back --------------------------------------------------
+
+
+def test_logs_takes_an_optional_session() -> None:
+    assert cli.parse_args(["logs"]).ref == ""
+    assert cli.parse_args(["logs", "review"]).ref == "review"
+
+
+def test_logs_prints_the_path_and_the_end_of_the_file(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log.setup()
+    log.get_logger("paddock.demo").info("a thing that happened")
+
+    assert cli.main(["logs"]) == 0
+
+    printed = capsys.readouterr().out
+    assert str(log.log_path()) in printed
+    assert "a thing that happened" in printed
+
+
+def test_logs_collects_dead_sessions_first_like_every_other_lookup(fake_sessions) -> None:
+    """`logs` finds a session by ref, so it reconciles before it looks (SPEC §3.4)."""
+    cli.main(["logs"])
+
+    assert ("reconcile",) in fake_sessions.calls
+
+
+def test_logs_shows_the_last_lines_only(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log.setup()
+    for number in range(cli.TAIL_LINES + 10):
+        log.get_logger("paddock.demo").info("line %s", number)
+
+    cli.main(["logs"])
+
+    printed = capsys.readouterr().out
+    assert "line 9\n" not in printed
+    assert "line 49" in printed
+
+
+def test_logs_with_no_log_yet_says_where_it_will_be(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["logs"]) == 0
+
+    assert str(log.log_path()) in capsys.readouterr().out
+
+
+def test_logs_for_a_session_shows_that_run_and_its_pane_log(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "pane.log").write_text("srt: sandbox setup failed\n")
+    fake_sessions.registry.append(
+        fake_sessions.Session(session_id="abc123", name="review", run_dir=str(run_dir))
+    )
+
+    assert cli.main(["logs", "review"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "abc123" in printed and str(run_dir) in printed
+    assert "srt: sandbox setup failed" in printed
+
+
+def test_a_pane_log_is_shown_with_a_warning_that_it_is_not_paddocks(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """paddock keeps secrets out of its own lines. It cannot promise that of the agent's."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "pane.log").write_text("agent: token abc\n")
+    fake_sessions.registry.append(fake_sessions.Session(name="review", run_dir=str(run_dir)))
+
+    cli.main(["logs", "review"])
+
+    assert "the agent's own output" in capsys.readouterr().out
+
+
+def test_paddocks_own_log_carries_no_such_warning(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log.setup()
+    log.get_logger("paddock.demo").info("a thing that happened")
+
+    cli.main(["logs"])
+
+    assert "the agent's own output" not in capsys.readouterr().out
+
+
+def test_logs_for_a_session_that_is_gone_says_so(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["logs", "nope"]) == 1
+
+    assert "no session named 'nope'" in capsys.readouterr().err
+
+
 # --- the stand-in still stands in ------------------------------------------
 
 
@@ -431,12 +617,7 @@ def calling_shape(function: object) -> list[tuple[str, object]]:
 
 
 def test_the_fake_sessions_module_matches_the_real_one() -> None:
-    """These tests only prove the CLI right while the stand-in has the real shape.
-
-    `launch` is the one the stand-in is allowed to be ahead on. The chooser names a backend
-    now, and the parameter that takes it belongs to the microVM epic: the two meet in
-    `develop`, and this loosening goes when they do.
-    """
+    """These tests only prove the CLI right while the stand-in has the real shape."""
     for name in [
         "list_sessions",
         "get_session",
@@ -444,13 +625,12 @@ def test_the_fake_sessions_module_matches_the_real_one() -> None:
         "attach",
         "launch",
         "remove_pane",
+        "reconcile",
         "launch_local",
     ]:
         real = getattr(sessions, name)
         fake = getattr(fake_sessions_module, name)
-        shape = calling_shape(fake)
-        assert shape[: len(calling_shape(real))] == calling_shape(real), name
-        assert name == "launch" or shape == calling_shape(real), name
+        assert calling_shape(fake) == calling_shape(real), name
 
     assert [field.name for field in fields(fake_sessions_module.Session)] == [
         field.name for field in fields(sessions.Session)

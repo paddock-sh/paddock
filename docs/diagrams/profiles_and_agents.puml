@@ -38,7 +38,7 @@ package "agents.py" {
     api_domains
     auth_read_paths
     config_write_paths
-    image (v1.1 microsandbox; unused by srt)
+    image (OCI image the msb backend boots; unused by srt)
   }
   class "functions" as AgentFns {
     builtin_agents()

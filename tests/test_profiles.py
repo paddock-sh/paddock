@@ -82,6 +82,11 @@ def test_load_returns_builtins_when_no_user_files_exist() -> None:
     assert loaded["claude-default"].agent == "claude"
 
 
+def test_the_claude_profile_allows_npm_so_a_guest_can_install_the_agent() -> None:
+    """On msb the boot script downloads claude, under the same allowlist as everything else."""
+    assert "npm" in builtin_profiles()["claude-default"].network_presets
+
+
 def test_user_file_replaces_a_builtin_wholesale(config_dir: Path) -> None:
     """A user file is the whole profile: unset fields fall back to dataclass defaults."""
     write_profile(config_dir, "claude-default", {"agent": "aider", "tools": ["git"]})
