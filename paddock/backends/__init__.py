@@ -130,6 +130,7 @@ def script_text(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) -> str:
             "# Written by paddock when the run was prepared.",
             f"paddock_log={pane_log}",
             "",
+            *(_prompt() if quiet_exit_is_fine else []),
             "# One earlier generation is kept, so a run nobody closes cannot fill the disk.",
             "# The braces matter: without them the shell, not wc, reports a log that is not",
             "# there yet, and the first launch of every run would print an error at the user.",
@@ -175,6 +176,23 @@ def script_text(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) -> str:
             "",
         ]
     )
+
+
+def _prompt() -> list[str]:
+    """Put "paddock:" in front of the prompt, so a sandboxed shell does not look like yours.
+
+    zsh reads PROMPT and everything else reads PS1, so both are set. A shell that sources a
+    startup file of its own writes its own prompt over this, and a backend that starts the
+    command from an empty environment (srt's `env -i`) drops it before the shell ever sees
+    it: what says so in every case is the tab label, `sbx:<session> (shell)`.
+    """
+    return [
+        "# A sandboxed shell should not read as an ordinary one (SPEC §3.2).",
+        'PS1="paddock:${PS1:-\\$ }"',
+        'PROMPT="$PS1"',
+        "export PS1 PROMPT",
+        "",
+    ]
 
 
 def launch_line(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:

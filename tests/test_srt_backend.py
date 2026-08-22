@@ -1104,7 +1104,7 @@ def test_open_pane_passes_the_config_dir_to_the_tab(
 
     srt.open_pane(run, label="sbx:demo")
 
-    assert client.tabs[0][2] == {"CLAUDE_CONFIG_DIR": str(run.run_dir / "config")}
+    assert client.tabs[0][2]["CLAUDE_CONFIG_DIR"] == str(run.run_dir / "config")
 
 
 def test_open_pane_can_start_the_tab_elsewhere(
@@ -1219,6 +1219,25 @@ def test_a_shell_tab_keeps_its_own_log(which: dict[str, str], fake_home: Path) -
     assert "shell.log" in (run.run_dir / "shell.sh").read_text()
     assert "pane.log" in (run.run_dir / "launch.sh").read_text()
     assert "shell.log" not in (run.run_dir / "launch.sh").read_text()
+
+
+def test_a_shell_tab_says_paddock_in_its_prompt(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """A sandboxed shell that looks like an ordinary one is the thing to avoid (SPEC §3.2)."""
+    run = srt.prepare(Profile())
+
+    shell = (run.run_dir / "shell.sh").read_text()
+    assert 'PS1="paddock:${PS1:-\\$ }"' in shell
+    assert 'PROMPT="$PS1"' in shell
+    assert "export PS1 PROMPT" in shell
+
+
+def test_the_agent_tab_gets_no_prompt_of_paddocks(which: dict[str, str], fake_home: Path) -> None:
+    """The agent draws its own interface; a prompt variable there would say nothing to anyone."""
+    run = srt.prepare(Profile())
+
+    assert "PS1" not in (run.run_dir / "launch.sh").read_text()
 
 
 def test_a_shell_that_said_nothing_on_its_way_out_does_not_hold_the_pane(
