@@ -70,13 +70,16 @@ STEP_LABELS = {
     "save_as": "Save as profile",
 }
 
-# The two screens after the questions, and the three answers the summary takes.
-SUMMARY, EDIT = "summary", "edit"
+# The two screens after the questions, the three answers the summary takes, and what a
+# newly chosen base profile seeds the answers under it with.
+SUMMARY, EDIT, SEED = "summary", "edit", "seed"
 LAUNCH, CANCEL = "launch", "cancel"
 
-# Steps that decide what comes after them. Editing one from the summary asks its dependents
-# again. Tools are not under the agent: they come off the host PATH, not out of the agent.
+# What each step decides. Editing one from the summary settles these again: the profile
+# hands over its own values, the other two ask. Tools are not under the agent, because they
+# come off the host PATH, not out of the agent.
 DEPENDENTS = {
+    "profile": ("tools", "network", "domains", "skills", "share", "directory"),
     "agent": ("command", "remember_as", "skills"),
     "share": ("directory",),
 }
@@ -216,6 +219,13 @@ def _asker(cwd: Path, saved: dict[str, Profile], registry: dict[str, AgentSpec])
             return _ask(questionary.select(message, choices=_options(entries)))
         if step == EDIT:
             return _pick("Edit which step:", edit_choices(answers))
+        if step == SEED:
+            # Only what a forgotten answer cannot say for itself: with no directory answer,
+            # nothing is shared, however the profile that now stands has it.
+            seeded: dict = {"share": bool(base.shared_dir)}
+            if base.shared_dir:
+                seeded["directory"] = base.shared_dir
+            return seeded
         raise ValueError(f"the chooser has no question for {step!r}")
 
     return ask
@@ -302,9 +312,15 @@ def _walk(ask: Asker, answers: dict) -> bool:
 
 
 def _edit(ask: Asker, notify: Notify, answers: dict, step: str) -> None:
-    """Ask one step again from the summary, and anything its answer decides."""
+    """Ask one step again from the summary, and settle whatever its new answer decides."""
     value = ask(step, answers)
     if value in (BACK, SKIP) or not _answer(answers, step, value):
+        return
+    if step == "profile":
+        # Another base profile means starting over from it, not keeping the old ticks against
+        # it. Its own values are what stand, so none of them is asked for again.
+        answers.update(ask(SEED, answers))
+        notify(f"the answers now start from {profile_label(str(value))}, so its values stand")
         return
     if step == "agent":
         notify("the agent changed, so its own skills are asked for again")
@@ -317,18 +333,29 @@ def _edit(ask: Asker, notify: Notify, answers: dict, step: str) -> None:
 
 
 def _answer(answers: dict, step: str, value: object) -> bool:
-    """Keep one answer. True when it changed a step that others depend on."""
+    """Keep one answer. True when it changed a step that others depend on.
+
+    An answer the old one seeded is forgotten, so what stands in its place comes from the
+    new one: the agent's own skills, or every value a base profile carries.
+    """
     changed = step in DEPENDENTS and answers.get(step, value) != value
     answers[step] = value
     if changed and step == "agent":
-        # Skills come out of the agent's own config dir, so the old agent's do not carry over.
         answers.pop("skills", None)
+    if changed and step == "profile":
+        for seeded in DEPENDENTS[step]:
+            answers.pop(seeded, None)
     return changed
 
 
 def edit_choices(answers: dict) -> list[tuple[str, str]]:
     """The steps that were asked, in the order they were asked. A skipped one is not editable."""
     return [(STEP_LABELS[step], step) for step in STEPS if step in answers]
+
+
+def profile_label(key: str) -> str:
+    """What a profile answer is called on screen. The blank start is Custom, not a key."""
+    return "Custom" if key == CUSTOM else key
 
 
 def summary_lines(start_from: str, plan: NewSession) -> list[str]:
@@ -339,7 +366,7 @@ def summary_lines(start_from: str, plan: NewSession) -> list[str]:
         network += " + " + ", ".join(profile.extra_domains)
     lines = [
         "Window: new sandbox session",
-        f"Start from: {'Custom' if start_from == CUSTOM else start_from}",
+        f"Start from: {profile_label(start_from)}",
         f"Agent: {profile.agent}",
     ]
     if plan.agent_command:

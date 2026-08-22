@@ -497,6 +497,54 @@ def test_an_edit_that_keeps_the_agent_asks_nothing_else() -> None:
     assert steps.notices == []
 
 
+def test_editing_the_profile_starts_the_answers_over_from_it(config_dir: Path) -> None:
+    """Switching the base profile means that profile's values, not the ticks against the old one."""
+    save_profile(
+        Profile(
+            name="hardened",
+            agent="claude",
+            tools=["git"],
+            network_presets=["github"],
+            extra_domains=["example.com"],
+            shared_dir="/work/repo",
+        )
+    )
+    steps = Steps(
+        profile=(tui.CUSTOM, "hardened"),
+        agent="claude",
+        tools=["jq"],
+        network=["npm"],
+        domains="other.com",
+        seed={"share": True, "directory": "/work/repo"},
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="profile",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+    plan = tui.build_session(tui.base_profile(load_profiles(), answers), answers)
+
+    assert plan.profile == load_profiles()["hardened"]
+    assert len(steps.notices) == 1  # one line saying the answers start from it now
+
+
+def test_editing_the_profile_asks_none_of_its_answers_again(config_dir: Path) -> None:
+    """The new profile answers them, so the summary comes straight back."""
+    save_profile(Profile(name="hardened", agent="claude", tools=["git"]))
+    steps = Steps(
+        profile=(tui.CUSTOM, "hardened"),
+        agent="claude",
+        tools=["jq"],
+        seed={"share": False},
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="profile",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert steps.asked.count("tools") == 1
+    assert "tools" not in answers  # forgotten, so the profile's own tools stand
+
+
 def test_editing_the_share_answer_asks_about_the_directory_again() -> None:
     """Answering no must not leave the directory the earlier yes asked for behind."""
     steps = Steps(
@@ -825,6 +873,34 @@ def test_the_summary_sends_you_back_to_one_question(
 
     assert plan.name == "review"
     assert script.asked.count("Session name (blank to generate one):") == 2
+
+
+def test_the_summary_swaps_the_base_profile_for_all_of_its_answers(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_sessions,
+    which: dict[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Picking another profile at the summary hands over its tools, network and directory."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_profile(
+        Profile(
+            name="hardened",
+            agent="claude",
+            tools=["git"],
+            network_presets=["github"],
+            shared_dir=str(tmp_path),
+        )
+    )
+    answers = ["new", tui.CUSTOM, "claude", ["jq"], [], "", False, "", ""]
+    script = Scripted(*answers, tui.EDIT, "profile", "hardened", tui.LAUNCH)
+    monkeypatch.setattr(tui, "questionary", script)
+
+    plan = tui.choose(tmp_path)
+
+    assert plan.profile == load_profiles()["hardened"]
+    assert "hardened" in capsys.readouterr().err  # the one line saying why
 
 
 def test_cancelling_the_summary_launches_nothing(

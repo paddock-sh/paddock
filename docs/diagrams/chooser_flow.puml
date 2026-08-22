@@ -61,6 +61,9 @@ note right
   carry no Back entry; the summary edits those.
   Editing the agent asks for its skills again,
   because they come from its own config dir.
+  Editing the base profile hands over its own
+  tools, network, domains, skills and directory:
+  another profile means starting over from it.
 end note
 
 @enduml
