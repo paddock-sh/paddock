@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import fcntl
 import json
-import logging
 import os
 import secrets
 import sys
@@ -22,12 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
 
-from paddock import herdr_client, state_dir, synth_config
+from paddock import herdr_client, log, state_dir, synth_config
 from paddock.backends import SandboxGone, microsandbox, srt
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
 LOCK_FILE = "sessions.lock"
+
+logger = log.get_logger(__name__)
 
 # Which module runs a session, by the name its record carries (SPEC §2.2).
 BACKENDS: dict[str, ModuleType] = {"srt": srt, "msb": microsandbox}
@@ -133,6 +134,18 @@ def create_session(
             vm_handle=getattr(run, "vm_handle", ""),
         )
         _save(live + [session])
+        logger.info(
+            "session created %s",
+            log.context(
+                session=session.session_id,
+                name=session.name,
+                backend=backend,
+                profile=profile.name,
+                agent=profile.agent,
+                run_dir=session.run_dir,
+                vm=session.vm_handle,
+            ),
+        )
         return session
 
 
@@ -153,6 +166,16 @@ def attach(session: Session, cwd: Path | None = None) -> str:
         raise SandboxGone(f"session {session.name!r} is over: {error}") from error
     session.pane_ids.append(pane_id)
     _record(session)
+    logger.info(
+        "session attached %s",
+        log.context(
+            session=session.session_id,
+            name=session.name,
+            backend=session.backend,
+            pane=pane_id,
+            cwd=cwd,
+        ),
+    )
     return pane_id
 
 
@@ -185,6 +208,7 @@ def remove_pane(pane_id: str) -> None:
                     continue
             kept.append(session)
         _save(kept)
+        logger.info("pane removed %s", log.context(pane=pane_id, sessions_left=len(kept)))
         for session in collected:
             _collect(session)
 
@@ -200,7 +224,7 @@ def reconcile() -> list[Session]:
             alive = herdr_client.list_pane_ids()
         except herdr_client.HerdrError as error:
             # No answer is not "no panes": treating it as one would collect every session.
-            logging.getLogger(__name__).debug("not reconciling, herdr did not answer: %s", error)
+            logger.debug("not reconciling, herdr did not answer %s", log.scrub(str(error)))
             return []
         # Both reads happen under the lock, so a tab another paddock opened and registered
         # before this one got the lock is in the pane list too, and never looks closed.
@@ -223,12 +247,21 @@ def reconcile() -> list[Session]:
             _save(kept)
     for session in collected:
         _collect(session)
+    # DEBUG, not INFO: this runs at every paddock invocation, and the sessions it did
+    # collect say so themselves at INFO. A quiet reconcile is not news.
+    logger.debug(
+        "reconciled %s",
+        log.context(panes=len(alive), sessions_left=len(kept), collected=len(collected)),
+    )
     return collected
 
 
 def launch_local(cwd: Path | None = None) -> str:
     """The chooser's other branch: an ordinary tab. No session, no sandbox, no label."""
-    return herdr_client.create_tab(cwd or Path.cwd())
+    where = cwd or Path.cwd()
+    pane_id = herdr_client.create_tab(where)
+    logger.info("local tab %s", log.context(pane=pane_id, cwd=where))
+    return pane_id
 
 
 def _collect(session: Session) -> None:
@@ -240,6 +273,16 @@ def _collect(session: Session) -> None:
     say what was left running and carry on.
     """
     synth_config.discard_credentials(Path(session.run_dir))
+    logger.info(
+        "session collected %s",
+        log.context(
+            session=session.session_id,
+            name=session.name,
+            backend=session.backend,
+            run_dir=session.run_dir,
+            vm=session.vm_handle,
+        ),
+    )
     try:
         backend = backend_for(session.backend)
     except ValueError as error:

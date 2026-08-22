@@ -17,8 +17,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from paddock import log
 from paddock.agents import AgentSpec
 from paddock.profiles import Profile
+
+logger = log.get_logger(__name__)
 
 # The file an agent reads its token from inside the config dir, and what a collected session
 # loses (SPEC §8).
@@ -118,6 +121,19 @@ def build(
     # Where the agent will read all this from, which is not where it was built when the
     # directory is on its way into a guest.
     seen_as = PurePosixPath(guest_dir) if in_guest else config
+    # Paths only. What these files hold is the agent's login (SPEC §4.3). The two lists are
+    # reported the way they were built: a dir on its way into a guest is copies, not links.
+    logger.debug(
+        "config dir built %s",
+        log.context(
+            dir=config,
+            seen_as=seen_as,
+            linked=_paths([] if in_guest else linked + sources),
+            copied=_paths(copied + sources if in_guest else copied),
+            servers=len(servers),
+            missing=", ".join(missing + [f"MCP server {name!r}" for name in unknown]),
+        ),
+    )
     return SynthConfig(
         dir=config,
         env={redirect.env_var: str(seen_as)},
@@ -161,6 +177,11 @@ def discard_credentials(run_dir: Path) -> None:
     token must not outlive the session. A symlinked one loses only the link.
     """
     (run_dir / "config" / CREDENTIALS_FILE).unlink(missing_ok=True)
+
+
+def _paths(paths: list[Path]) -> str:
+    """Paths for one log line. Never what is in them."""
+    return ", ".join(str(path) for path in paths)
 
 
 def _take(source: Path, dest: Path, copy: bool) -> bool:
@@ -226,15 +247,23 @@ def _export_token(service: str, dest: Path) -> None:
             check=True,
         )
     except (OSError, subprocess.SubprocessError):
+        logger.debug("no keychain login %s", log.context(service=service))
         return
+    # Nothing below logs the entry, or any part of it: the whole thing is secret.
     try:
         entry = json.loads(found.stdout)
     except json.JSONDecodeError:
+        logger.debug("the keychain entry is not JSON %s", log.context(service=service))
         return
     if not isinstance(entry, dict) or LOGIN_KEY not in entry:
+        logger.debug("the keychain entry has no login in it %s", log.context(service=service))
         return
     dest.touch(mode=0o600)
     dest.write_text(json.dumps({LOGIN_KEY: entry[LOGIN_KEY]}, indent=2) + "\n")
+    logger.debug(
+        "exported the keychain login %s",
+        log.context(service=service, path=dest, size=f"{dest.stat().st_size} bytes"),
+    )
 
 
 def _take_skills(

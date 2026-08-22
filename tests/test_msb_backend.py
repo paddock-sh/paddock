@@ -9,12 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from paddock import backends
 from paddock.agents import AgentSpec
 from paddock.backends import RunNotFound, SandboxGone
 from paddock.backends import microsandbox as msb
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
-from tests.conftest import FakeClient
+from tests.conftest import FakeClient, launch_command
 
 SHELL = Profile(name="offline-shell", agent="shell", network_presets=[])
 CLAUDE = Profile(name="claude-vm", agent="claude", network_presets=["anthropic", "npm"])
@@ -605,10 +606,9 @@ def test_the_launch_script_starts_the_agent_in_the_guest(
 ) -> None:
     run = msb.prepare(CLAUDE)
 
-    script = (run.run_dir / "launch.sh").read_text()
-    assert script == (
-        f"#!/bin/sh\nmsb exec --tty {run.vm_handle} -- claude "
-        f"--mcp-config {msb.GUEST_CONFIG}/.mcp.json --strict-mcp-config\n"
+    assert launch_command(run.run_dir) == (
+        f"msb exec --tty {run.vm_handle} -- claude "
+        f"--mcp-config {msb.GUEST_CONFIG}/.mcp.json --strict-mcp-config"
     )
 
 
@@ -620,8 +620,52 @@ def test_prepare_writes_the_attach_command_to_the_launch_script(
 ) -> None:
     run = msb.prepare(SHELL)
 
+    assert launch_command(run.run_dir) == f"msb exec --tty {run.vm_handle}"
+    assert (run.run_dir / "launch.sh").stat().st_mode & 0o777 == 0o700
+
+
+def test_the_msb_launch_script_is_the_shared_one_pane_log_and_all(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """The attach line is the backend's; the pane around it is every backend's (SPEC §9).
+
+    An msb tab that fails to exec used to close on the error the same way an srt one did,
+    so it gets the same log, the same hold and the same tidy-up as srt for free.
+    """
+    run = msb.prepare(SHELL)
+
     script = (run.run_dir / "launch.sh").read_text()
-    assert script == f"#!/bin/sh\nmsb exec --tty {run.vm_handle}\n"
+    assert str(run.run_dir / "pane.log") in script
+    assert 'paddock_launch 2>>"$paddock_log"' in script
+    assert f'-ge {backends.HOLD_WITHIN_SECONDS} ] && exit "$paddock_exit"' in script
+    assert script.index("stty sane") < script.index("press enter")
+
+
+def test_an_older_msb_launch_script_is_replaced_when_a_tab_attaches(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """A VM prepared by an older paddock gets today's launch behaviour on its next tab."""
+    run = msb.prepare(SHELL)
+    script = run.run_dir / "launch.sh"
+    script.write_text(f"#!/bin/sh\n{run.command}\n")
+
+    assert msb.load_run(run.run_dir) == run
+
+    assert launch_command(run.run_dir) == run.command
+    assert str(run.run_dir / "pane.log") in script.read_text()
+
+
+def test_an_msb_run_dir_without_a_launch_script_gets_one_back(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """The launch record holds the exact attach command, so the script is written back."""
+    run = msb.prepare(SHELL)
+    written = (run.run_dir / "launch.sh").read_text()
+    (run.run_dir / "launch.sh").unlink()
+
+    msb.load_run(run.run_dir)
+
+    assert (run.run_dir / "launch.sh").read_text() == written
 
 
 def test_the_pane_line_is_a_short_exec_of_the_script(

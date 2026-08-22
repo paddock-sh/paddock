@@ -12,7 +12,7 @@ import pytest
 from paddock import herdr_client, sessions
 from paddock.backends import SandboxGone, microsandbox, srt
 from paddock.profiles import Profile
-from tests.conftest import FakeClient
+from tests.conftest import FakeClient, launch_command
 
 
 @dataclass
@@ -76,7 +76,7 @@ def settings_path(command: str) -> Path:
 
 def launch_script(session: sessions.Session) -> str:
     """The composed command back out of the script the pane runs."""
-    return (Path(session.run_dir) / "launch.sh").read_text().split("\n", 1)[1]
+    return launch_command(Path(session.run_dir))
 
 
 def write_registry(state_dir: Path, records: list[dict]) -> Path:

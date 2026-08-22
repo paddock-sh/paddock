@@ -37,9 +37,12 @@ class Scripted:
     def __init__(self, *answers: object) -> None:
         self.answers = list(answers)
         self.asked: list[str] = []
+        # The choices each question offered, one list per question asked.
+        self.offered: list[list[questionary.Choice]] = []
 
     def _next(self, message: str, **kwargs: object) -> FakeQuestion:
         self.asked.append(message)
+        self.offered.append(list(kwargs.get("choices") or []))
         return FakeQuestion(self.answers.pop(0))
 
     select = checkbox = text = confirm = _next
@@ -371,6 +374,302 @@ def test_the_suggested_key_does_not_stand_on_a_registered_agent() -> None:
     assert tui.suggested_key("", registry) == ""
 
 
+# --- back navigation and the summary ---------------------------------------
+
+
+class Steps:
+    """Answers the questionnaire with no terminal: one answer per step, a tuple per visit.
+
+    A step with nothing scripted answers SKIP, the way the chooser skips a question it has
+    nothing to ask about. The last scripted answer stands when a step comes round again.
+    """
+
+    def __init__(self, **script: object) -> None:
+        self.script = {
+            step: list(answers) if isinstance(answers, tuple) else [answers]
+            for step, answers in script.items()
+        }
+        self.asked: list[str] = []
+        self.notices: list[str] = []
+
+    def __call__(self, step: str, answers: dict[str, object]) -> object:
+        self.asked.append(step)
+        queue = self.script.get(step)
+        if not queue:
+            return tui.SKIP
+        return queue.pop(0) if len(queue) > 1 else queue[0]
+
+    def notify(self, message: str) -> None:
+        self.notices.append(message)
+
+
+def test_back_returns_to_the_question_before_it() -> None:
+    steps = Steps(
+        profile=(tui.CUSTOM, "claude-default"), agent=(tui.BACK, "codex"), summary=tui.LAUNCH
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert steps.asked[:4] == ["profile", "agent", "profile", "agent"]
+    assert answers["profile"] == "claude-default"
+    assert answers["agent"] == "codex"
+
+
+def test_going_back_steps_over_the_questions_that_were_not_asked() -> None:
+    """Back from the tools list lands on the agent: the typed-command questions were skipped."""
+    steps = Steps(
+        profile=tui.CUSTOM, agent=("codex", "claude"), tools=(tui.BACK, ["git"]), summary=tui.LAUNCH
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert steps.asked[:8] == [
+        "profile",
+        "agent",
+        "command",
+        "remember_as",
+        "tools",
+        "remember_as",
+        "command",
+        "agent",
+    ]
+    assert answers["profile"] == tui.CUSTOM  # the earlier answer is still there
+    assert answers["agent"] == "claude"
+
+
+def test_answers_survive_a_back_then_forward_round_trip() -> None:
+    common = {
+        "profile": tui.CUSTOM,
+        "agent": "codex",
+        "tools": ["git"],
+        "domains": "example.com",
+        "name": "review",
+        "save_as": "review-profile",
+        "summary": tui.LAUNCH,
+    }
+    straight = Steps(network=["npm"], **common)
+    detour = Steps(network=(tui.BACK, ["npm"]), **common)
+
+    assert tui.collect(detour, detour.notify) == tui.collect(straight, straight.notify)
+    assert detour.asked.count("tools") == 2
+
+
+def test_the_summary_edits_one_answer_and_leaves_the_rest() -> None:
+    steps = Steps(
+        profile=tui.CUSTOM,
+        agent="codex",
+        tools=["git"],
+        name=("review", "renamed"),
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="name",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert answers["name"] == "renamed"
+    assert (answers["agent"], answers["tools"]) == ("codex", ["git"])
+    assert steps.asked.count("agent") == 1  # nothing else was asked again
+    assert steps.notices == []
+
+
+def test_editing_the_agent_asks_for_its_skills_again() -> None:
+    """Skills belong to the agent whose config dir they came from, not to the answers."""
+    steps = Steps(
+        profile=tui.CUSTOM,
+        agent=("claude", "codex"),
+        skills=(["reviewer"], tui.SKIP),
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="agent",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert "skills" not in answers
+    assert steps.asked.count("skills") == 2
+    assert len(steps.notices) == 1  # one line saying why
+
+
+def test_an_edit_that_keeps_the_agent_asks_nothing_else() -> None:
+    steps = Steps(
+        profile=tui.CUSTOM,
+        agent="codex",
+        skills=["reviewer"],
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="agent",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert answers["skills"] == ["reviewer"]
+    assert steps.notices == []
+
+
+def test_editing_the_profile_starts_the_answers_over_from_it(config_dir: Path) -> None:
+    """Switching the base profile means that profile's values, not the ticks against the old one."""
+    save_profile(
+        Profile(
+            name="hardened",
+            agent="claude",
+            tools=["git"],
+            network_presets=["github"],
+            extra_domains=["example.com"],
+            shared_dir="/work/repo",
+        )
+    )
+    steps = Steps(
+        profile=(tui.CUSTOM, "hardened"),
+        agent="claude",
+        tools=["jq"],
+        network=["npm"],
+        domains="other.com",
+        seed={"share": True, "directory": "/work/repo"},
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="profile",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+    plan = tui.build_session(tui.base_profile(load_profiles(), answers), answers)
+
+    assert plan.profile == load_profiles()["hardened"]
+    assert len(steps.notices) == 1  # one line saying the answers start from it now
+
+
+def test_editing_the_profile_asks_none_of_its_answers_again(config_dir: Path) -> None:
+    """The new profile answers them, so the summary comes straight back."""
+    save_profile(Profile(name="hardened", agent="claude", tools=["git"]))
+    steps = Steps(
+        profile=(tui.CUSTOM, "hardened"),
+        agent="claude",
+        tools=["jq"],
+        seed={"share": False},
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="profile",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert steps.asked.count("tools") == 1
+    assert "tools" not in answers  # forgotten, so the profile's own tools stand
+
+
+def test_editing_the_share_answer_asks_about_the_directory_again() -> None:
+    """Answering no must not leave the directory the earlier yes asked for behind."""
+    steps = Steps(
+        profile=tui.CUSTOM,
+        agent="codex",
+        share=(True, False),
+        directory=("/work/repo", tui.SKIP),
+        summary=(tui.EDIT, tui.LAUNCH),
+        edit="share",
+    )
+
+    answers = tui.collect(steps, steps.notify)
+
+    assert answers["share"] is False
+    assert "directory" not in answers
+    assert steps.notices == []
+
+
+def test_cancelling_the_summary_ends_with_no_answers() -> None:
+    steps = Steps(profile=tui.CUSTOM, agent="codex", summary=tui.CANCEL)
+
+    assert tui.collect(steps, steps.notify) is None
+
+
+def test_backing_out_of_the_first_question_leaves_the_questionnaire() -> None:
+    """The first question of the popup is what is before the first question here."""
+    steps = Steps(profile=tui.BACK)
+
+    assert tui.collect(steps, steps.notify) is tui.BACK
+    assert steps.asked == ["profile"]
+
+
+def test_launching_from_the_summary_builds_the_plan_the_questions_described(
+    tmp_path: Path,
+) -> None:
+    """The pin: the same answers as the linear flow, and the same plan out of them."""
+    steps = Steps(
+        profile=tui.CUSTOM,
+        agent="codex",
+        tools=["git"],
+        network=["npm"],
+        domains="example.com",
+        share=True,
+        directory=str(tmp_path.resolve()),
+        name="review",
+        save_as="review-profile",
+        summary=tui.LAUNCH,
+    )
+
+    answers = tui.collect(steps, steps.notify)
+    plan = tui.build_session(tui.base_profile(load_profiles(), answers), answers)
+
+    assert plan == tui.NewSession(
+        profile=Profile(
+            agent="codex",
+            tools=["git"],
+            network_presets=["npm"],
+            extra_domains=["example.com"],
+            shared_dir=str(tmp_path.resolve()),
+        ),
+        name="review",
+        save_as="review-profile",
+    )
+
+
+def test_the_summary_puts_every_choice_on_one_line() -> None:
+    plan = tui.NewSession(
+        profile=Profile(
+            agent="wrapped",
+            tools=["git"],
+            network_presets=["npm"],
+            extra_domains=["example.com"],
+            skills=["reviewer"],
+            shared_dir="/work/repo",
+        ),
+        name="review",
+        save_as="review-profile",
+        agent_command="npx claude-code",
+    )
+
+    assert tui.summary_lines(tui.CUSTOM, plan) == [
+        "Window: new sandbox session",
+        "Start from: Custom",
+        "Agent: wrapped",
+        "Command: npx claude-code",
+        "Tools: git",
+        "Network: npm + example.com",
+        "Skills: reviewer",
+        "Shared directory: /work/repo",
+        "Session name: review",
+        "Save as profile: review-profile",
+    ]
+
+
+def test_the_summary_says_what_was_left_out() -> None:
+    plan = tui.NewSession(profile=Profile(agent="claude", tools=[], network_presets=[]))
+
+    lines = tui.summary_lines("claude-default", plan)
+
+    assert "Start from: claude-default" in lines
+    assert "Tools: none" in lines
+    assert "Network: none" in lines
+    assert "Shared directory: none, an isolated workdir" in lines
+    assert "Session name: (generated)" in lines
+    assert "Save as profile: not saved" in lines
+    assert not any(line.startswith("Command:") for line in lines)
+
+
+def test_the_edit_list_offers_the_questions_that_were_asked() -> None:
+    """A question the chooser skipped is not one to go back and change."""
+    answers = {"name": "review", "agent": "codex", "profile": tui.CUSTOM}
+
+    choices = tui.edit_choices(answers)
+
+    assert [value for _, value in choices] == ["profile", "agent", "name"]
+    assert [title for title, _ in choices] == ["Start from", "Agent", "Session name"]
+
+
 # --- the questionary shell -------------------------------------------------
 
 
@@ -419,6 +718,7 @@ def test_the_whole_questionnaire_becomes_one_plan(
         str(tmp_path),  # which one
         "review",  # session name
         "review-profile",  # save the answers as
+        tui.LAUNCH,  # the summary: launch it
     )
     monkeypatch.setattr(tui, "questionary", script)
 
@@ -435,7 +735,7 @@ def test_the_whole_questionnaire_becomes_one_plan(
         name="review",
         save_as="review-profile",
     )
-    assert script.asked == [
+    assert script.asked[:-1] == [
         "New window:",
         "Start from:",
         "Agent:",
@@ -447,6 +747,7 @@ def test_the_whole_questionnaire_becomes_one_plan(
         "Session name (blank to generate one):",
         "Save these answers as a profile (blank to skip):",
     ]
+    assert script.asked[-1].startswith("Ready to launch:")
 
 
 def test_a_typed_command_is_carried_in_the_plan(
@@ -468,6 +769,7 @@ def test_a_typed_command_is_carried_in_the_plan(
             False,  # share a directory?
             "",  # session name
             "",  # save the answers as
+            tui.LAUNCH,  # the summary
         ),
     )
 
@@ -483,7 +785,9 @@ def test_skills_are_asked_about_when_the_agent_has_some(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude" / "skills" / "reviewer").mkdir(parents=True)
-    script = Scripted("new", tui.CUSTOM, "claude", [], [], "", ["reviewer"], False, "", "")
+    script = Scripted(
+        "new", tui.CUSTOM, "claude", [], [], "", ["reviewer"], False, "", "", tui.LAUNCH
+    )
     monkeypatch.setattr(tui, "questionary", script)
 
     plan = tui.choose(tmp_path)
@@ -498,7 +802,7 @@ def test_changing_the_agent_drops_the_profiles_skills(
     """Skills belong to the agent whose config dir they came from, not to the profile."""
     monkeypatch.setenv("HOME", str(tmp_path))
     save_profile(Profile(name="reviewing", agent="claude", skills=["reviewer"]))
-    script = Scripted("new", "reviewing", "codex", [], [], "", False, "", "")
+    script = Scripted("new", "reviewing", "codex", [], [], "", False, "", "", tui.LAUNCH)
     monkeypatch.setattr(tui, "questionary", script)
 
     plan = tui.choose(tmp_path)
@@ -514,10 +818,117 @@ def test_the_tools_question_is_skipped_when_the_host_has_nothing_to_offer(
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(shutil, "which", lambda name: None)
     save_profile(Profile(name="bare", agent="codex", tools=[]))
-    script = Scripted("new", "bare", "codex", [], "", False, "", "")
+    script = Scripted("new", "bare", "codex", [], "", False, "", "", tui.LAUNCH)
     monkeypatch.setattr(tui, "questionary", script)
 
     plan = tui.choose(tmp_path)
 
     assert "Tools on the sandbox PATH:" not in script.asked
     assert plan.profile.tools == []
+
+
+def test_every_list_question_offers_a_way_back(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """Back on the first questionnaire question is the popup's first question again."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    script = Scripted("new", tui.BACK, "local")
+    monkeypatch.setattr(tui, "questionary", script)
+
+    assert tui.choose(tmp_path) == tui.Local(cwd=str(tmp_path))
+    assert script.asked == ["New window:", "Start from:", "New window:"]
+    assert tui.BACK in [choice.value for choice in script.offered[1]]
+
+
+def test_ticking_back_in_a_checklist_returns_to_the_question_before_it(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """A checklist has no key to press for back, so the way back is an entry on the list."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    script = Scripted(
+        "new",
+        tui.CUSTOM,
+        "codex",  # agent
+        ["git", tui.BACK],  # tools: ticked, and back anyway
+        "claude",  # the agent again
+        ["git"],  # tools
+        [],  # network presets
+        "",  # extra domains
+        False,  # share a directory?
+        "",  # session name
+        "",  # save the answers as
+        tui.LAUNCH,
+    )
+    monkeypatch.setattr(tui, "questionary", script)
+
+    plan = tui.choose(tmp_path)
+
+    assert script.asked.count("Agent:") == 2
+    assert plan.profile.agent == "claude"
+    assert plan.profile.tools == ["git"]
+
+
+def test_the_summary_sends_you_back_to_one_question(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    answers = ["new", tui.CUSTOM, "codex", [], [], "", False, "", ""]
+    script = Scripted(*answers, tui.EDIT, "name", "review", tui.LAUNCH)
+    monkeypatch.setattr(tui, "questionary", script)
+
+    plan = tui.choose(tmp_path)
+
+    assert plan.name == "review"
+    assert script.asked.count("Session name (blank to generate one):") == 2
+
+
+def test_the_summary_swaps_the_base_profile_for_all_of_its_answers(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_sessions,
+    which: dict[str, str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Picking another profile at the summary hands over its tools, network and directory."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_profile(
+        Profile(
+            name="hardened",
+            agent="claude",
+            tools=["git"],
+            network_presets=["github"],
+            shared_dir=str(tmp_path),
+        )
+    )
+    answers = ["new", tui.CUSTOM, "claude", ["jq"], [], "", False, "", ""]
+    script = Scripted(*answers, tui.EDIT, "profile", "hardened", tui.LAUNCH)
+    monkeypatch.setattr(tui, "questionary", script)
+
+    plan = tui.choose(tmp_path)
+
+    assert plan.profile == load_profiles()["hardened"]
+    assert "hardened" in capsys.readouterr().err  # the one line saying why
+
+
+def test_cancelling_the_summary_launches_nothing(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    script = Scripted("new", tui.CUSTOM, "codex", [], [], "", False, "", "", tui.CANCEL)
+    monkeypatch.setattr(tui, "questionary", script)
+
+    assert tui.choose(tmp_path) is None
+    assert fake_sessions.calls == [("list_sessions",)]
+    assert any("Agent: codex" in message for message in script.asked)
+
+
+def test_ctrl_c_at_the_summary_ends_the_chooser(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """The summary is a question like any other: None means nothing was chosen."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    script = Scripted("new", tui.CUSTOM, "codex", [], [], "", False, "", "", None)
+    monkeypatch.setattr(tui, "questionary", script)
+
+    assert tui.choose(tmp_path) is None
+    assert fake_sessions.calls == [("list_sessions",)]

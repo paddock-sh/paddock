@@ -25,18 +25,21 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, synth_config
+from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
     RunNotFound,
     SandboxGone,
+    ensure_launch_script,
     launch_line,
     new_run_dir,
     write_launch_script,
 )
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
+
+logger = log.get_logger(__name__)
 
 INSTALL_COMMAND = "curl -fsSL https://install.microsandbox.dev | sh"
 
@@ -284,6 +287,18 @@ def prepare(profile: Profile) -> Run:
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
     handle = vm_handle(run_dir)
+    logger.debug(
+        "prepare %s",
+        log.context(
+            profile=profile.name,
+            agent=profile.agent,
+            image=agent.image or DEFAULT_IMAGE,
+            run_dir=run_dir,
+            workdir=workdir,
+            vm=handle,
+            domains=len(profile.allowed_domains()),
+        ),
+    )
     # Without the token: nothing can use it until the agent is installed, and everything
     # between here and there can fail (SPEC §4.3).
     synth = synth_config.build(
@@ -308,7 +323,9 @@ def prepare(profile: Profile) -> Run:
             synth_config.place_credentials(profile, agent, run_dir)
             _run(*copy_config_argv(handle))
         command = attach_command(handle, _agent_argv(profile, agent, synth))
-        write_launch_script(run_dir, command)
+        script = write_launch_script(run_dir, command)
+        # The length, never the command: the same rule the srt backend writes under.
+        logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
         (run_dir / LAUNCH_FILE).write_text(
             json.dumps(
                 {"vm_handle": handle, "workdir": str(workdir), "command": command}, indent=2
@@ -325,12 +342,19 @@ def prepare(profile: Profile) -> Run:
 
 
 def load_run(run_dir: Path) -> Run:
-    """Read a prepared run back, so a later tab execs into the VM the first one booted."""
+    """Read a prepared run back, so a later tab execs into the VM the first one booted.
+
+    The script is rewritten when it is not the one this paddock would write, exactly as it
+    is on the srt backend: the attach line is the backend's, but the pane around it, its
+    log and its hold on a failed launch, is the same for both (SPEC §9).
+    """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        return Run(run_dir, Path(data["workdir"]), str(data["vm_handle"]), str(data["command"]))
+        run = Run(run_dir, Path(data["workdir"]), str(data["vm_handle"]), str(data["command"]))
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
+    ensure_launch_script(run_dir, run.command)
+    return run
 
 
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
@@ -347,7 +371,11 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     if not vm_is_running(run.vm_handle):
         raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
     pane_id = herdr_client.create_tab(run.workdir, label=label)
-    herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
+    line = launch_line(run.run_dir)
+    herdr_client.run_in_pane(pane_id, line)
+    logger.debug(
+        "pane opened %s", log.context(pane=pane_id, label=label, vm=run.vm_handle, line=line)
+    )
     return pane_id
 
 
@@ -357,6 +385,7 @@ def collect(run_dir: Path, vm_handle: str = "") -> None:
         vm_handle = load_run(run_dir).vm_handle
     except RunNotFound:
         pass  # the run dir lost its record, so the caller's handle is all there is
+    logger.debug("collect %s", log.context(run_dir=run_dir, vm=vm_handle))
     if vm_handle:
         stop_vm(vm_handle)
 
@@ -390,15 +419,30 @@ def _provision(handle: str, agent: AgentSpec, image: str) -> None:
 
 
 def _run(*args: str) -> str:
+    """The one place this shells out to msb, and so the one place its argv is logged.
+
+    Every msb command goes through here: create, exec, ls and rm. The argv is a summary
+    of mounts and names, which is what makes a boot that failed explicable at all, but the
+    values of `-e` are left out on principle, the way herdr's `--env` are. Nothing msb is
+    given today is secret (a config dir is mounted, never a token passed), and this keeps
+    that true of anything added later.
+    """
+    called = log.redact_env(args[1:])
+    logger.debug("msb %s", called)
     try:
         completed = subprocess.run(
             args, capture_output=True, text=True, check=True, timeout=COMMAND_TIMEOUT
         )
     except FileNotFoundError as error:
+        logger.debug("msb is not on PATH")
         raise MsbNotFound(f"msb not found on PATH. Install it with: {INSTALL_COMMAND}") from error
     except subprocess.TimeoutExpired as error:
+        logger.debug("msb timed out %s", log.context(command=args[1], seconds=COMMAND_TIMEOUT))
         raise MsbError(f"msb {args[1]} gave up after {COMMAND_TIMEOUT}s") from error
     except subprocess.CalledProcessError as error:
-        reason = (error.stderr or "").strip()
-        raise MsbError(f"msb {' '.join(args[1:])} failed: {reason}") from error
+        # msb quotes back what it was given, so the reason is scrubbed like herdr's is.
+        reason = log.scrub((error.stderr or "").strip())
+        logger.debug("msb failed %s", log.context(exit=error.returncode, stderr=reason))
+        raise MsbError(f"msb {called} failed: {reason}") from error
+    logger.debug("msb done %s", log.context(output=f"{len(completed.stdout)} bytes"))
     return completed.stdout

@@ -19,17 +19,20 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, synth_config
+from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
     RunNotFound,
+    ensure_launch_script,
     launch_line,
     new_run_dir,
     write_launch_script,
 )
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
+
+logger = log.get_logger(__name__)
 
 INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
 
@@ -162,6 +165,10 @@ def build_settings(
             "allowWrite": _as_strings(allow_write),
             "denyWrite": _as_strings(deny_write),
         },
+        # A TUI agent puts its terminal in raw mode. Without this the sandbox is denied the
+        # ioctl on /dev/ttys*, so claude draws gibberish and codex exits at once. srt grants
+        # every terminal the user owns, not just this pane: the trade is in SPEC §2.1.
+        "allowPty": True,
     }
 
 
@@ -196,21 +203,44 @@ def prepare(profile: Profile) -> Run:
 
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
+    logger.debug(
+        "prepare %s",
+        log.context(
+            profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
+        ),
+    )
     # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
     # An agent named by absolute path (the shell, say) is found without one.
     tools = list(profile.tools) + shlex.split(agent.command)[:1]
     shim, skipped = build_shim_dir(run_dir, tools)
-    if skipped:
-        print(f"paddock: left off the sandbox PATH: {', '.join(skipped)}", file=sys.stderr)
+    logger.debug(
+        "shim dir %s",
+        log.context(dir=shim, shimmed=len(tools) - len(skipped), skipped=", ".join(skipped)),
+    )
+    # A name with a slash is the agent's own command. It runs without a shim, so it is
+    # reported as how it runs, not as a tool that went missing.
+    missing = [tool for tool in skipped if "/" not in tool]
+    if missing:
+        print(f"paddock: left off the sandbox PATH: {', '.join(missing)}", file=sys.stderr)
+    for tool in (tool for tool in skipped if "/" in tool):
+        print(
+            f"paddock: {tool} runs by its absolute path; "
+            "only bare tool names go on the sandbox PATH",
+            file=sys.stderr,
+        )
     synth = synth_config.build(profile, agent, run_dir)
     if synth.missing:
         left_out = ", ".join(synth.missing)
         print(f"paddock: not in the sandbox config dir: {left_out}", file=sys.stderr)
     settings = run_dir / "srt-settings.json"
-    settings.write_text(json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n")
+    text = json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n"
+    settings.write_text(text)
+    logger.debug("settings written %s", log.context(path=settings, size=f"{len(text)} bytes"))
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
-    write_launch_script(run_dir, command)
+    script = write_launch_script(run_dir, command)
+    # The length, never the command: it carries every environment value the sandbox keeps.
+    logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
 
     run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
     (run_dir / LAUNCH_FILE).write_text(
@@ -220,18 +250,28 @@ def prepare(profile: Profile) -> Run:
 
 
 def load_run(run_dir: Path) -> Run:
-    """Read a prepared run back, so a later tab attaches to the same settings and workdir."""
+    """Read a prepared run back, so a later tab attaches to the same settings and workdir.
+
+    The script is rewritten when it is not the one this paddock would write, which covers
+    a run dir prepared before paddock wrote scripts at all (it has none, and the pane runs
+    it) as well as one whose script an upgrade has moved on from. The record holds the
+    exact command either way, so a session gets today's launch behaviour on its next tab.
+    """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        return Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
+        run = Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
+    ensure_launch_script(run_dir, run.command)
+    return run
 
 
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
-    herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
+    line = launch_line(run.run_dir)
+    herdr_client.run_in_pane(pane_id, line)
+    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, line=line))
     return pane_id
 
 

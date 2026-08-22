@@ -50,6 +50,9 @@ New window:
 | Share a directory? | A host directory, read-write, or an isolated scratch workdir |
 | Which skills / MCP servers? | Only the ones you tick exist inside the sandbox |
 
+A wrong answer is not a restart: every list question has a **← Back** entry, and
+the last screen is a summary of the answers you can edit before it launches.
+
 **Attach to an existing session** lists live sessions with their name, backend,
 agent, profile and attached tabs.
 
@@ -114,6 +117,7 @@ paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock profiles                # list saved profiles
 paddock gc                      # collect sessions whose tabs are all closed
+paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```
 
@@ -156,6 +160,12 @@ longer want them.
 **4. Press `prefix+c` inside herdr.**
 
 To check herdr is happy with the result: `herdr config check`.
+
+## Troubleshooting
+
+`paddock logs` prints where the log is and the last 40 lines of it, and
+`paddock logs <session>` prints what that session's pane printed. A launch that
+fails leaves its pane open with the reason on screen.
 
 ## Docs
 

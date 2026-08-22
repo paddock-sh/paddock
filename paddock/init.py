@@ -14,7 +14,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from paddock import herdr_client
+from paddock import herdr_client, log
+
+logger = log.get_logger(__name__)
 
 try:
     import tomllib
@@ -52,6 +54,7 @@ def config_path() -> Path:
 def run(dry_run: bool = False, undo: bool = False) -> int:
     """Wire paddock into herdr, print what that would be, or put the old config back."""
     path = config_path()
+    logger.info("init %s", log.context(config=path, dry_run=dry_run, undo=undo))
     if undo:
         return _restore(path, dry_run)
 
@@ -87,11 +90,16 @@ def run(dry_run: bool = False, undo: bool = False) -> int:
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
     _write(path, after)
+    logger.info(
+        "init wrote the herdr config %s",
+        log.context(config=path, backup=backup, size=f"{len(after)} bytes"),
+    )
 
     rejected = _rejected()
     if rejected:
         # herdr knows what a valid binding is, which TOML alone cannot say.
         _put_back(path, backup)
+        logger.info("init put the herdr config back %s", log.context(config=path, why=rejected))
         print(f"paddock: herdr would not accept the new config ({rejected})", file=sys.stderr)
         print(f"paddock: {path} is as it was", file=sys.stderr)
         return 1
@@ -166,6 +174,10 @@ def _restore(path: Path, dry_run: bool = False) -> int:
         shutil.copy2(path, kept)
     _write(path, after)
     newest.unlink()
+    logger.info(
+        "init restored the herdr config %s",
+        log.context(config=path, backup=newest, kept=kept),
+    )
     print(f"paddock: restored {path} from {newest.name}")
     if kept is not None:
         print(f"paddock: what was there is kept as {kept.name}")

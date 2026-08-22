@@ -2,13 +2,24 @@
 
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from paddock import herdr_client
+from paddock import herdr_client, log
 from tests import fake_sessions as fake_sessions_module
+
+
+@pytest.fixture(autouse=True)
+def clean_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Handlers live on a module-level logger, so each test starts and leaves with none."""
+    monkeypatch.delenv("PADDOCK_LOG", raising=False)
+    monkeypatch.delenv("PADDOCK_LOG_FILE", raising=False)
+    log.reset()
+    yield
+    log.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +84,12 @@ def keychain(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(subprocess, "run", run)
     return entries
+
+
+def launch_command(run_dir: Path) -> str:
+    """The composed command back out of the launch script, which wraps it in a shell function."""
+    text = (run_dir / "launch.sh").read_text()
+    return text.split("paddock_launch() {\n", 1)[1].split("\n}\n", 1)[0]
 
 
 class FakeClient:

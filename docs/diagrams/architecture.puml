@@ -14,7 +14,7 @@ package "Herdr 0.8.0" {
 }
 
 package "paddock" {
-  [cli.py\nchoose | launch | attach | profiles | init\n~--cwd, ~--dry-run] as CLI
+  [cli.py\nchoose | launch | attach | profiles | gc | logs | init\n~--cwd, ~--dry-run] as CLI
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
   [tui.py\nquestionary chooser\nanswers -> a plan] as TUI
   [sessions.py\nsession registry\ncreate | attach | remove_pane\n(collect on the last pane)] as Sessions
@@ -24,14 +24,15 @@ package "paddock" {
   interface "Backend\nprepare(profile) -> run\nload_run(run_dir) -> run\nopen_pane(run, label)\n-> pane id\ncollect(run_dir)" as BackendAPI
   [sessions.BACKENDS\nbackend name -> the module\nthat runs it] as BackendRegistry
   [backends/srt.py\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
-  [backends/__init__.py\nthe run dir both share:\nlaunch.json + launch.sh] as RunContract
+  [backends/__init__.py\nthe run dir both share:\nlaunch.json + launch.sh + pane.log\none launch script for both backends:\nstderr kept, and a failed launch held] as RunContract
   [backends/microsandbox.py\nmsb create / exec --tty / rm -f\nprepare / open_pane / collect\nboot script: install the agent, place\nthe token, copy the config in] as MsbBackend
   [herdr_client.py\ncreate_tab / run_in_pane\ncheck_config / reload_config\n(mockable seam)] as HerdrClient
+  [log.py\nget_logger(__name__)\nfile at DEBUG, stderr at WARNING\n($PADDOCK_LOG, $PADDOCK_LOG_FILE)] as Log
 }
 
 package "Host configuration" {
   database "~/.config/paddock/\n(override: $PADDOCK_CONFIG_DIR)\nprofiles/*.json\nagents/*.json" as ConfigFiles
-  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ launch.json + launch.sh +\nwork/ (when the profile shares no dir),\nconfig/ for a redirected agent,\nplus for srt: bin/ + srt-settings.json\nsessions.json (registry: backend, vm_handle,\nrun_dir, pane ids per session)\nworkspace default bindings (planned)" as RunDir
+  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ launch.json + launch.sh + pane.log +\nwork/ (when the profile shares no dir),\nconfig/ for a redirected agent,\nplus for srt: bin/ + srt-settings.json\nsessions.json (registry: backend, vm_handle,\nrun_dir, pane ids per session)\nlogs/paddock.log (1 MB, 3 backups)\nworkspace default bindings (planned)" as RunDir
 }
 
 package "Sandbox runtimes" {
@@ -60,8 +61,10 @@ BackendAPI <|.. MsbBackend
 
 SrtBackend --> RunDir : writes PATH shim dir, srt-settings.json,\nconfig dir, scratch workdir, launch.json, launch.sh
 MsbBackend --> RunDir : writes launch.json (vm_handle, workdir),\nlaunch.sh (`msb exec --tty <handle>`) and the\nconfig dir the guest mounts
-SrtBackend ..> RunContract : launch.sh + the pane line
-MsbBackend ..> RunContract : launch.sh + the pane line
+SrtBackend ..> RunContract : launch.sh + pane.log + the pane line
+MsbBackend ..> RunContract : launch.sh + pane.log + the pane line
+Log ..> RunDir : appends logs/paddock.log
+CLI ..> Log : `paddock logs` reads it back
 Sessions --> BackendRegistry : backend_for(session.backend):\nprepare on create,\nload_run + open_pane on attach,\ncollect when the last pane goes
 BackendRegistry --> SrtBackend : "srt"
 BackendRegistry --> MsbBackend : "msb"
@@ -92,6 +95,24 @@ end note
 note bottom of HerdrClient
   The only module that shells out to `herdr`.
   Mocked in every test; CI has no herdr server.
+end note
+
+note bottom of Log
+  Every module logs through this one, under its own
+  name, so `paddock.backends.srt` says which layer
+  wrote the line. Never a token, a credential file's
+  contents, an environment value, a proxy URL or a
+  traceback: paths, byte counts and lengths instead.
+  `paddock logs` prints the path and the last 40 lines.
+  A run's pane.log is the agent's own output and carries
+  no such promise, which `paddock logs <session>` says.
+end note
+
+note right of Sessions
+  The one door. cli.py and tui.py never import a
+  backend, and no backend imports them or sessions.py.
+  tests/test_architecture.py parses the imports and
+  fails on any edge that breaks that (SPEC section 10).
 end note
 
 @enduml
