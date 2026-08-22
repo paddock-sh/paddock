@@ -1,5 +1,5 @@
 @startuml chooser_flow
-title paddock: the chooser, questions in and one plan out
+title paddock: the chooser, one form in and one plan out
 
 skinparam shadowing false
 skinparam defaultTextAlignment center
@@ -17,21 +17,22 @@ elseif (attach <session>) then
   :plan = Attach(session ref, cwd only if --cwd was given);
 else (choose)
   :sessions.list_sessions();
-  if (what kind of window?) then (Local)
+  partition "the form: one screen, eight fields" {
+    repeat
+      :the eight fields, filled in from the profile:\n1 Open: a new sandbox, a local tab, or a live session\n2 Profile: fills in everything below\n3 Agent: the command, and the key it is saved under\n4 Tools: ticked binaries on the sandbox PATH\n5 Network: groups, and any extra domains\n6 Files: an isolated scratch dir, or one shared directory\n7 Skills: from the agent's own config dir\n8 Advanced: name, save as profile, MCP, writes, reads, PATH;
+      :enter opens an editor for that field,\nesc closes it and keeps what it holds;
+      :settle(answers, field) after a change:\nanother profile hands over every value it carries,\nanother agent drops its skills and typed command,\nsharing nothing drops the directory;
+    repeat while (another field?) is (yes: the arrows or 1-8,\nevery answer kept) not (no: Launch)
+  }
+  if (what the Open field says) then (Local tab)
     :plan = Local(cwd);
-  elseif (Attach:\noffered only when a session is live) then
-    :pick a session by name, agent,\nprofile and tab count;
+  elseif (Attach: <session>) then
     :plan = Attach(session id):\nthe session keeps its own workdir;
-  else (New sandbox session)
-    partition "permissions questionnaire" {
+  else (New sandbox)
+    partition "confirm" {
       repeat
-        :ask the next question, in order:\nstart from a saved profile or Custom;\nagent from the registry, or a command typed in;\ntools: candidates on PATH plus the profile's own,\nmarked when missing; network presets and typed\ndomains; skills under the agent's config dir\n(none, or a different agent: skipped);\nshare a host directory?; session name;\nsave the answers as a profile?;
-      repeat while (← Back on a list question?) is (yes: the question before it,\nevery answer so far kept) not (no)
-    }
-    partition "summary" {
-      repeat
-        :one line per answer: start from, agent,\ntyped command, tools, network presets and\ndomains, skills, shared dir, name, save as;
-      repeat while (Launch, Edit a step, or Cancel?) is (Edit a step: ask\nthat one question again) not (Launch)
+        :the resolved policy, in full: session name, agent,\nthe profile and whether the answers still match it,\ncan write, can read, can reach (the domains the\ngroups open, not the group names), can run, can see;
+      repeat while (Launch, Back to the form, or Cancel?) is (Back to the form:\nthe same screen, every answer kept) not (Launch)
     }
     :plan = NewSession(profile, name, save as);
   endif
@@ -49,21 +50,27 @@ endif
 stop
 
 note right
-  Ctrl-C or escape answers None at any question,
-  and Cancel on the summary says the same thing:
-  the chooser returns no plan and cli.py stops.
-  Only cli.py acts on a plan; the chooser reads
-  the session list and nothing else. So backing
-  out cannot leave a pane or a file behind.
+  Ctrl-C cancels at any depth, and Cancel on the
+  confirm says the same thing: the chooser returns
+  no plan and cli.py stops. Only cli.py acts on a
+  plan; the chooser reads the session list and
+  nothing else. So backing out cannot leave a pane
+  or a file behind.
 
-  Back on the first question of the questionnaire
-  goes back to "what kind of window?". Text boxes
-  carry no Back entry; the summary edits those.
-  Editing the agent asks for its skills again,
-  because they come from its own config dir.
-  Editing the base profile hands over its own
-  tools, network, domains, skills and directory:
-  another profile means starting over from it.
+  Esc backs out one level and never loses an answer.
+  It closes what is open, keeps the value it was
+  editing, and puts the cursor back on the field.
+  There is no walk to go back through, because every
+  field is on one screen.
+
+  Picking a local tab or a session greys out every
+  field below Open: no sandbox, so there is nothing
+  to permit. Nothing is hidden and nothing moves.
+
+  Landing in steps (docs/design/chooser-redesign.md).
+  The fields, words and rules are in tui.py now; the
+  questionary shell still asks them one at a time
+  until the screen layer lands.
 end note
 
 @enduml

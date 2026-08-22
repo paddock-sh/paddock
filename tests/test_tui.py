@@ -68,15 +68,29 @@ def which(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     return found
 
 
-# --- the first question ----------------------------------------------------
+# --- the Open field --------------------------------------------------------
 
 
-def test_attach_is_offered_only_when_a_session_exists() -> None:
-    without = [value for _, value in tui.first_choices(has_sessions=False)]
-    with_one = [value for _, value in tui.first_choices(has_sessions=True)]
+def test_local_new_and_every_live_session_are_on_one_list() -> None:
+    """One field, so attaching is a pick and not a second screen."""
+    without = [value for _, value in tui.open_choices([])]
+    with_one = [value for _, value in tui.open_choices([Session(session_id="s1")])]
 
-    assert without == ["local", "new"]
-    assert with_one == ["local", "new", "attach"]
+    assert without == ["new", "local"]
+    assert with_one == ["new", "local", "s1"]
+
+
+def test_a_session_on_the_open_list_is_shown_by_what_it_is() -> None:
+    live = [Session(session_id="s1", name="review", agent="claude", pane_ids=["wA:p1"])]
+
+    assert tui.open_choices(live)[-1][0] == "review: claude / claude-default, 1 tab"
+
+
+def test_attaching_says_the_tabs_do_not_share_a_process_tree() -> None:
+    """SPEC 3.2: with srt, attached tabs share files and policy, never a runtime."""
+    assert "separate process tree" in tui.open_hint("s1")
+    assert "No sandbox" in tui.open_hint("local")
+    assert "sandbox" in tui.open_hint("new")
 
 
 def test_a_session_is_shown_by_what_it_is() -> None:
@@ -610,49 +624,6 @@ def test_launching_from_the_summary_builds_the_plan_the_questions_described(
     )
 
 
-def test_the_summary_puts_every_choice_on_one_line() -> None:
-    plan = tui.NewSession(
-        profile=Profile(
-            agent="wrapped",
-            tools=["git"],
-            network_presets=["npm"],
-            extra_domains=["example.com"],
-            skills=["reviewer"],
-            shared_dir="/work/repo",
-        ),
-        name="review",
-        save_as="review-profile",
-        agent_command="npx claude-code",
-    )
-
-    assert tui.summary_lines(tui.CUSTOM, plan) == [
-        "Window: new sandbox session",
-        "Start from: Custom",
-        "Agent: wrapped",
-        "Command: npx claude-code",
-        "Tools: git",
-        "Network: npm + example.com",
-        "Skills: reviewer",
-        "Shared directory: /work/repo",
-        "Session name: review",
-        "Save as profile: review-profile",
-    ]
-
-
-def test_the_summary_says_what_was_left_out() -> None:
-    plan = tui.NewSession(profile=Profile(agent="claude", tools=[], network_presets=[]))
-
-    lines = tui.summary_lines("claude-default", plan)
-
-    assert "Start from: claude-default" in lines
-    assert "Tools: none" in lines
-    assert "Network: none" in lines
-    assert "Shared directory: none, an isolated workdir" in lines
-    assert "Session name: (generated)" in lines
-    assert "Save as profile: not saved" in lines
-    assert not any(line.startswith("Command:") for line in lines)
-
-
 def test_the_edit_list_offers_the_questions_that_were_asked() -> None:
     """A question the chooser skipped is not one to go back and change."""
     answers = {"name": "review", "agent": "codex", "profile": tui.CUSTOM}
@@ -661,6 +632,263 @@ def test_the_edit_list_offers_the_questions_that_were_asked() -> None:
 
     assert [value for _, value in choices] == ["profile", "agent", "name"]
     assert [title for title, _ in choices] == ["Start from", "Agent", "Session name"]
+
+
+# --- the form's fields ------------------------------------------------------
+
+
+def test_the_form_has_eight_fields_in_a_fixed_order() -> None:
+    """Fixed, because the digits 1 to 8 jump to them and a reordering list would lie."""
+    assert tui.FIELDS == (
+        "open",
+        "profile",
+        "agent",
+        "tools",
+        "network",
+        "files",
+        "skills",
+        "advanced",
+    )
+
+
+def test_every_field_has_a_label_a_title_and_a_hint() -> None:
+    for field in tui.FIELDS:
+        assert tui.FIELD_LABELS[field]
+        assert tui.FIELD_TITLES[field]
+        assert tui.FIELD_HINTS[field]
+
+
+def test_a_hint_says_what_the_value_means_not_what_the_question_is() -> None:
+    assert "refused by the OS" in tui.FIELD_HINTS["network"]
+    assert "not reachable by name" in tui.FIELD_HINTS["tools"]
+    assert "not a boundary" in tui.FIELD_HINTS["tools"]  # the honest trust model, in the UI
+
+
+def test_the_form_shows_one_row_per_field_with_the_profiles_own_answers() -> None:
+    base = builtin_profiles()["claude-default"]
+
+    rows = tui.form_rows({"profile": "claude-default"}, base, load_agents())
+
+    assert [label for label, _, _ in rows] == [tui.FIELD_LABELS[field] for field in tui.FIELDS]
+    assert dict((label, value) for label, value, _ in rows) == {
+        "Open": "New sandbox",
+        "Profile": "claude-default",
+        "Agent": "Claude Code (claude)",
+        "Tools": "git rg fd jq curl node npm npx uv python3 (10)",
+        "Network": "anthropic, github, npm, pypi/uv (12 domains)",
+        "Files": "an isolated scratch directory",
+        "Skills": "none",
+        "Advanced": "name, save as profile, MCP",
+    }
+
+
+def test_a_shared_directory_and_a_session_name_show_on_the_form() -> None:
+    answers = {"share": True, "directory": "/work/repo", "name": "review"}
+
+    rows = dict((label, value) for label, value, _ in tui.form_rows(answers, Profile(), {}))
+
+    assert rows["Files"] == "/work/repo"
+    assert rows["Advanced"] == "review"
+
+
+def test_a_local_tab_greys_out_everything_the_sandbox_decides() -> None:
+    """Nothing is hidden and nothing moves, so the screen never rearranges under you."""
+    rows = tui.form_rows({"open": "local"}, Profile(), load_agents(), cwd="/dev/paddock")
+    values = dict((label, value) for label, value, _ in rows)
+    hints = dict((label, hint) for label, _, hint in rows)
+
+    greyed = {label for label, value in values.items() if value == "-"}
+
+    assert values["Open"] == "Local tab"
+    assert values["Files"] == "/dev/paddock"  # the tab still opens somewhere
+    assert greyed == set(values) - {"Open", "Files"}
+    assert hints["Network"] == tui.NO_SANDBOX
+
+
+def test_attaching_names_the_session_and_keeps_its_workdir() -> None:
+    live = [Session(session_id="s1", name="review")]
+
+    shown = tui.form_rows({"open": "s1"}, Profile(), {}, live)
+    rows = dict((label, value) for label, value, _ in shown)
+
+    assert rows["Open"] == "Attach: review"
+    assert rows["Files"] == "the session's own workdir"
+
+
+def test_the_title_names_the_profile_the_answers_stand_on() -> None:
+    base = builtin_profiles()["claude-default"]
+
+    assert tui.form_title({"profile": "claude-default"}, base) == "claude-default"
+    assert tui.form_title({}, Profile()) == "Custom"
+
+
+def test_the_title_says_when_the_answers_no_longer_match_the_profile() -> None:
+    """A session that says it runs claude-default has to be what that profile describes."""
+    base = builtin_profiles()["claude-default"]
+
+    answers = {"profile": "claude-default", "tools": ["git"]}
+
+    assert tui.form_title(answers, base) == "claude-default + changes"
+
+
+# --- the rules, on a field change -------------------------------------------
+
+
+def test_another_profile_hands_over_everything_it_carries() -> None:
+    """Another profile means starting over from it, not keeping the old ticks against it."""
+    answers = {
+        "profile": "hardened",
+        "agent": "codex",
+        "tools": ["jq"],
+        "network": ["npm"],
+        "domains": "example.com",
+        "skills": ["reviewer"],
+        "share": True,
+        "directory": "/work/repo",
+        "name": "review",
+        "save_as": "keep",
+    }
+
+    settled = tui.settle(answers, "profile")
+
+    assert settled == {"profile": "hardened", "name": "review", "save_as": "keep"}
+
+
+def test_settling_leaves_the_answers_it_was_given_alone() -> None:
+    """The form keeps the answers; settle says what the new ones are."""
+    answers = {"profile": "hardened", "tools": ["jq"]}
+
+    tui.settle(answers, "profile")
+
+    assert answers == {"profile": "hardened", "tools": ["jq"]}
+
+
+def test_another_agent_drops_the_skills() -> None:
+    """Skills come out of the agent's own config dir, so another agent's do not carry over."""
+    answers = {"agent": "codex", "skills": ["reviewer"], "tools": ["git"]}
+
+    assert tui.settle(answers, "agent") == {"agent": "codex", "tools": ["git"]}
+
+
+def test_a_registered_agent_drops_the_command_typed_for_the_last_one() -> None:
+    answers = {"agent": "codex", "command": "npx claude-code", "remember_as": "wrapped"}
+
+    assert tui.settle(answers, "agent") == {"agent": "codex"}
+
+
+def test_a_typed_command_keeps_the_command_it_was_given() -> None:
+    answers = {"agent": tui.CUSTOM, "command": "npx claude-code", "remember_as": "wrapped"}
+
+    assert tui.settle(answers, "agent") == answers
+
+
+def test_sharing_nothing_drops_the_directory() -> None:
+    """Answering "isolated" must not leave the directory an earlier "shared" asked for behind."""
+    assert tui.settle({"share": False, "directory": "/work/repo"}, "files") == {"share": False}
+
+    shared = {"share": True, "directory": "/work/repo"}
+    assert tui.settle(shared, "files") == shared
+
+
+def test_a_field_that_decides_nothing_else_settles_nothing() -> None:
+    answers = {"tools": ["git"], "skills": ["reviewer"]}
+
+    assert tui.settle(answers, "tools") == answers
+
+
+# --- the confirm screen -----------------------------------------------------
+
+
+def test_the_confirm_says_every_permission_out_loud() -> None:
+    labels = [label for label, _ in tui.confirm_lines({}, Profile(), load_agents())]
+
+    assert labels == [
+        "session",
+        "agent",
+        "profile",
+        "can write",
+        "can read",
+        "can reach",
+        "can run",
+        "can see",
+    ]
+
+
+def test_the_confirm_expands_the_presets_into_domains() -> None:
+    """The form shows group names. This is the only screen that shows what they open."""
+    base = builtin_profiles()["claude-default"]
+
+    lines = dict(tui.confirm_lines({"profile": "claude-default"}, base, load_agents()))
+
+    assert lines["can reach"].startswith("12 domains: ")
+    assert "api.anthropic.com" in lines["can reach"]
+    assert "pypi/uv" not in lines["can reach"]
+
+
+def test_the_confirm_folds_in_the_agents_own_domains() -> None:
+    """The agent reaches its own API whatever is ticked, so the screen has to say so."""
+    lines = dict(tui.confirm_lines({}, Profile(agent="codex", network_presets=[]), load_agents()))
+
+    assert "api.openai.com" in lines["can reach"]
+
+
+def test_the_confirm_says_an_offline_sandbox_is_offline() -> None:
+    profile = Profile(agent="shell", network_presets=[])
+
+    lines = dict(tui.confirm_lines({}, profile, load_agents()))
+
+    assert lines["can reach"] == "nothing, this sandbox is offline"
+
+
+def test_the_confirm_names_the_only_writable_path_of_yours() -> None:
+    isolated = dict(tui.confirm_lines({}, Profile(), load_agents()))
+    shared = dict(tui.confirm_lines({}, Profile(shared_dir="/work/repo"), load_agents()))
+
+    assert isolated["can write"] == "its own workdir, /tmp and /dev/null. No path of yours."
+    assert "/work/repo" in shared["can write"]
+
+
+def test_the_confirm_says_which_reads_are_denied() -> None:
+    lines = dict(tui.confirm_lines({}, Profile(), load_agents()))
+
+    assert lines["can read"] == "your disk, except ~/.ssh ~/.aws ~/.gnupg ~/.config/gh"
+
+
+def test_the_confirm_says_the_system_path_is_appended() -> None:
+    with_path = dict(tui.confirm_lines({"tools": ["git"]}, Profile(), load_agents()))
+    without = Profile(include_system_path=False)
+
+    assert with_path["can run"] == "git, plus /usr/bin:/bin"
+    assert dict(tui.confirm_lines({"tools": ["git"]}, without, load_agents()))["can run"] == "git"
+
+
+def test_the_confirm_says_which_login_the_agent_gets() -> None:
+    """The trust model in one line: its own credentials, never another agent's."""
+    lines = dict(tui.confirm_lines({}, Profile(agent="claude"), load_agents()))
+
+    assert lines["can see"] == "its own Claude Code login. No other agent's keys. No skills."
+
+
+def test_the_confirm_says_the_session_name_and_the_typed_command() -> None:
+    answers = {"agent": tui.CUSTOM, "command": "npx claude-code", "remember_as": "wrapped"}
+
+    generated = dict(tui.confirm_lines({}, Profile(), load_agents()))
+    typed = dict(tui.confirm_lines({**answers, "name": "review"}, Profile(), load_agents()))
+
+    assert generated["session"] == "generated at launch"
+    assert typed["session"] == "review"
+    assert typed["agent"] == "wrapped, running npx claude-code"
+
+
+def test_the_confirm_says_whether_the_answers_still_match_the_profile() -> None:
+    base = builtin_profiles()["claude-default"]
+    kept = {"profile": "claude-default"}
+
+    unchanged = dict(tui.confirm_lines(kept, base, load_agents()))
+    changed = dict(tui.confirm_lines({**kept, "tools": ["git"]}, base, load_agents()))
+
+    assert unchanged["profile"] == "claude-default, unchanged"
+    assert changed["profile"] == "claude-default + changes"
 
 
 # --- the questionary shell -------------------------------------------------
@@ -690,7 +918,7 @@ def test_an_existing_session_is_picked_from_the_list(
 ) -> None:
     """No cwd: an attached tab belongs in the session's own workdir."""
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
-    monkeypatch.setattr(tui, "questionary", Scripted("attach", "s1"))
+    monkeypatch.setattr(tui, "questionary", Scripted("s1"))
 
     assert tui.choose(tmp_path) == tui.Attach(ref="s1")
 
@@ -729,7 +957,7 @@ def test_the_whole_questionnaire_becomes_one_plan(
         save_as="review-profile",
     )
     assert script.asked[:-1] == [
-        "New window:",
+        "Open:",
         "Start from:",
         "Agent:",
         "Tools on the sandbox PATH:",
@@ -740,7 +968,7 @@ def test_the_whole_questionnaire_becomes_one_plan(
         "Session name (blank to generate one):",
         "Save these answers as a profile (blank to skip):",
     ]
-    assert script.asked[-1].startswith("Ready to launch:")
+    assert script.asked[-1].startswith("Launch this sandbox?")
 
 
 def test_a_typed_command_is_carried_in_the_plan(
@@ -829,7 +1057,7 @@ def test_every_list_question_offers_a_way_back(
     monkeypatch.setattr(tui, "questionary", script)
 
     assert tui.choose(tmp_path) == tui.Local(cwd=str(tmp_path))
-    assert script.asked == ["New window:", "Start from:", "New window:"]
+    assert script.asked == ["Open:", "Start from:", "Open:"]
     assert tui.BACK in [choice.value for choice in script.offered[1]]
 
 
@@ -912,7 +1140,7 @@ def test_cancelling_the_summary_launches_nothing(
 
     assert tui.choose(tmp_path) is None
     assert fake_sessions.calls == [("list_sessions",)]
-    assert any("Agent: codex" in message for message in script.asked)
+    assert any("Codex CLI (codex)" in message for message in script.asked)
 
 
 def test_ctrl_c_at_the_summary_ends_the_chooser(
