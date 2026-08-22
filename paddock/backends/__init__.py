@@ -16,6 +16,7 @@ from __future__ import annotations
 import shlex
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from paddock import log, state_dir
@@ -53,6 +54,20 @@ class SandboxGone(RuntimeError):
     Raised before a tab is opened, so a session that lost its VM says so instead of
     leaving a dead pane. Sessions treats it as the end of that session (SPEC §3.4).
     """
+
+
+@dataclass
+class Swept:
+    """What one backend's sweep did: what it took away, and what it would not answer for.
+
+    `unowned` is a sandbox named the way paddock names its own that no run of this state
+    dir made. Another paddock context on this host owns it, or a test run does, and either
+    way removing it would destroy a live session that is none of this gc's business
+    (SPEC §3.4). It is named at the user instead, with the command to remove it by hand.
+    """
+
+    removed: list[str] = field(default_factory=list)
+    unowned: list[str] = field(default_factory=list)
 
 
 def new_run_dir() -> Path:

@@ -33,6 +33,7 @@ from paddock.backends import (
     SHELL_SCRIPT,
     RunNotFound,
     SandboxGone,
+    Swept,
     ensure_launch_script,
     launch_line,
     new_run_dir,
@@ -112,6 +113,11 @@ def find_msb() -> str:
 def vm_handle(run_dir: Path) -> str:
     """The sandbox name, and the only handle msb needs. The run dir already has a unique one."""
     return f"{HANDLE_PREFIX}{run_dir.name}"
+
+
+def run_name(handle: str) -> str:
+    """The run this handle was named for: `vm_handle` read backwards, for the sweep."""
+    return handle.removeprefix(HANDLE_PREFIX)
 
 
 def workdir_for(profile: Profile, run_dir: Path) -> Path:
@@ -461,23 +467,32 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = 
     return pane_id
 
 
-def sweep(known: set[str]) -> list[str]:
-    """Destroy paddock's own sandboxes that no session claims. Returns the handles removed.
+def sweep(known: set[str], ours: set[str]) -> Swept:
+    """Destroy this state dir's own sandboxes that no session claims (SPEC §3.4, §8).
 
     The rollback in `prepare` covers the interruptions it survives, ctrl-c included. A
     process killed outright cannot roll anything back, and what that leaves is a microVM
-    nothing would ever collect, so `paddock gc` sweeps for them (SPEC §8). Only handles this
-    paddock would have made are touched: another tool's sandboxes are none of its business.
+    nothing would ever collect, so `paddock gc` sweeps for them.
+
+    `known` is the handles the registry claims and `ours` the runs this state dir answers
+    for. A sandbox has to be paddock's by its name, this state dir's by the run in that
+    name, and claimed by nothing, before it is removed. msb names are unique on the host
+    and not per state dir, so a paddock-named sandbox from another run of this test suite,
+    or another context's live session, is reported and left exactly as it is.
     """
     if not shutil.which("msb"):
-        return []  # no msb on this machine, so no microVM of its making is running
-    removed = []
+        return Swept()  # no msb on this machine, so no microVM of its making is running
+    swept = Swept()
     for entry in _listed():
         name = str(entry.get("name", ""))
-        if name.startswith(HANDLE_PREFIX) and name not in known:
-            stop_vm(name)
-            removed.append(name)
-    return removed
+        if not name.startswith(HANDLE_PREFIX) or name in known:
+            continue  # another tool's sandbox, or one a live session is using
+        if run_name(name) not in ours:
+            swept.unowned.append(name)
+            continue
+        stop_vm(name)
+        swept.removed.append(name)
+    return swept
 
 
 def collect(run_dir: Path, vm_handle: str = "") -> None:
