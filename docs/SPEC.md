@@ -583,6 +583,39 @@ any depth, and costs nothing, because the chooser returns a plan and `cli.py` is
 the only thing that acts on one. Filtering a long list is a mode `/` opens, so
 every letter stays a shortcut everywhere else.
 
+**An agent this machine has no binary for** is on the Agent list and says
+`(not installed)`, the way a tool the host lacks does and a backend without its
+binary does. Enter on it gives the reason instead of launching, because the tab
+it would open dies on `No such file or directory` before the user sees anything.
+An agent whose command is written as a path is left alone: that is the user's own
+answer to where it lives, and it is what the `shell` agent's `$SHELL` is.
+
+**Nothing the popup was asked to do dies without a screen.** The popup is
+transient (§1.1): it closes when `paddock` exits, so a message printed after the
+form has gone is written to a terminal nobody is left looking at. Two screens
+close that hole.
+
+- Before the launch, `screen.progress` says what it is about to do: the image it
+  pulls, the agent it installs in the guest, and how long the first start takes.
+  It is printed once and left there rather than drawn and animated, because the
+  call it stands in front of blocks the whole process. An msb launch that has to
+  install an agent takes about 40 seconds with the image already pulled, and used
+  to be a frozen form with nothing on it.
+- After a launch that never opened a pane, `screen.failed` shows what went wrong
+  and where the log is, with two ways on: **← Back to the form**, which reopens it
+  with every answer that made the plan, and **Cancel**. Escape is Back here as it
+  is everywhere else. Every exception is caught, not only the ones `main` knows
+  about: a traceback into a popup that is closing is no more use than a message.
+
+`paddock launch` and the other no-terminal entry points keep the stderr they
+always had. They are a script's way in, not a popup's.
+
+**An msb launch that cannot reach its install's registry is warned about before
+the wait, not after it.** The install runs inside the guest, where the profile's
+domains are the whole of the network (§2.2), so an agent installed from npm needs
+the `npm` preset. The confirm and the progress screen both say so. The profile is
+never changed to suit: what a sandbox may reach is an answer the user gives (§6).
+
 The design and the reasoning behind it are in
 [docs/design/chooser-redesign.md](design/chooser-redesign.md).
 
@@ -949,7 +982,7 @@ should be small, and mostly plain functions over a `Profile`:
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The chooser's fields, words and rules: answers in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
-| `paddock/screen.py` | The screens: the form, a list, a checklist and a box, over prompt_toolkit | Done; the confirm and the rest of Advanced are next |
+| `paddock/screen.py` | The screens: the form, a list, a checklist, a box and the one a failed launch ends on, over prompt_toolkit | Done; the confirm and the rest of Advanced are next |
 | `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `gc`, `logs`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 | `paddock/log.py` | Where paddock logs, at what level, and what never reaches the file (§9) | Done |
@@ -1004,6 +1037,13 @@ agent ending, ctrl-c (130) included, and holding the pane on that would hold it
 hostage. `load_run` rewrites a launch script that is not the one this paddock
 would write, so a session prepared before an upgrade gets the current behaviour
 on its next tab.
+
+**A launch that never got a pane keeps the popup.** There is no `pane.log` to
+hold, because nothing was opened: `prepare` refused, or the guest would not
+install the agent. From the chooser that goes on a screen with the log path on
+it (§3.1), and the popup stays up until the user has read it. From `paddock
+launch` it goes to stderr, as it always did. Either way the line in
+`paddock.log` is the same one, scrubbed of URL credentials, with no traceback.
 
 **One script, both backends.** `launch.sh` is written by
 `paddock/backends/__init__.py`, not by a backend, because none of the above is

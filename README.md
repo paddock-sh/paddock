@@ -64,7 +64,7 @@ cancels from any depth, and nothing has been launched or written by then.
 | `Open` | A new sandbox, an ordinary local tab, or a second tab on a session already running |
 | `Profile` | What everything below starts from. Change anything and the session runs as "the profile + changes", never under its name |
 | `Backend` | `srt`, a policy sandbox around the process, or `msb`, a microVM that starts slower and shares less |
-| `Agent` | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or a command you type |
+| `Agent` | `claude`, `codex`, `opencode`, `aider`, `gemini`, a plain shell, or a command you type. One this machine has not got says `(not installed)` and cannot be picked |
 | `Tools` | The binaries on the sandbox `PATH`. An absolute path still runs anything, so this is convenience, not a boundary |
 | `Network` | The domain allowlist, by group, plus any domain you add. Everything else is refused by the OS |
 | `Files` | An isolated scratch directory, or the one host directory the sandbox may change |
@@ -185,7 +185,8 @@ To check herdr is happy with the result: `herdr config check`.
 
 `paddock logs` prints where the log is and the last 40 lines of it, and
 `paddock logs <session>` prints what that session's pane printed. A launch that
-fails leaves its pane open with the reason on screen.
+fails leaves its pane open with the reason on screen, and one that never got as
+far as a pane says why on a screen of its own, with the way back to the form.
 
 ## Docs
 
