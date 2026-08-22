@@ -1,12 +1,16 @@
-"""The chooser: the questions the popup asks, and the plan it hands back.
+"""The chooser: what the popup asks, and the plan it hands back.
 
-The questions are a thin shell. Everything that decides something (which
-sessions to offer, which tools the host has, the answers as a `Profile`) is a
-plain function here, so it is tested without a terminal. The new-session
-questions are a list of steps over one answers dict, so a step can be asked
-again: that is what "back" and the summary screen edit. Nothing in this module
-launches anything: `choose()` returns a plan and `cli.py` carries it out, which
-is why backing out of a question costs nothing.
+The screen is a thin shell. Everything that decides something (which sessions to
+offer, which tools the host has, what a value means, the answers as a `Profile`)
+is a plain function here, so it is tested without a terminal. One answers dict
+holds the lot, `settle()` keeps it consistent when a field changes, and
+`form_rows()` and `confirm_lines()` say what those answers mean. Nothing in this
+module launches anything: `choose()` returns a plan and `cli.py` carries it out,
+which is why backing out costs nothing.
+
+The redesign in `docs/design/chooser-redesign.md` is landing in steps: the
+fields, words and rules are here, while the shell still asks them one question
+at a time.
 """
 
 from __future__ import annotations
@@ -75,14 +79,106 @@ STEP_LABELS = {
 SUMMARY, EDIT, SEED = "summary", "edit", "seed"
 LAUNCH, CANCEL = "launch", "cancel"
 
-# What each step decides. Editing one from the summary settles these again: the profile
-# hands over its own values, the other two ask. Tools are not under the agent, because they
-# come off the host PATH, not out of the agent.
+# The steps whose answer settles others. Editing one from the summary asks these again; a new
+# base profile hands its own values over instead, so it asks nothing. Tools are under neither,
+# because they come off the host PATH, not out of the agent.
 DEPENDENTS = {
-    "profile": ("tools", "network", "domains", "skills", "share", "directory"),
+    "profile": (),
     "agent": ("command", "remember_as", "skills"),
     "share": ("directory",),
 }
+
+# The two answers to the Open field that are not a session to attach to.
+NEW, LOCAL = "new", "local"
+
+# The fields of the form, in the order they are shown. Fixed, because the digits 1 to 8 jump
+# to them and a list that reorders would make a digit a lie.
+FIELDS = ("open", "profile", "agent", "tools", "network", "files", "skills", "advanced")
+
+# What each field is called on the form.
+FIELD_LABELS = {
+    "open": "Open",
+    "profile": "Profile",
+    "agent": "Agent",
+    "tools": "Tools",
+    "network": "Network",
+    "files": "Files",
+    "skills": "Skills",
+    "advanced": "Advanced",
+}
+
+# The heading of the editor that opens on a field.
+FIELD_TITLES = {
+    "open": "Open",
+    "profile": "Profile",
+    "agent": "Agent",
+    "tools": "Tools it can run",
+    "network": "Network access",
+    "files": "Files",
+    "skills": "Skills it can see",
+    "advanced": "Advanced",
+}
+
+# One line under the field the cursor is on. Each says what the value showing means, not what
+# the question is: "everything else is refused" tells you what happens, "Network:" does not.
+FIELD_HINTS = {
+    "open": "New sandbox: an agent under the OS sandbox. Local tab: an ordinary herdr tab "
+    "with full access to this machine.",
+    "profile": "Fills in everything below. Change anything and the title says \"+ changes\", "
+    "because the session will then not be what the profile says.",
+    "agent": "The command that runs inside the sandbox. It gets its own login and no other "
+    "agent's.",
+    "tools": "Ticked binaries are on the sandbox PATH. Unticked ones are not reachable by "
+    "name. An absolute path still runs them, so this is convenience, not a boundary.",
+    "network": "Only these domains are reachable. Everything else is refused by the OS. Tick "
+    "nothing for an offline sandbox.",
+    "files": "Isolated: the sandbox gets a fresh scratch directory and no host path of yours "
+    "is writable. Shared: that one directory is the only thing on your machine it can change.",
+    "skills": "Unticked skills are not in the sandbox's config dir at all, so the agent "
+    "cannot find them.",
+    "advanced": "The session name, saving these answers as a profile, MCP servers, extra "
+    "writable paths, denied reads and the system PATH.",
+}
+
+# One line per box inside an editor. Merging questions into a field cost them their screen,
+# not their explanation.
+EDITOR_HINTS = {
+    "command": "Runs inside the sandbox, so it has to be a tool the sandbox can reach.",
+    "also_allow": "Space separated, for example example.com *.internal.dev",
+    "name": "Shown in the tab bar as sbx:<name> and used to attach later. Blank generates one.",
+    "save_as": "Save these answers so they are one pick next time.",
+}
+
+# The heading of the last screen, which is a question and not an announcement.
+CONFIRM_TITLE = "Launch this sandbox?"
+
+# The line under a field a local or attached tab greys out.
+NO_SANDBOX = "No sandbox, so there is nothing to permit."
+
+# How many domains the confirm screen names before it falls back to counting them (section 5.7).
+SHOWN_DOMAINS = 9
+
+# One line per entry on the Open list.
+OPEN_HINTS = {
+    NEW: "An agent under the OS sandbox, with the permissions below. Seatbelt on macOS, "
+    "bubblewrap on Linux.",
+    LOCAL: "No sandbox. The agent can read and write anything you can.",
+    "attach": "A second tab on a sandbox already running. Same files and same policy, "
+    "separate process tree.",
+}
+
+# What a base profile carries, so picking another one hands over all of it.
+PROFILE_CARRIES = (
+    "agent",
+    "command",
+    "remember_as",
+    "tools",
+    "network",
+    "domains",
+    "skills",
+    "share",
+    "directory",
+)
 
 # Answers one step: a value, BACK, or SKIP when that step has nothing to ask about.
 Asker = Callable[[str, dict], object]
@@ -140,12 +236,11 @@ def choose(cwd: Path) -> Plan | None:
 def _choose(cwd: Path) -> Plan | None:
     live = sessions.list_sessions()
     while True:
-        what = _ask(questionary.select("New window:", choices=_options(first_choices(bool(live)))))
-        if what == "local":
+        what = _ask(questionary.select("Open:", choices=_options(open_choices(live))))
+        if what == LOCAL:
             return Local(cwd=str(cwd))
-        if what == "attach":
-            ref = _ask(questionary.select("Attach to:", choices=_options(session_choices(live))))
-            return Attach(ref=str(ref))
+        if what != NEW:  # anything else on that list is a session to attach to
+            return Attach(ref=str(what))
         plan = _new_session(cwd)
         if plan is not BACK:  # back out of the first question of the questionnaire: ask again
             return plan
@@ -199,7 +294,7 @@ def _asker(cwd: Path, saved: dict[str, Profile], registry: dict[str, AgentSpec])
             rows = skill_choices(registry.get(agent, AgentSpec()), answers.get("skills", carried))
             return _tick("Skills:", rows) if rows else SKIP
         if step == "share":
-            shares = bool(answers.get("share", bool(base.shared_dir)))
+            shares = shares_a_directory(answers, base)
             return _ask(questionary.confirm("Share a host directory?", default=shares))
         if step == "directory":
             if not answers.get("share"):
@@ -212,13 +307,13 @@ def _asker(cwd: Path, saved: dict[str, Profile], registry: dict[str, AgentSpec])
             typed = str(answers.get("save_as", ""))
             return _type("Save these answers as a profile (blank to skip):", typed)
         if step == SUMMARY:
-            plan = build_session(base, answers)
-            lines = summary_lines(str(answers.get("profile", CUSTOM)), plan)
-            message = "Ready to launch:\n  " + "\n  ".join(lines) + "\n"
+            lines = confirm_lines(answers, base, registry)
+            rows = [f"{label:<10}{text}" for label, text in lines]
+            message = f"{CONFIRM_TITLE}\n  " + "\n  ".join(rows) + "\n"
             entries = [("Launch", LAUNCH), ("Edit a step", EDIT), ("Cancel", CANCEL)]
             return _ask(questionary.select(message, choices=_options(entries)))
         if step == EDIT:
-            return _pick("Edit which step:", edit_choices(answers))
+            return _pick("Edit which step:", edit_choices(answers, base))
         if step == SEED:
             # Only what a forgotten answer cannot say for itself: with no directory answer,
             # nothing is shared, however the profile that now stands has it.
@@ -333,24 +428,68 @@ def _edit(ask: Asker, notify: Notify, answers: dict, step: str) -> None:
 
 
 def _answer(answers: dict, step: str, value: object) -> bool:
-    """Keep one answer. True when it changed a step that others depend on.
-
-    An answer the old one seeded is forgotten, so what stands in its place comes from the
-    new one: the agent's own skills, or every value a base profile carries.
-    """
+    """Keep one answer, settled. True when it changed a step that others depend on."""
     changed = step in DEPENDENTS and answers.get(step, value) != value
     answers[step] = value
-    if changed and step == "agent":
-        answers.pop("skills", None)
-    if changed and step == "profile":
-        for seeded in DEPENDENTS[step]:
-            answers.pop(seeded, None)
+    if changed:
+        # The walk's `share` step is the form's Files field.
+        kept = settle(answers, "files" if step == "share" else step)
+        answers.clear()
+        answers.update(kept)
     return changed
 
 
-def edit_choices(answers: dict) -> list[tuple[str, str]]:
-    """The steps that were asked, in the order they were asked. A skipped one is not editable."""
-    return [(STEP_LABELS[step], step) for step in STEPS if step in answers]
+def settle(answers: dict, field: str, base: Profile | None = None) -> dict:
+    """The answers after `field` changed, with whatever that field decides forgotten.
+
+    The rules the questionnaire had, fired on a field change instead of during a walk.
+    Another base profile means starting over from it, not keeping the old ticks against it.
+    Skills and a typed command come out of the agent, so another agent's do not carry over.
+    Sharing nothing leaves no directory behind. A forgotten answer is not lost work: the
+    profile or the agent that now stands answers it.
+
+    `base` is the profile the answers stand on. It reaches only the Files rule, and only
+    when nothing has answered that field yet.
+    """
+    settled = dict(answers)
+    if field == "profile":
+        for carried in PROFILE_CARRIES:
+            settled.pop(carried, None)
+    elif field == "agent":
+        settled.pop("skills", None)
+        if settled.get("agent") != CUSTOM:  # a registered agent brings its own command
+            settled.pop("command", None)
+            settled.pop("remember_as", None)
+    elif field == "files" and not shares_a_directory(settled, base or Profile()):
+        settled.pop("directory", None)
+    return settled
+
+
+def shares_a_directory(answers: dict, base: Profile) -> bool:
+    """Whether a host directory is shared: the answer, else a typed path, else the profile.
+
+    One answer for two old questions, so a typed directory is never dropped for want of a
+    yes beside it.
+    """
+    if "share" in answers:
+        return bool(answers["share"])
+    return bool(answers.get("directory") or base.shared_dir)
+
+
+def edit_choices(answers: dict, base: Profile) -> list[tuple[str, str]]:
+    """Every step there is something to change, in the order the questions come.
+
+    Not only the steps with an answer: a step a new base profile answered for you is still
+    one you can change, and what stands in it is that profile's value. The two steps that
+    can be missing are the ones that describe something that is not there: a command nobody
+    typed, and a directory nothing shares.
+    """
+    skipped = set()
+    if answers.get("agent") != CUSTOM:
+        skipped |= {"command", "remember_as"}
+    if not shares_a_directory(answers, base):
+        skipped.add("directory")
+    return [(STEP_LABELS[step], step) for step in STEPS if step not in skipped]
 
 
 def profile_label(key: str) -> str:
@@ -358,38 +497,189 @@ def profile_label(key: str) -> str:
     return "Custom" if key == CUSTOM else key
 
 
-def summary_lines(start_from: str, plan: NewSession) -> list[str]:
-    """Every answer on one line, for the last screen before anything happens."""
+# --- the form and the confirm ----------------------------------------------
+
+
+def form_title(answers: dict, base: Profile) -> str:
+    """What the form calls the answers: the profile they stand on, and whether they match it.
+
+    A session that says it runs `claude-default` has to be the permissions that profile
+    describes, so anything changed is said out loud in the title.
+    """
+    name = profile_label(str(answers.get("profile", CUSTOM)))
+    built = build_session(base, answers).profile
+    return name if replace(built, name=base.name) == base else f"{name} + changes"
+
+
+def form_rows(
+    answers: dict,
+    base: Profile,
+    registry: dict[str, AgentSpec],
+    live: list[sessions.Session],
+    cwd: str = "",
+) -> list[tuple[str, str, str]]:
+    """The form: a label, the value showing and the hint for it, one row per field.
+
+    A local or an attached tab greys out everything the sandbox fields decide, because none
+    of it applies. Nothing is hidden and nothing moves, so the screen never rearranges.
+
+    `live` is the session list the Open answer is read against, so it is required: without
+    it every attach would read as a new sandbox, which is the opposite of what it does.
+    """
+    opened = str(answers.get("open", NEW))
+    values = _field_values(answers, base, registry, live, cwd)
+    rows = []
+    for field in FIELDS:
+        if opened != NEW and field not in ("open", "files"):
+            rows.append((FIELD_LABELS[field], "-", NO_SANDBOX))
+        else:
+            rows.append((FIELD_LABELS[field], values[field], FIELD_HINTS[field]))
+    return rows
+
+
+def confirm_lines(
+    answers: dict, base: Profile, registry: dict[str, AgentSpec]
+) -> list[tuple[str, str]]:
+    """The resolved policy, for the last screen before anything happens.
+
+    The form shows group names; this is the only screen that shows the domains they open,
+    the agent's own domains folded in and the paths as they will be.
+    """
+    plan = build_session(base, answers)
     profile = plan.profile
-    network = ", ".join(profile.network_presets) or "none"
-    if profile.extra_domains:
-        network += " + " + ", ".join(profile.extra_domains)
-    lines = [
-        "Window: new sandbox session",
-        f"Start from: {profile_label(start_from)}",
-        f"Agent: {profile.agent}",
+    agent = agent_title(profile.agent, registry)
+    if plan.agent_command:  # the key is derived, so it can still be blank here
+        running = f"running {plan.agent_command}"
+        agent = f"{agent}, {running}" if agent else running
+    return [
+        ("session", plan.name or "generated at launch"),
+        ("agent", agent),
+        ("profile", _profile_line(answers, base)),
+        ("can write", _writable(profile)),
+        ("can read", _readable(profile)),
+        ("can reach", _reachable(profile)),
+        ("can run", _runnable(profile)),
+        ("can see", _visible(profile, registry)),
     ]
-    if plan.agent_command:
-        lines.append(f"Command: {plan.agent_command}")
-    return lines + [
-        f"Tools: {', '.join(profile.tools) or 'none'}",
-        f"Network: {network}",
-        f"Skills: {', '.join(profile.skills) or 'none'}",
-        f"Shared directory: {profile.shared_dir or 'none, an isolated workdir'}",
-        f"Session name: {plan.name or '(generated)'}",
-        f"Save as profile: {plan.save_as or 'not saved'}",
-    ]
+
+
+def _field_values(
+    answers: dict,
+    base: Profile,
+    registry: dict[str, AgentSpec],
+    live: list[sessions.Session],
+    cwd: str,
+) -> dict[str, str]:
+    """What each field reads as. Every value says the answer, not the question."""
+    plan = build_session(base, answers)
+    profile = plan.profile
+    opened = str(answers.get("open", NEW))
+    tools = " ".join(profile.tools)
+    return {
+        "open": _open_value(opened, live),
+        "profile": profile_label(str(answers.get("profile", CUSTOM))),
+        "agent": agent_title(profile.agent, registry),
+        "tools": f"{tools} ({len(profile.tools)})" if tools else "none",
+        "network": _network_value(profile),
+        "files": _files_value(opened, profile, cwd),
+        "skills": " ".join(profile.skills) or "none",
+        "advanced": _advanced_value(plan),
+    }
+
+
+def _open_value(opened: str, live: list[sessions.Session]) -> str:
+    """A session that ended between the list and the form says so, rather than reading as new."""
+    if opened == NEW:
+        return "New sandbox"
+    if opened == LOCAL:
+        return "Local tab"
+    for session in live:
+        if session.session_id == opened:
+            return f"Attach: {session.name}"
+    return f"session is gone: {opened}"
+
+
+def _network_value(profile: Profile) -> str:
+    """The groups ticked, and how many domains they open once the agent's own are folded in."""
+    domains = profile.allowed_domains()
+    if not domains:
+        return "none, an offline sandbox"
+    return f"{', '.join(profile.network_presets) or 'none'} ({_counted(domains)})"
+
+
+def _counted(domains: list[str]) -> str:
+    return f"{len(domains)} domain" + ("" if len(domains) == 1 else "s")
+
+
+def _files_value(opened: str, profile: Profile, cwd: str) -> str:
+    if opened == LOCAL:
+        return cwd or "this directory"
+    if opened != NEW:
+        return "the session's own workdir"
+    return profile.shared_dir or "an isolated scratch directory"
+
+
+def _advanced_value(plan: NewSession) -> str:
+    """What has been set under Advanced, or what lives there when nothing has."""
+    set_here = [plan.name, f"saved as {plan.save_as}" if plan.save_as else ""]
+    return ", ".join(part for part in set_here if part) or "name, save as profile, MCP"
+
+
+def _profile_line(answers: dict, base: Profile) -> str:
+    title = form_title(answers, base)
+    return title if title.endswith("+ changes") else f"{title}, unchanged"
+
+
+def _writable(profile: Profile) -> str:
+    paths = ([profile.shared_dir] if profile.shared_dir else []) + profile.extra_allow_write
+    if paths:
+        return f"its own workdir, /tmp and /dev/null, plus {', '.join(paths)}"
+    return "its own workdir, /tmp and /dev/null. No path of yours."
+
+
+def _readable(profile: Profile) -> str:
+    if not profile.deny_read:
+        return "your disk, and nothing is denied"
+    return f"your disk, except {' '.join(profile.deny_read)}"
+
+
+def _reachable(profile: Profile) -> str:
+    """The count, then as many domains as the line holds. The count is what cannot be cut."""
+    domains = profile.allowed_domains()
+    if not domains:
+        return "nothing, this sandbox is offline"
+    shown = domains[:SHOWN_DOMAINS]
+    if len(domains) > SHOWN_DOMAINS:
+        shown = shown + [f"+{len(domains) - SHOWN_DOMAINS}"]
+    return f"{_counted(domains)}: {', '.join(shown)}"
+
+
+def _runnable(profile: Profile) -> str:
+    tools = " ".join(profile.tools) or "nothing by name"
+    return f"{tools}, plus /usr/bin:/bin" if profile.include_system_path else tools
+
+
+def _visible(profile: Profile, registry: dict[str, AgentSpec]) -> str:
+    spec = registry.get(profile.agent)
+    name = spec.name if spec and spec.name else profile.agent
+    parts = [f"its own {name} login", "No other agent's keys"]
+    parts.append(f"Skills: {', '.join(profile.skills)}" if profile.skills else "No skills")
+    if profile.mcp:
+        parts.append(f"MCP servers: {', '.join(profile.mcp)}")
+    return ". ".join(parts) + "."
 
 
 # --- what each question offers ---------------------------------------------
 
 
-def first_choices(has_sessions: bool) -> list[tuple[str, str]]:
-    """The first question. Attach is offered only when there is something to attach to."""
-    choices = [("Local namespace (no sandbox)", "local"), ("New sandbox session", "new")]
-    if has_sessions:
-        choices.append(("Attach to an existing session", "attach"))
-    return choices
+def open_choices(live: list[sessions.Session]) -> list[tuple[str, str]]:
+    """The Open field: a new sandbox, a plain local tab, and every live session on one list."""
+    return [("New sandbox", NEW), ("Local tab", LOCAL), *session_choices(live)]
+
+
+def open_hint(value: str) -> str:
+    """The line under the Open list. Anything that is not new or local is a live session."""
+    return OPEN_HINTS.get(value, OPEN_HINTS["attach"])
 
 
 def session_label(session: sessions.Session) -> str:
@@ -406,15 +696,55 @@ def session_choices(live: list[sessions.Session]) -> list[tuple[str, str]]:
 
 
 def profile_choices(saved: dict[str, Profile]) -> list[tuple[str, str]]:
-    """Saved profiles, plus a blank start."""
+    """Saved profiles, plus a start on paddock's own defaults, which is not a blank slate."""
     entries = [(f"{name} ({profile.agent})", name) for name, profile in sorted(saved.items())]
-    return entries + [("Custom", CUSTOM)]
+    return entries + [("Custom (built-in defaults)", CUSTOM)]
+
+
+def profile_hint(key: str, saved: dict[str, Profile], registry: dict[str, AgentSpec]) -> str:
+    """The line under a profile on the list: what it is, so the pick is not made on a name."""
+    if key not in saved:
+        return "Starts from paddock's own defaults, not from nothing."
+    profile = saved[key]
+    spec = registry.get(profile.agent)
+    groups = profile.network_presets
+    if not groups:
+        network = "no network"
+    elif len(groups) == 1:
+        network = f"{groups[0]} only"
+    else:
+        network = f"{len(groups)} network groups"
+    tools = f"{len(profile.tools)} tool" + ("" if len(profile.tools) == 1 else "s")
+    parts = [spec.name if spec and spec.name else profile.agent, tools, network]
+    if profile.shared_dir:
+        parts.append(f"shares {profile.shared_dir}")
+    return ", ".join(parts)
+
+
+def agent_hint(key: str, registry: dict[str, AgentSpec]) -> str:
+    """The line under an agent on the list, including the domains it opens whatever is ticked."""
+    spec = registry.get(key)
+    if spec is None:
+        return "Type a command. paddock remembers it so a profile can name it later."
+    domains = ", ".join(spec.api_domains) or "nothing of its own"
+    return f"Runs {spec.command} in the sandbox. Reaches {domains} whatever you tick."
+
+
+def key_clash(key: str) -> str:
+    """Asked only when a typed command wants a key another agent already answers to."""
+    return f"{key} already runs something else. Call this one:"
+
+
+def agent_title(key: str, registry: dict[str, AgentSpec]) -> str:
+    """What an agent is called on screen: its name and command, or the key it is saved under."""
+    spec = registry.get(key)
+    return f"{spec.name} ({spec.command})" if spec else key
 
 
 def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str]]:
     """Registered agents, plus a command typed in by hand."""
-    entries = [(f"{spec.name} ({spec.command})", key) for key, spec in sorted(registry.items())]
-    return entries + [("Custom command", CUSTOM)]
+    entries = [(agent_title(key, registry), key) for key in sorted(registry)]
+    return entries + [("Something else...", CUSTOM)]
 
 
 def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple[str, str, bool]]:
@@ -505,7 +835,7 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         list(answers.get("network", base.network_presets)),
         parse_domains(str(answers.get("domains", " ".join(base.extra_domains)))),
         list(answers.get("skills", carried)),
-        str(answers.get("directory", "")),
+        _shared_dir(base, answers),
     )
     return NewSession(
         profile=profile,
@@ -513,6 +843,13 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         save_as=str(answers.get("save_as", "")),
         agent_command=str(answers.get("command", "")),
     )
+
+
+def _shared_dir(base: Profile, answers: dict) -> str:
+    """The Files answer: nothing when nothing is shared, else the typed or the profile's path."""
+    if not shares_a_directory(answers, base):
+        return ""
+    return str(answers.get("directory", base.shared_dir))
 
 
 def build_profile(
