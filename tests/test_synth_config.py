@@ -14,8 +14,10 @@ from paddock.profiles import Profile
 CLAUDE = builtin_agents()["claude"]
 CODEX = builtin_agents()["codex"]
 
-# What macOS holds under "Claude Code-credentials" when the login is a Keychain one.
-TOKEN = json.dumps({"claudeAiOauth": {"accessToken": "sk-ant-oat-test"}})
+# What macOS holds under "Claude Code-credentials" when the login is a Keychain one. The
+# agent's own login sits beside a token per MCP server the user has authorised.
+LOGIN = {"accessToken": "sk-ant-oat-test", "scopes": ["user:inference"]}
+TOKEN = json.dumps({"claudeAiOauth": LOGIN, "mcpOAuth": {"supabase|x": {"access": "mcp-secret"}}})
 
 
 @pytest.fixture
@@ -29,7 +31,10 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         json.dumps(
             {
                 "numStartups": 7,
-                "projects": {"/repo": {"history": ["hello"]}},
+                # A project scope keeps servers of its own, one level down.
+                "projects": {
+                    "/repo": {"history": ["hello"], "mcpServers": {"local": {"command": "x-mcp"}}}
+                },
                 "mcpServers": {"github": {"command": "gh-mcp"}, "db": {"command": "db-mcp"}},
             }
         )
@@ -68,21 +73,22 @@ def test_the_config_the_agent_writes_back_to_is_a_copy(home: Path, run_dir: Path
 
     copy = synth.dir / ".claude.json"
     assert not copy.is_symlink()
-    assert json.loads(copy.read_text())["projects"] == json.loads(original)["projects"]
+    assert json.loads(copy.read_text())["projects"]["/repo"]["history"] == ["hello"]
 
     copy.write_text('{"changed": true}')
     assert (home / ".claude.json").read_text() == original
 
 
-def test_the_copy_leaves_the_mcp_servers_behind(home: Path, run_dir: Path) -> None:
-    """A whole-file copy would carry every server in, and the whitelist is the only source."""
-    original = json.loads((home / ".claude.json").read_text())
+def test_the_copy_leaves_every_mcp_server_behind(home: Path, run_dir: Path) -> None:
+    """A whole-file copy would carry them all in, and the whitelist is the only source.
 
+    Project scopes keep servers of their own, so the key goes at whatever depth it is found.
+    """
     synth = synth_config.build(Profile(mcp=["github"]), CLAUDE, run_dir)
 
     copy = json.loads((synth.dir / ".claude.json").read_text())
-    assert "mcpServers" not in copy
-    assert copy == {key: value for key, value in original.items() if key != "mcpServers"}
+    assert "mcpServers" not in json.dumps(copy)
+    assert copy == {"numStartups": 7, "projects": {"/repo": {"history": ["hello"]}}}
     assert mcp_config(synth) == {"mcpServers": {"github": {"command": "gh-mcp"}}}
 
 
@@ -128,7 +134,34 @@ def test_the_token_is_read_from_the_login_keychain(
     synth = synth_config.build(Profile(), CLAUDE, run_dir)
 
     assert calls == [["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"]]
-    assert json.loads((synth.dir / ".credentials.json").read_text()) == json.loads(TOKEN)
+    assert json.loads((synth.dir / ".credentials.json").read_text()) == {"claudeAiOauth": LOGIN}
+
+
+def test_the_mcp_tokens_beside_it_are_left_in_the_keychain(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """The entry holds a token per authorised MCP server, and none of them are loaded."""
+    (home / ".claude" / ".credentials.json").unlink()
+    keychain["Claude Code-credentials"] = TOKEN
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    exported = (synth.dir / ".credentials.json").read_text()
+    assert list(json.loads(exported)) == ["claudeAiOauth"]
+    assert "mcp-secret" not in exported
+
+
+@pytest.mark.parametrize("blob", ["not json", '["a list"]', '{"somethingElse": {}}'])
+def test_a_keychain_entry_it_does_not_recognise_is_not_written_out(
+    blob: str, home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """Better a visible "Not logged in" than an unknown blob of secrets on disk."""
+    (home / ".claude" / ".credentials.json").unlink()
+    keychain["Claude Code-credentials"] = blob
+
+    synth = synth_config.build(Profile(), CLAUDE, run_dir)
+
+    assert not (synth.dir / ".credentials.json").exists()
 
 
 def test_the_exported_token_is_a_file_only_its_owner_can_read(

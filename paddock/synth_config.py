@@ -20,6 +20,9 @@ from paddock.profiles import Profile
 # loses (SPEC §8).
 CREDENTIALS_FILE = ".credentials.json"
 
+# The agent's own login inside a Keychain entry. The rest of that entry stays in the Keychain.
+LOGIN_KEY = "claudeAiOauth"
+
 
 @dataclass(frozen=True)
 class Redirection:
@@ -141,16 +144,33 @@ def _drop_mcp_servers(path: Path) -> None:
         data = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
         return
-    if isinstance(data, dict) and "mcpServers" in data:
-        del data["mcpServers"]
-        path.write_text(json.dumps(data, indent=2) + "\n")
+    stripped = _without_mcp_servers(data)
+    if stripped != data:
+        path.write_text(json.dumps(stripped, indent=2) + "\n")
+
+
+def _without_mcp_servers(data: object) -> object:
+    """The same data with every `mcpServers` key gone, however deep it sits.
+
+    A project scope keeps servers of its own, one level inside the file.
+    """
+    if isinstance(data, dict):
+        kept = ((key, value) for key, value in data.items() if key != "mcpServers")
+        return {key: _without_mcp_servers(value) for key, value in kept}
+    if isinstance(data, list):
+        return [_without_mcp_servers(item) for item in data]
+    return data
 
 
 def _export_token(service: str, dest: Path) -> None:
-    """Write the token macOS keeps in the login Keychain into the config dir, if it has one.
+    """Write the login macOS keeps in the Keychain into the config dir, if it has one.
 
-    A token on disk, so it goes nowhere but the run dir, readable by its owner alone.
-    Anywhere without `security`, or without that entry, gets no file (SPEC §4.3).
+    A token on disk, so it goes nowhere but the run dir, readable by its owner alone, and
+    holds the agent's own login and nothing else: the same entry keeps a token per MCP
+    server the user has authorised, and no whitelist loads those. An entry of an
+    unrecognised shape is left where it is — "Not logged in" is better than an unknown
+    blob of secrets on disk. Anywhere without `security`, or without that entry, gets no
+    file (SPEC §4.3).
     """
     try:
         found = subprocess.run(
@@ -161,11 +181,14 @@ def _export_token(service: str, dest: Path) -> None:
         )
     except (OSError, subprocess.SubprocessError):
         return
-    token = found.stdout.strip()
-    if not token:
+    try:
+        entry = json.loads(found.stdout)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(entry, dict) or LOGIN_KEY not in entry:
         return
     dest.touch(mode=0o600)
-    dest.write_text(token + "\n")
+    dest.write_text(json.dumps({LOGIN_KEY: entry[LOGIN_KEY]}, indent=2) + "\n")
 
 
 def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[list[Path], list[str]]:

@@ -465,10 +465,11 @@ Everything else comes from the agent registry (§5): credentials from
 `config_write_paths`. The chooser offers the same set, so what it lists and what
 the sandbox gets are the same thing.
 
-The copy has its `mcpServers` key taken out, so the generated whitelist stays the
-only place a server can come from (§4.2). Everything else in the file — for Claude
-Code, the project list — travels into the sandbox with it, and a file with no
-servers in it is copied unchanged.
+The copy has every `mcpServers` key taken out, at the top level and inside each
+project scope, so the generated whitelist stays the only place a server can come
+from (§4.2). Everything else in the file — for Claude Code, the project list —
+travels into the sandbox with it, and a file with no servers in it is copied
+unchanged.
 
 **A Keychain login is exported into the config dir when the run is built.** Claude
 Code keeps its token in the macOS login Keychain when it uses the default config
@@ -479,12 +480,17 @@ when the host has no `~/.claude/.credentials.json`, the launcher runs `security
 find-generic-password -s "Claude Code-credentials" -w` and writes what comes back
 to `<run dir>/config/.credentials.json`, mode 0600.
 
+**Only the agent's own login is written out.** That Keychain entry also holds a
+token per MCP server the user has authorised, under `mcpOAuth`. No whitelist loads
+those servers, so their tokens have no business in the run dir: the file gets the
+`claudeAiOauth` key and nothing else.
+
 Be clear about what that is: **a copy of the token on disk**, in a directory only
 its owner can read, for as long as the session lives. It is deleted when the
 session is collected (§3.4). A real credential file always wins — the Keychain is
 a fallback source, never a replacement. It is a macOS-only path: without
-`security`, or without that entry, no file is written and the agent asks the user
-to log in.
+`security`, without that entry, or with an entry of a shape the launcher does not
+recognise, no file is written and the agent asks the user to log in.
 
 **Only Claude Code has a config-dir variable today.** An agent without one is
 launched as before: no synthesized directory, and its real config dir stays

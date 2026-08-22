@@ -51,8 +51,8 @@ database "$PADDOCK_STATE_DIR\n(default $HOME/.local/state/paddock)" as StateDir 
     folder "bin/ — one symlink per ticked tool" as Shim
     folder "work/ — scratch workdir" as Work
     folder "config/" as Config {
-      file ".credentials.json -> the real key,\nor the Keychain token exported at 0600" as Creds
-      file ".claude.json — a writable copy,\nminus its mcpServers key" as AgentJson
+      file ".credentials.json -> the real key, or the agent's\nown login exported from the Keychain at 0600" as Creds
+      file ".claude.json — a writable copy,\nminus every mcpServers key" as AgentJson
       file ".mcp.json — ticked servers only" as Mcp
       folder "skills/ — ticked skills only" as Skills
     }
