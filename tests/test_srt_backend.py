@@ -1103,3 +1103,69 @@ def test_a_run_prepared_before_shell_tabs_says_so_instead_of_opening_a_dead_one(
     with pytest.raises(ValueError, match="before paddock could open a shell"):
         srt.open_pane(reloaded, shell=True)
     assert client.commands == []
+
+
+# --- a shell tab is not an agent tab ----------------------------------------
+
+
+def test_a_shell_tab_keeps_its_own_log(which: dict[str, str], fake_home: Path) -> None:
+    """Two tabs, two stories: the agent's stderr and the shell's are not one file."""
+    run = srt.prepare(Profile())
+
+    assert "shell.log" in (run.run_dir / "shell.sh").read_text()
+    assert "pane.log" in (run.run_dir / "launch.sh").read_text()
+    assert "shell.log" not in (run.run_dir / "launch.sh").read_text()
+
+
+def test_a_shell_that_said_nothing_on_its_way_out_does_not_hold_the_pane(
+    which: dict[str, str], fake_home: Path, real_subprocess: None, tmp_path: Path
+) -> None:
+    """`exit 1` in an interactive shell is the user leaving, not a launch that failed."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    backends.write_launch_script(run_dir, "/bin/sh -c 'exit 3'", backends.SHELL_SCRIPT)
+
+    done = subprocess.run(
+        ["/bin/sh", str(run_dir / backends.SHELL_SCRIPT)],
+        capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+    )
+
+    assert done.returncode == 3
+    assert "press enter" not in done.stderr
+
+
+def test_a_shell_that_could_not_start_still_holds_the_pane_and_says_why(
+    which: dict[str, str], fake_home: Path, real_subprocess: None, tmp_path: Path
+) -> None:
+    """One that could not start wrote the reason on stderr, and that is the difference."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    backends.write_launch_script(
+        run_dir, '/bin/sh -c \'echo no such sandbox >&2; exit 1\'', backends.SHELL_SCRIPT
+    )
+
+    done = subprocess.run(
+        ["/bin/sh", str(run_dir / backends.SHELL_SCRIPT)],
+        capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+    )
+
+    assert done.returncode == 1
+    assert "launch failed (exit 1)" in done.stderr
+    assert "no such sandbox" in done.stderr
+    assert "shell.log" in done.stderr
+
+
+def test_an_agent_tab_is_held_on_any_quick_failure_as_it_always_was(
+    which: dict[str, str], fake_home: Path, real_subprocess: None, tmp_path: Path
+) -> None:
+    """An agent that exits non-zero at once failed, whether it said anything or not."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    backends.write_launch_script(run_dir, "/bin/sh -c 'exit 3'")
+
+    done = subprocess.run(
+        ["/bin/sh", str(run_dir / backends.LAUNCH_SCRIPT)],
+        capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+    )
+
+    assert "launch failed (exit 3)" in done.stderr

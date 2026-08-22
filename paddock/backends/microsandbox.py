@@ -235,8 +235,8 @@ def list_argv() -> list[str]:
     return [find_msb(), "ls", "--format", "json"]
 
 
-def vm_status(handle: str) -> str | None:
-    """What msb says about this sandbox: its status, or None when msb has no such name."""
+def _listed() -> list[dict]:
+    """What msb is running, as records. The one place its `ls` output is read."""
     output = _run(*list_argv())
     try:
         listed = json.loads(output or "[]")
@@ -244,8 +244,13 @@ def vm_status(handle: str) -> str | None:
         raise MsbError(f"msb ls did not answer with JSON: {output!r}") from error
     if not isinstance(listed, list):
         raise MsbError(f"msb ls did not answer with a list of sandboxes: {output!r}")
-    for entry in listed:
-        if isinstance(entry, dict) and entry.get("name") == handle:
+    return [entry for entry in listed if isinstance(entry, dict)]
+
+
+def vm_status(handle: str) -> str | None:
+    """What msb says about this sandbox: its status, or None when msb has no such name."""
+    for entry in _listed():
+        if entry.get("name") == handle:
             return str(entry.get("status", "")).lower()
     return None
 
@@ -353,9 +358,12 @@ def prepare(profile: Profile) -> Run:
             )
             + "\n"
         )
-    except Exception:
-        # Nothing has registered this session, so a VM or a token left here is one that
-        # nobody would ever collect. Both go, and the failure is reported as it was.
+    except BaseException:
+        # BaseException, not Exception: ctrl-c is a KeyboardInterrupt and nearly all of the
+        # 20 to 70 seconds this takes is after the VM exists, so catching only Exception
+        # left a microVM running that nothing would ever collect. Nothing has registered
+        # this session, so a VM or a token left here is orphaned. Both go, and the bare
+        # `raise` reports the failure as it was: a KeyboardInterrupt is never wrapped.
         synth_config.discard_credentials(run_dir)
         stop_vm(handle)
         raise
@@ -423,6 +431,25 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = 
         log.context(pane=pane_id, label=label, vm=run.vm_handle, shell=shell, line=line),
     )
     return pane_id
+
+
+def sweep(known: set[str]) -> list[str]:
+    """Destroy paddock's own sandboxes that no session claims. Returns the handles removed.
+
+    The rollback in `prepare` covers the interruptions it survives, ctrl-c included. A
+    process killed outright cannot roll anything back, and what that leaves is a microVM
+    nothing would ever collect, so `paddock gc` sweeps for them (SPEC §8). Only handles this
+    paddock would have made are touched: another tool's sandboxes are none of its business.
+    """
+    if not shutil.which("msb"):
+        return []  # no msb on this machine, so no microVM of its making is running
+    removed = []
+    for entry in _listed():
+        name = str(entry.get("name", ""))
+        if name.startswith(HANDLE_PREFIX) and name not in known:
+            stop_vm(name)
+            removed.append(name)
+    return removed
 
 
 def collect(run_dir: Path, vm_handle: str = "") -> None:

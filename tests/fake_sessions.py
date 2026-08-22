@@ -40,6 +40,7 @@ def reset() -> None:
     calls.clear()
     registry.clear()
     collects.clear()
+    orphans.clear()
 
 
 def list_sessions() -> list[Session]:
@@ -93,6 +94,15 @@ def remove_pane(pane_id: str) -> None:
 def reconcile() -> list[Session]:
     calls.append(("reconcile",))
     return list(collects)
+
+
+# Sandboxes a test wants the backend sweep to find running with no session behind them.
+orphans: list[str] = []
+
+
+def collect_orphans() -> list[str]:
+    calls.append(("collect_orphans",))
+    return list(orphans)
 
 
 def launch_local(cwd: Path | None = None) -> str:

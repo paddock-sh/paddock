@@ -26,8 +26,10 @@ LOG_FILE = "paddock.log"
 MAX_BYTES = 1_000_000
 BACKUP_COUNT = 3
 
-# What a pane's launch script keeps its stderr in, next to the run it belongs to.
+# What a pane's launch script keeps its stderr in, next to the run it belongs to. A shell
+# tab keeps its own, so the agent's log stays the agent's: they are two different stories.
 PANE_LOG = "pane.log"
+SHELL_LOG = "shell.log"
 
 FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
@@ -48,9 +50,9 @@ def log_path() -> Path:
     return Path(override).expanduser() if override else state_dir() / "logs" / LOG_FILE
 
 
-def pane_log_path(run_dir: Path) -> Path:
-    """Where the launch script of one run keeps the pane's stderr."""
-    return run_dir / PANE_LOG
+def pane_log_path(run_dir: Path, name: str = PANE_LOG) -> Path:
+    """Where a launch script of one run keeps its pane's stderr."""
+    return run_dir / name
 
 
 def stderr_level() -> int:

@@ -1554,3 +1554,116 @@ def test_the_form_says_which_of_the_two_an_attach_is() -> None:
 
 def test_a_shell_attach_goes_back_to_the_form_as_one() -> None:
     assert tui.answers_from(tui.Attach(ref="s1", shell=True), {}) == {"open": "s1", "shell": True}
+
+
+# --- the confirm describes the backend it is about to use -------------------
+
+
+def msb_answers(**extra: object) -> dict:
+    return {"backend": "msb", **extra}
+
+
+def test_the_confirm_describes_the_guest_a_microvm_actually_gives(
+    which: dict[str, str],
+) -> None:
+    """srt lists host paths. A guest has a filesystem of its own, and saying otherwise lies."""
+    lines = dict(tui.confirm_lines(msb_answers(), Profile(agent="claude"), load_agents()))
+
+    assert lines["can write"].startswith("everything in the guest")
+    assert "/work" in lines["can write"]
+    assert "not in there at all" in lines["can read"]
+    assert "the node:22-slim image" in lines["can run"]
+
+
+def test_the_confirm_still_lists_host_paths_for_a_policy_sandbox(which: dict[str, str]) -> None:
+    profile = Profile(agent="claude", shared_dir="/work/repo", tools=["git"])
+    lines = dict(tui.confirm_lines({}, profile, load_agents()))
+
+    assert lines["can write"] == (
+        "its own workdir, /tmp and /dev/null, plus /work/repo"
+    )
+    assert lines["can read"] == "your disk, except ~/.ssh ~/.aws ~/.gnupg ~/.config/gh"
+    assert lines["can run"] == "git, plus /usr/bin:/bin"
+
+
+def test_a_shared_directory_is_named_as_the_mount_it_becomes(which: dict[str, str]) -> None:
+    profile = Profile(agent="claude", shared_dir="/work/repo")
+    lines = dict(tui.confirm_lines(msb_answers(), profile, load_agents()))
+
+    assert "/work/repo, mounted at /work" in lines["can write"]
+
+
+# --- what stops an agent is not the same on the two backends ----------------
+
+
+def test_an_agent_the_host_lacks_is_still_offered_on_msb_when_it_has_an_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guest installs it, so the host PATH says nothing about whether it can run."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    assert tui.agent_refusal("claude", load_agents(), "msb") == ""
+    assert tui.agent_refusal("claude", load_agents(), "srt").startswith("claude is not installed")
+
+
+def test_an_agent_with_no_image_is_refused_on_msb_however_installed_it_is(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The backend refuses it anyway, so the list says so before the wait rather than after."""
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    assert tui.agent_refusal("codex", load_agents(), "msb") == (
+        "codex has no image, so a microVM has nothing to run it in"
+    )
+    assert tui.agent_refusal("codex", load_agents(), "srt") == ""
+
+
+def test_the_shell_agent_is_never_refused_on_msb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It has no image of its own because it gets the default one (SPEC 2.2)."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    assert tui.agent_refusal("shell", load_agents(), "msb") == ""
+
+
+def test_the_agent_list_asks_about_the_backend_the_answers_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    on_srt = {value: title for title, value, _ in tui.agent_choices(load_agents(), "srt")}
+    on_msb = {value: title for title, value, _ in tui.agent_choices(load_agents(), "msb")}
+
+    assert on_srt["claude"] == "Claude Code (claude) (not installed)"
+    assert on_msb["claude"] == "Claude Code (claude)"
+    assert on_msb["codex"] == "Codex CLI (codex) (not installed)"
+
+
+# --- a registry entry paddock cannot read -----------------------------------
+
+
+def test_an_agent_whose_command_cannot_be_parsed_is_refused_not_raised(
+    config_dir: Path,
+) -> None:
+    """This is drawn for every agent on the list, before anything is chosen, so it may not raise."""
+    (config_dir / "agents").mkdir(parents=True)
+    (config_dir / "agents" / "mangled.json").write_text(
+        json.dumps({"command": "mycoder --flag 'unclosed"})
+    )
+    registry = load_agents()
+
+    why = tui.agent_refusal("mangled", registry)
+
+    assert why.startswith("mangled has a command paddock cannot read")
+    titles = {value: title for title, value, _ in tui.agent_choices(registry)}
+    assert titles["mangled"] == "mangled (mycoder --flag 'unclosed) (not installed)"
+
+
+def test_an_install_that_cannot_be_parsed_warns_about_nothing_rather_than_raising(
+    config_dir: Path,
+) -> None:
+    (config_dir / "agents").mkdir(parents=True)
+    (config_dir / "agents" / "odd.json").write_text(
+        json.dumps({"command": "odd", "image": "alpine", "install": "npm install 'unclosed"})
+    )
+    plan = tui.NewSession(profile=Profile(agent="odd", network_presets=[]), backend="msb")
+
+    assert tui.install_warning(plan, load_agents()) == ""

@@ -88,6 +88,10 @@ def run(command: Command) -> int:
     if command.name == "gc":
         for session in sessions.reconcile():
             print(f"collected {session.name}")
+        # Only here, not at every invocation: it asks each backend what it is running,
+        # and a launch nobody could roll back is rare enough to sweep for on request.
+        for handle in sessions.collect_orphans():
+            print(f"removed the orphaned sandbox {handle}")
         return 0
     # Every command left here opens or lists sessions, so first drop the ones whose tabs
     # are gone (SPEC §3.4). A dry run changes nothing, so it collects nothing either.
@@ -201,10 +205,28 @@ def logs(ref: str = "") -> int:
         # paddock keeps secrets out of its own lines. A pane log is the agent's output,
         # unread and unfiltered, and paddock can promise nothing about what is in it.
         print("paddock: below is the agent's own output, not paddock's log: it can hold anything")
-        path = log.pane_log_path(Path(session.run_dir))
+        for path in pane_logs(Path(session.run_dir)):
+            print(path)
+            print(log.tail(path, TAIL_LINES), end="")
+        return 0
     print(path)
     print(log.tail(path, TAIL_LINES), end="")
     return 0
+
+
+def pane_logs(run_dir: Path) -> list[Path]:
+    """The logs this run's tabs kept: the agent's, the shell tabs', or whichever there is.
+
+    Both are named, because a session with a shell tab on it has two stories and the one
+    that explains a launch is not always the one the agent wrote. A run with neither yet
+    still names the agent's, so the line says where it will be.
+    """
+    found = [
+        log.pane_log_path(run_dir, name)
+        for name in (log.PANE_LOG, log.SHELL_LOG)
+        if log.pane_log_path(run_dir, name).exists()
+    ]
+    return found or [log.pane_log_path(run_dir)]
 
 
 def describe(plan: tui.Plan) -> str:

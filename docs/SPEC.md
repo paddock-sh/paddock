@@ -595,11 +595,16 @@ every letter stays a shortcut everywhere else.
 `(not installed)`, the way a tool the host lacks does and a backend without its
 binary does. Enter on it gives the reason instead of launching, because the tab
 it would open dies on `No such file or directory` before the user sees anything.
-Two things count as cannot run: no binary for its `command`, and a missing
-`required_tools` entry (§5), because a script with nothing to run it is not an
-agent either. An agent whose command is written as a path is left alone: that is
-the user's own answer to where it lives, and it is what the `shell` agent's
-`$SHELL` is.
+What counts as cannot run depends on the backend, because the two run an agent
+from different places. On srt it is the host's own binary, so a missing
+`command` stops it, and so does a missing `required_tools` entry (§5): a script
+with nothing to run it is not an agent either. A command written as a path is
+left alone, which is what the `shell` agent's `$SHELL` is. On msb the host PATH
+says nothing at all, because the guest holds what its image holds and installs
+the rest (§2.2), so what stops an agent there is having no image to boot, which
+is what the backend itself refuses on. A registry entry whose command cannot even
+be parsed is refused with the parse error as its reason: this is drawn for every
+agent on the list, before anything is chosen, so it may not raise.
 
 **Nothing the popup was asked to do dies without a screen.** The popup is
 transient (§1.1): it closes when `paddock` exits, so a message printed after the
@@ -612,6 +617,12 @@ close that hole.
   call it stands in front of blocks the whole process. An msb launch that has to
   install an agent takes about 40 seconds with the image already pulled, and used
   to be a frozen form with nothing on it.
+- The confirm and the failure screen both scroll, the way the form scrolls its
+  fields, with their buttons pinned to the bottom. Nothing is elided: at 48 by 18,
+  the smallest popup the design admits, every line of the grant and every word of
+  a failure is reachable, because saying them in full is what those screens are
+  for. The confirm describes the backend it is about to use: a microVM session
+  says what its guest is, not a list of host paths that are not mounted into it.
 - After a launch that never opened a pane, `screen.failed` shows what went wrong
   and where the log is, with two ways on: **← Back to the form**, which reopens it
   with every answer that made the plan, and **Cancel**. Escape is Back here as it
@@ -1032,6 +1043,16 @@ testable on a Linux CI runner with no sandbox present.
 
 ## 8. Open questions
 
+**Answered: what happens to a sandbox a launch never registered.** `prepare`
+rolls its own boot back on any failure, ctrl-c included, so an interrupted launch
+takes its microVM and its token with it. A process killed outright cannot roll
+anything back, and what that leaves is a sandbox no session claims. `paddock gc`
+sweeps for them: it asks each backend what it is running, and removes what the
+registry has never heard of. Only handles paddock would have made are touched
+(`paddock-<run dir name>`), because another tool's sandboxes are none of its
+business, and a backend whose binary is not on this machine is skipped without a
+word rather than reported as unsweepable.
+
 - Should the chooser remember more than the profile per workspace, such as the
   whole set of answers, or the session a workspace attaches to by default (§3.3)?
 - Should `deny_read` be enforced by the backend rather than the profile, so a
@@ -1056,9 +1077,13 @@ paddock writes down what it did, so a pane that vanished can still be explained.
 
 **Where.** `~/.local/state/paddock/logs/paddock.log`, rotated at 1 MB with three
 backups kept. `PADDOCK_LOG_FILE` moves it. Each run also gets
-`<run_dir>/pane.log`: the stderr of every pane that launched on that run,
+`<run_dir>/pane.log`: the stderr of every agent pane that launched on that run,
 appended by `launch.sh` as it happens, with one earlier generation kept as
-`pane.log.1` once it passes 1 MB.
+`pane.log.1` once it passes 1 MB. A shell tab keeps its own `shell.log` next to
+it, written by `shell.sh`, because a session with both has two stories and the
+one that explains a launch is not always the one the agent wrote. `paddock logs
+<session>` prints whichever of the two the run has, and names the agent's when
+it has neither yet.
 
 **A failed launch keeps its pane.** `launch.sh` runs the command in the
 foreground with its stderr appended to `pane.log`, not piped: a pipe closes only
@@ -1072,6 +1097,12 @@ agent ending, ctrl-c (130) included, and holding the pane on that would hold it
 hostage. `load_run` rewrites a launch script that is not the one this paddock
 would write, so a session prepared before an upgrade gets the current behaviour
 on its next tab.
+
+**A shell tab is held to a different test.** `exit 1` in an interactive shell is
+the user leaving, not a launch that failed, and holding the pane on it would hold
+the user hostage for typing. So `shell.sh` holds the pane only when the run wrote
+something to `shell.log`: a shell that could not start says why on stderr, and one
+the user ended says nothing at all. Everything else about it is the same script.
 
 **A launch that never got a pane keeps the popup.** There is no `pane.log` to
 hold, because nothing was opened: `prepare` refused, or the guest would not

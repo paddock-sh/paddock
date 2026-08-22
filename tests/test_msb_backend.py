@@ -13,6 +13,7 @@ from paddock import backends
 from paddock.agents import AgentSpec
 from paddock.backends import RunNotFound, SandboxGone
 from paddock.backends import microsandbox as msb
+from paddock.backends.microsandbox import GUEST_CONFIG_SRC
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
@@ -900,3 +901,95 @@ def test_a_run_prepared_before_shell_tabs_says_so_instead_of_opening_a_dead_one(
     with pytest.raises(ValueError, match="before paddock could open a shell"):
         msb.open_pane(reloaded, shell=True)
     assert client.commands == []
+
+
+# --- a launch nobody could roll back ----------------------------------------
+
+
+def test_ctrl_c_mid_launch_takes_the_microvm_down_with_it(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """Nearly the whole 20 to 70 second wait is after the VM exists, so this is the window."""
+    real = msb._run
+
+    def interrupted(*args: str) -> str:
+        if args[1] == "exec" and "npm install" in args[-1]:
+            raise KeyboardInterrupt
+        return real(*args)
+
+    monkeypatched = pytest.MonkeyPatch()
+    monkeypatched.setattr(msb, "_run", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):  # never wrapped: the exit code depends on it
+            msb.prepare(CLAUDE)
+    finally:
+        monkeypatched.undo()
+
+    assert "rm" in commands(msb_calls)
+    assert msb_calls[-1][-1].startswith("paddock-")
+
+
+def test_an_interrupt_after_the_token_is_placed_still_discards_it(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path,
+    state_dir: Path, keychain: dict[str, str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy step runs after place_credentials, so this is where a token can be left."""
+    keychain["Claude Code-credentials"] = "sk-planted"
+    real = msb._run
+    placed: list[Path] = []
+
+    def interrupted(*args: str) -> str:
+        if args[1] == "exec" and GUEST_CONFIG_SRC in args[-1]:
+            placed.extend((state_dir / "runs").glob("*/config/.credentials.json"))
+            raise KeyboardInterrupt
+        return real(*args)
+
+    monkeypatch.setattr(msb, "_run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        msb.prepare(CLAUDE)
+
+    assert placed, "the token has to be on disk for its removal to mean anything"
+    assert not placed[0].exists()
+    assert "rm" in commands(msb_calls)
+
+
+def test_a_sweep_removes_a_sandbox_no_session_claims(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """A process killed outright rolls nothing back, so gc asks msb what it is still running."""
+    run = msb.prepare(SHELL)
+
+    removed = msb.sweep(set())
+
+    assert removed == [run.vm_handle]
+    assert msb_calls[-1] == msb.stop_argv(run.vm_handle)
+
+
+def test_a_sweep_leaves_the_sandbox_its_session_still_claims(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    run = msb.prepare(SHELL)
+
+    assert msb.sweep({run.vm_handle}) == []
+    assert "rm" not in commands(msb_calls)
+
+
+def test_a_sweep_never_touches_a_sandbox_paddock_did_not_make(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another tool's microVMs are none of paddock's business."""
+    calls = stub_msb(monkeypatch, [{"name": "someone-elses", "status": "Running"}])
+
+    assert msb.sweep(set()) == []
+    assert "rm" not in commands(calls)
+
+
+def test_a_machine_with_no_msb_is_swept_without_asking_it_anything(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`paddock gc` must not say it could not sweep a backend this host has never had."""
+    monkeypatch.setattr(msb.shutil, "which", lambda name: None)
+    calls = stub_msb(monkeypatch, [])
+
+    assert msb.sweep(set()) == []
+    assert calls == []

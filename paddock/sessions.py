@@ -198,11 +198,38 @@ def launch(
     session = create_session(profile, name, backend)
     try:
         return session, attach(session)
-    except Exception as error:
+    except BaseException as error:
         # create_session has already booted whatever the backend runs. A session that
         # never got its first tab must not keep that running, or sit in the registry.
+        # BaseException, so ctrl-c between the boot and the tab tears the VM down too.
         _forget(session)
+        if isinstance(error, (KeyboardInterrupt, SystemExit)):
+            raise  # never wrapped: cli.py turns it into the exit code the convention wants
         raise RuntimeError(f"{_describe(session)} could not open its first tab: {error}") from error
+
+
+def collect_orphans() -> list[str]:
+    """Remove what a launch nobody could roll back left running (SPEC §8). Returns the handles.
+
+    `prepare` rolls its own boot back, ctrl-c included, but a process killed outright cannot.
+    What that leaves is a sandbox no session claims, which nothing else would ever collect,
+    so `paddock gc` asks each backend what it is running that the registry has never heard of.
+    """
+    claimed = {session.vm_handle for session in list_sessions() if session.vm_handle}
+    removed = []
+    for name in sorted(BACKENDS):
+        module = BACKENDS[name]
+        try:
+            found = module.sweep(claimed)
+        except RuntimeError as error:
+            # A backend that will not answer is a message, not a failed gc: the sessions
+            # this has already collected are collected, and the rest is next time's job.
+            print(f"paddock: could not sweep the {name} backend: {error}", file=sys.stderr)
+            continue
+        for handle in found:
+            logger.info("orphan swept %s", log.context(backend=name, vm=handle))
+        removed += found
+    return removed
 
 
 def set_keep_alive(session: Session, keep_alive: bool) -> None:

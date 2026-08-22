@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import shlex
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -963,3 +964,75 @@ def test_a_shell_tab_is_a_pane_of_the_session_like_any_other(
 def test_the_label_says_shell_only_when_it_is_one() -> None:
     assert sessions.pane_label("review") == "sbx:review"
     assert sessions.pane_label("review", shell=True) == "sbx:review (shell)"
+
+
+# --- ctrl-c between the boot and the first tab ------------------------------
+
+
+def test_ctrl_c_before_the_first_tab_tears_the_session_down_and_is_not_wrapped(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cli.py turns KeyboardInterrupt into exit 130, so wrapping it would lose that."""
+    fake = FakeBackend(fails_with=KeyboardInterrupt())
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    with pytest.raises(KeyboardInterrupt):
+        sessions.launch(Profile(name="demo"), "demo", backend="fake")
+
+    assert sessions.list_sessions() == []
+    assert fake.collected  # the boot was torn down, not left running
+
+
+def test_a_launch_that_fails_for_any_other_reason_still_says_which_session(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend(fails_with=RuntimeError("no tab"))
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    with pytest.raises(RuntimeError, match="could not open its first tab"):
+        sessions.launch(Profile(name="demo"), "demo", backend="fake")
+
+
+# --- sweeping what a killed launch left running -----------------------------
+
+
+class SweepingBackend(FakeBackend):
+    """A backend with something running that no session claims."""
+
+    def __init__(self, running: list[str]) -> None:
+        super().__init__()
+        self.running = running
+        self.swept: list[set[str]] = []
+
+    def sweep(self, known: set[str]) -> list[str]:
+        self.swept.append(set(known))
+        return [name for name in self.running if name not in known]
+
+
+def test_gc_sweeps_what_no_session_claims(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # no msb on this host to ask
+    backend = SweepingBackend(["paddock-orphan", "paddock-kept"])
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+    write_registry(state_dir, [record(backend="fake", vm_handle="paddock-kept")])
+
+    assert sessions.collect_orphans() == ["paddock-orphan"]
+    assert backend.swept == [{"paddock-kept"}]
+
+
+def test_a_backend_that_will_not_answer_a_sweep_is_a_message_not_a_failure(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gc has already collected what it collected, and the rest is next time's job."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    class Sulking(FakeBackend):
+        def sweep(self, known: set[str]) -> list[str]:
+            raise RuntimeError("msb ls did not answer")
+
+    monkeypatch.setitem(sessions.BACKENDS, "fake", Sulking())
+
+    assert sessions.collect_orphans() == []
+    assert "could not sweep" in capsys.readouterr().err

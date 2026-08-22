@@ -62,6 +62,11 @@ def new_run_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-"), dir=runs))
 
 
+def log_for(name: str) -> str:
+    """Which log a script appends to. A shell tab keeps its own, away from the agent's."""
+    return log.SHELL_LOG if name == SHELL_SCRIPT else log.PANE_LOG
+
+
 def write_launch_script(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) -> Path:
     """Put the composed command in the run dir, where the pane can run it by name.
 
@@ -70,7 +75,7 @@ def write_launch_script(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) 
     or the shell one that enters the same sandbox without it.
     """
     script = run_dir / name
-    script.write_text(script_text(run_dir, command))
+    script.write_text(script_text(run_dir, command, name))
     script.chmod(0o700)
     return script
 
@@ -83,7 +88,7 @@ def ensure_launch_script(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT)
     record holds the exact command either way, so a session gets today's launch behaviour
     on its next tab, on whichever backend it runs.
     """
-    if written_script(run_dir, name) == script_text(run_dir, command):
+    if written_script(run_dir, name) == script_text(run_dir, command, name):
         return False
     write_launch_script(run_dir, command, name)
     logger.debug("launch script rewritten %s", log.context(path=run_dir / name))
@@ -98,20 +103,27 @@ def written_script(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:
         return ""
 
 
-def script_text(run_dir: Path, command: str) -> str:
+def script_text(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) -> str:
     """The script the pane runs: the command, its stderr kept, and a pane that stays put.
 
     A launch that failed used to take the pane with it, error and all, so the one thing
     that would have said why was gone before anyone could read it. Now stderr is appended
-    to `pane.log`, and a failure replays the end of it and waits.
+    to the run's log, and a failure replays the end of it and waits.
 
     The launch runs in the foreground with a plain file redirection, not through a pipe.
     A pipe closes when its last writer does, and an agent that backgrounds anything leaves
     a process holding stderr for as long as it lives, so the pane would hang on a launch
     that went perfectly well. stdout is untouched either way: the agent draws its interface
     there, and it has to stay a terminal.
+
+    A shell tab is held to a different test. `exit 1` in an interactive shell is the user
+    leaving, not a launch that failed, and holding the pane on it would hold the user
+    hostage for typing. So a shell pane is held only when the run wrote something to its
+    log: a shell that could not start says why on stderr, and one the user ended says
+    nothing at all.
     """
-    pane_log = shlex.quote(str(log.pane_log_path(run_dir)))
+    quiet_exit_is_fine = name == SHELL_SCRIPT
+    pane_log = shlex.quote(str(log.pane_log_path(run_dir, log_for(name))))
     return "\n".join(
         [
             "#!/bin/sh",
@@ -130,6 +142,7 @@ def script_text(run_dir: Path, command: str) -> str:
             "}",
             "",
             "paddock_start=$(date +%s 2>/dev/null || echo 0)",
+            "paddock_said=$( { wc -c < \"$paddock_log\"; } 2>/dev/null | tr -dc '0-9' )",
             'paddock_launch 2>>"$paddock_log"',
             "paddock_exit=$?",
             '[ "$paddock_exit" = 0 ] && exit 0',
@@ -140,6 +153,17 @@ def script_text(run_dir: Path, command: str) -> str:
             '[ "$((paddock_end - paddock_start))" -ge '
             f'{HOLD_WITHIN_SECONDS} ] && exit "$paddock_exit"',
             "",
+            *(
+                [
+                    "# A shell that said nothing on its way out is a user leaving, not a",
+                    "# launch that failed. One that could not start wrote the reason here.",
+                    "paddock_now=$( { wc -c < \"$paddock_log\"; } 2>/dev/null | tr -dc '0-9' )",
+                    '[ "${paddock_now:-0}" = "${paddock_said:-0}" ] && exit "$paddock_exit"',
+                    "",
+                ]
+                if quiet_exit_is_fine
+                else []
+            ),
             "# An interface that died can leave the terminal raw, and then nothing echoes.",
             "stty sane 2>/dev/null",
             "printf 'paddock: launch failed (exit %s), log: %s\\n'"

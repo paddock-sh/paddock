@@ -569,7 +569,7 @@ def test_gc_reconciles_and_names_what_it_collected(
     fake_sessions.collects.append(Session(name="review"))
 
     assert cli.main(["gc"]) == 0
-    assert names(fake_sessions.calls) == ["reconcile"]
+    assert names(fake_sessions.calls) == ["reconcile", "collect_orphans"]
     assert "review" in capsys.readouterr().out
 
 
@@ -864,3 +864,50 @@ def test_the_chooser_can_ask_for_a_shell_too(fake_sessions, chooser) -> None:
 
     assert cli.main(["choose"]) == 0
     assert rest(fake_sessions.calls)[1] == ("attach", session, None, True)
+
+
+def test_gc_names_the_orphans_it_swept(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A launch nobody could roll back leaves a sandbox running, and gc is where that is said."""
+    fake_sessions.orphans.append("paddock-20260822-000000-abcd")
+
+    assert cli.main(["gc"]) == 0
+    assert "removed the orphaned sandbox paddock-20260822-000000-abcd" in capsys.readouterr().out
+
+
+def test_logs_names_both_of_a_sessions_logs_when_both_exist(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A session with a shell tab has two stories, and the launch is not always in the agent's."""
+    (tmp_path / "pane.log").write_text("the agent said this\n")
+    (tmp_path / "shell.log").write_text("the shell said that\n")
+    fake_sessions.registry.append(Session(name="review", run_dir=str(tmp_path)))
+
+    assert cli.main(["logs", "review"]) == 0
+
+    said = capsys.readouterr().out
+    assert "the agent said this" in said
+    assert "the shell said that" in said
+
+
+def test_logs_names_only_the_log_a_session_kept(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "shell.log").write_text("the shell said that\n")
+    fake_sessions.registry.append(Session(name="review", run_dir=str(tmp_path)))
+
+    assert cli.main(["logs", "review"]) == 0
+
+    said = capsys.readouterr().out
+    assert "shell.log" in said
+    assert "pane.log" not in said
+
+
+def test_a_session_with_no_log_yet_still_says_where_it_will_be(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sessions.registry.append(Session(name="review", run_dir=str(tmp_path)))
+
+    assert cli.main(["logs", "review"]) == 0
+    assert "pane.log" in capsys.readouterr().out

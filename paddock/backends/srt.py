@@ -332,6 +332,11 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = 
     return pane_id
 
 
+def sweep(known: set[str]) -> list[str]:
+    """Nothing outlives the process here, so a sweep finds nothing and removes nothing."""
+    return []
+
+
 def collect(run_dir: Path, vm_handle: str = "") -> None:
     """Nothing is left running: an srt session is a settings file and a workdir (SPEC §3.2)."""
 

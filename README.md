@@ -155,7 +155,8 @@ paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock attach review --shell   # ... or a plain shell inside its sandbox
 paddock profiles                # list saved profiles
-paddock gc                      # collect sessions whose tabs are all closed
+paddock gc                      # collect sessions whose tabs are all closed,
+                                # and remove any sandbox left running with no session
 paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```
@@ -204,7 +205,8 @@ To check herdr is happy with the result: `herdr config check`.
 ## Troubleshooting
 
 `paddock logs` prints where the log is and the last 40 lines of it, and
-`paddock logs <session>` prints what that session's pane printed. A launch that
+`paddock logs <session>` prints what that session's tabs printed: the agent's
+log, the shell tabs' log, or both. A launch that
 fails leaves its pane open with the reason on screen, and one that never got as
 far as a pane says why on a screen of its own, with the way back to the form.
 

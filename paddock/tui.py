@@ -38,6 +38,10 @@ NEW, LOCAL = "new", "local"
 # The sandbox a session runs under (SPEC 3.2). srt is v1 and always here; the microVM backend
 # needs a binary of its own, and the field says so when this machine has not got one.
 SRT, MSB = "srt", "msb"
+
+# The agent that means "the guest's own shell". msb gives it the default image rather than
+# refusing it for having none of its own (SPEC §2.2), so the agent list must know it too.
+SHELL_AGENT = "shell"
 BACKEND_LABELS = {SRT: "srt (instant, a policy sandbox)", MSB: "msb (a microVM, full isolation)"}
 BACKEND_HINTS = {
     SRT: "Instant. A policy sandbox around the process itself: Seatbelt on macOS, bubblewrap "
@@ -177,9 +181,6 @@ FIRST_START_SECONDS = 40
 
 # The line under a field a local or attached tab greys out.
 NO_SANDBOX = "No sandbox, so there is nothing to permit."
-
-# How many domains the confirm screen names before it falls back to counting them (section 5.7).
-SHOWN_DOMAINS = 9
 
 # The second question the Open field asks about a live session: what goes in the new tab.
 ATTACH_TITLE = "What goes in the tab?"
@@ -401,7 +402,7 @@ def _edit_backend(answers: dict) -> dict:
 
 
 def _edit_agent(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
-    choices = agent_choices(registry)
+    choices = agent_choices(registry, str(answers.get("backend", SRT)))
     rows = [(title, agent_hint(value, registry)) for title, value, _ in choices]
     refused = {index: why for index, (_, _, why) in enumerate(choices) if why}
     listed = [(title, value) for title, value, _ in choices]
@@ -649,10 +650,10 @@ def confirm_lines(
         ("backend", BACKEND_LABELS.get(plan.backend, plan.backend)),
         ("agent", agent),
         ("profile", _profile_line(answers, base)),
-        ("can write", _writable(profile)),
-        ("can read", _readable(profile)),
+        ("can write", _writable(profile, plan.backend)),
+        ("can read", _readable(profile, plan.backend)),
         ("can reach", _reachable(profile)),
-        ("can run", _runnable(profile, registry)),
+        ("can run", _runnable(profile, registry, plan.backend)),
         ("can see", _visible(profile, registry)),
     ]
     warning = install_warning(plan, registry)
@@ -670,7 +671,10 @@ def install_warning(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
     if plan.backend != MSB:
         return ""
     spec = registry.get(plan.profile.agent)
-    words = shlex.split(spec.install) if spec and spec.install else []
+    try:
+        words = shlex.split(spec.install) if spec and spec.install else []
+    except ValueError:
+        return ""  # an install nobody can read is one this cannot say anything about
     if not words or words[0] not in INSTALL_TOOLS:
         return ""
     needed = set(NETWORK_PRESETS[INSTALL_PRESET])
@@ -817,14 +821,29 @@ def _profile_line(answers: dict, base: Profile) -> str:
     return f"{title}. Press s to save these answers"
 
 
-def _writable(profile: Profile) -> str:
+def _writable(profile: Profile, backend: str = SRT) -> str:
+    """What the sandbox may change. A microVM and a policy sandbox mean different things.
+
+    srt wraps a process on this machine, so the answer is a list of host paths. msb boots a
+    guest with a filesystem of its own, so the answer is that guest, and the only host path
+    in the sentence is the one directory mounted into it (SPEC §2.2).
+    """
+    if backend == MSB:
+        shared = profile.shared_dir or "an isolated scratch directory"
+        return f"everything in the guest, which goes when it does, and {shared}, mounted at /work"
     paths = ([profile.shared_dir] if profile.shared_dir else []) + profile.extra_allow_write
     if paths:
         return f"its own workdir, /tmp and /dev/null, plus {', '.join(paths)}"
     return "its own workdir, /tmp and /dev/null. No path of yours."
 
 
-def _readable(profile: Profile) -> str:
+def _readable(profile: Profile, backend: str = SRT) -> str:
+    """What the sandbox may read. On msb your disk is absent rather than denied (SPEC §4.1)."""
+    if backend == MSB:
+        return (
+            "the guest's own filesystem. Your disk is not in there at all, "
+            "so none of it has to be denied"
+        )
     if not profile.deny_read:
         return "your disk, and nothing is denied"
     return f"your disk, except {' '.join(profile.deny_read)}"
@@ -838,12 +857,19 @@ def _reachable(profile: Profile) -> str:
     return f"{_counted(domains)}: {', '.join(domains)}"
 
 
-def _runnable(profile: Profile, registry: dict[str, AgentSpec]) -> str:
+def _runnable(profile: Profile, registry: dict[str, AgentSpec], backend: str = SRT) -> str:
     """What the sandbox PATH holds: the ticked tools, and what the agent cannot start without.
 
     A required tool is not a ticked one. It is on the PATH because the agent was chosen, so
     it is named with the agent that asked for it rather than folded in among the ticks.
+
+    An msb session has no shim dir at all: the guest holds what its image holds, so the
+    ticked tools decide nothing there and saying they do would be a lie (SPEC §4.1).
     """
+    if backend == MSB:
+        spec = registry.get(profile.agent, AgentSpec())
+        image = spec.image or "the guest"
+        return f"whatever the {image} image ships, plus {profile.agent} itself"
     named = profile.tools + [
         f"{tool} (needed by {profile.agent})" for tool in required_tools(profile, registry)
     ]
@@ -1014,7 +1040,7 @@ def agent_title(key: str, registry: dict[str, AgentSpec]) -> str:
     return f"{spec.name} ({spec.command})" if spec else key
 
 
-def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str, str]]:
+def agent_choices(registry: dict[str, AgentSpec], backend: str = SRT) -> list[tuple[str, str, str]]:
     """Registered agents, plus a command typed in by hand, and why one cannot be chosen.
 
     An agent this machine has no binary for stays on the list and says so, the way a backend
@@ -1023,24 +1049,41 @@ def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str, str]]:
     """
     entries = []
     for key in sorted(registry):
-        why = agent_refusal(key, registry)
+        why = agent_refusal(key, registry, backend)
         title = agent_title(key, registry)
         entries.append((f"{title} (not installed)" if why else title, key, why))
     return entries + [("Something else...", CUSTOM, "")]
 
 
-def agent_refusal(key: str, registry: dict[str, AgentSpec]) -> str:
-    """Why this agent cannot be chosen on this machine, or nothing when it can.
+def agent_refusal(key: str, registry: dict[str, AgentSpec], backend: str = SRT) -> str:
+    """Why this agent cannot be chosen on this backend, or nothing when it can.
 
-    Only a bare command name is looked for. One written as a path is the user's own answer
-    to where it lives, which is what the shell agent's `$SHELL` is, so it is left alone.
-    An agent whose `required_tools` are not here cannot run either: `codex` without `node`
-    is a script with nothing to run it.
+    What stops an agent is not the same on the two. srt runs the host's own binary, so an
+    agent this machine has not got cannot run, and neither can one whose `required_tools`
+    are missing: `codex` without `node` is a script with nothing to run it. A command
+    written as a path is the user's own answer to where it lives, which is what the shell
+    agent's `$SHELL` is, so it is left alone.
+
+    msb runs whatever its image holds and installs the rest in the guest, so the host PATH
+    says nothing at all there. What stops an agent on msb is having no image to boot, which
+    is what the backend itself refuses on (SPEC §2.2).
+
+    A command paddock cannot parse is treated as one it cannot run, and says so. Nothing
+    here may raise: this is drawn for every agent on the list, before anything is chosen.
     """
     spec = registry.get(key)
-    words = shlex.split(spec.command) if spec and spec.command else []
+    if spec is None or not spec.command:
+        return ""
+    try:
+        words = shlex.split(spec.command)
+    except ValueError as error:
+        return f"{key} has a command paddock cannot read: {error}"
     if not words:
         return ""
+    if backend == MSB:
+        if spec.image or key == SHELL_AGENT:
+            return ""
+        return f"{key} has no image, so a microVM has nothing to run it in"
     if "/" not in words[0] and not shutil.which(words[0]):
         return f"{words[0]} is not installed, so this machine cannot run it"
     missing = [tool for tool in spec.required_tools if not shutil.which(tool)]
