@@ -1,6 +1,7 @@
 """`paddock init`: wire the chooser into herdr's config without losing anything else."""
 
 import difflib
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -18,21 +19,35 @@ socket_path = "~/.local/state/herdr/herdr.sock"
 [keys]
 prefix = "ctrl+a"
 # new_tab = "prefix+c"
+# settings = "prefix+s"
 # close_pane = "prefix+x"
 
 [ui]
 theme = "dark"
 """
 
+# The block paddock writes: the chooser, and the chooser on the session list.
 BLOCK_LINES = [
-    'key = "prefix+c"',
+    "[[keys.command]]",
+    'key = "prefix+s"',
     'type = "popup"',
     'command = "paddock"',
     'width = "70%"',
     'height = "70%"',
+    "",
+    "[[keys.command]]",
+    'key = "prefix+shift+s"',
+    'type = "popup"',
+    'command = "paddock choose --attach"',
+    'width = "70%"',
+    'height = "70%"',
 ]
 
-tomllib = pytest.importorskip("tomllib", reason="python 3.11+ parses the result")
+# What an older paddock wrote, which `paddock init` migrates away from.
+OLD_BLOCK = (
+    f'{init.BEGIN}\n[[keys.command]]\nkey = "prefix+c"\ntype = "popup"\n'
+    f'command = "paddock"\nwidth = "70%"\nheight = "70%"\n{init.END}\n'
+)
 
 
 @pytest.fixture
@@ -101,17 +116,16 @@ def unmanaged(text: str) -> list[str]:
 # --- splicing the config ---------------------------------------------------
 
 
-def test_the_block_and_the_new_tab_line_are_the_only_changes(config: Path) -> None:
+def test_the_block_and_the_settings_line_are_the_only_changes(config: Path) -> None:
     """Comments and unrelated tables survive byte for byte."""
     assert init.run() == 0
 
     after = read(config)
     assert removed_lines(PRISTINE, after) == []
     assert added_lines(PRISTINE, after) == [
-        'new_tab = "prefix+shift+c"',
+        'settings = "prefix+comma"',
         "",
         init.BEGIN,
-        "[[keys.command]]",
         *BLOCK_LINES,
         init.END,
     ]
@@ -121,49 +135,65 @@ def test_the_commented_default_is_left_where_it_was(config: Path) -> None:
     """It says what herdr's default is. The active line below it is what changes."""
     init.run()
 
-    assert '# new_tab = "prefix+c"\nnew_tab = "prefix+shift+c"\n' in read(config)
+    assert '# settings = "prefix+s"\nsettings = "prefix+comma"\n' in read(config)
+
+
+def test_the_new_tab_key_is_left_to_herdr(config: Path) -> None:
+    """The point of the scheme: a plain tab is one key and no paddock at all."""
+    init.run()
+
+    assert "new_tab" not in tomllib.loads(read(config))["keys"]
+    assert 'new_tab = "prefix+shift+c"' not in read(config)
 
 
 def test_the_written_config_is_the_toml_herdr_expects(config: Path) -> None:
     init.run()
 
     keys = tomllib.loads(read(config))["keys"]
-    assert keys["new_tab"] == "prefix+shift+c"
+    assert keys["settings"] == "prefix+comma"
     assert keys["prefix"] == "ctrl+a"
     assert keys["command"] == [
         {
-            "key": "prefix+c",
+            "key": "prefix+s",
             "type": "popup",
             "command": "paddock",
             "width": "70%",
             "height": "70%",
-        }
+        },
+        {
+            "key": "prefix+shift+s",
+            "type": "popup",
+            "command": "paddock choose --attach",
+            "width": "70%",
+            "height": "70%",
+        },
     ]
 
 
 def test_an_active_default_binding_is_moved_in_place(config: Path) -> None:
-    write(config, PRISTINE.replace('# new_tab = "prefix+c"', 'new_tab = "prefix+c"'))
+    write(config, PRISTINE.replace('# settings = "prefix+s"', 'settings = "prefix+s"'))
     before = read(config)
 
     assert init.run() == 0
 
     after = read(config)
-    assert removed_lines(before, after) == ['new_tab = "prefix+c"']
-    assert after.count("new_tab") == 1
+    assert removed_lines(before, after) == ['settings = "prefix+s"']
+    assert added_lines(before, after)[0] == 'settings = "prefix+comma"'
+    assert after.count('settings = "prefix+comma"') == 1
 
 
 def test_a_custom_binding_is_left_alone_and_said_so(
     config: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Their binding is their decision. paddock still takes prefix+c for the chooser."""
-    write(config, PRISTINE.replace('# new_tab = "prefix+c"', 'new_tab = "ctrl+n"'))
+    """Their binding is their decision. paddock still takes prefix+s for the chooser."""
+    write(config, PRISTINE.replace('# settings = "prefix+s"', 'settings = "ctrl+n"'))
     before = read(config)
 
     assert init.run() == 0
 
     after = read(config)
     assert removed_lines(before, after) == []
-    assert "new_tab" not in "".join(added_lines(before, after))
+    assert "settings = " not in "".join(added_lines(before, after))
     assert '"ctrl+n"' in capsys.readouterr().out
 
 
@@ -173,7 +203,7 @@ def test_a_config_with_no_keys_table_gets_one(config: Path) -> None:
     assert init.run() == 0
 
     parsed = tomllib.loads(read(config))
-    assert parsed["keys"]["new_tab"] == "prefix+shift+c"
+    assert parsed["keys"]["settings"] == "prefix+comma"
     assert parsed["keys"]["command"][0]["command"] == "paddock"
     assert parsed["ui"]["theme"] == "dark"
 
@@ -198,7 +228,7 @@ def test_a_config_with_no_keys_table_is_idempotent_too(config: Path) -> None:
         ("no keys table", '[ui]\ntheme = "dark"\n'),
         ("empty file", ""),
         ("keys table last, no final newline", '[server]\nport = 1\n\n[keys]\nprefix = "ctrl+a"'),
-        ("commented default last, no final newline", '[keys]\n# new_tab = "prefix+c"'),
+        ("commented default last, no final newline", '[keys]\n# settings = "prefix+s"'),
         ("keys header with a comment", PRISTINE.replace("[keys]", "[keys] # the keybindings")),
         ("keys header with spaces", PRISTINE.replace("[keys]", "[ keys ]")),
         ("quoted keys header", PRISTINE.replace("[keys]", '["keys"]')),
@@ -221,7 +251,7 @@ def test_every_config_shape_is_spliced_into_valid_toml(shape: str, text: str, co
 
     after = read(config)
     keys = tomllib.loads(after)["keys"]
-    assert keys["new_tab"] == "prefix+shift+c"
+    assert keys["settings"] == "prefix+comma"
     assert keys["command"][0]["command"] == "paddock"
     assert [line for line in unmanaged(text) if line not in unmanaged(after)] == []
     once = after
@@ -231,7 +261,7 @@ def test_every_config_shape_is_spliced_into_valid_toml(shape: str, text: str, co
 
 @pytest.mark.parametrize("ending", ["\n", "\r\n"])
 @pytest.mark.parametrize(
-    "tail", ['[keys]\nprefix = "ctrl+a"', '[keys]\n# new_tab = "prefix+c"', "[keys]"]
+    "tail", ['[keys]\nprefix = "ctrl+a"', '[keys]\n# settings = "prefix+s"', "[keys]"]
 )
 def test_a_config_with_no_final_newline_does_not_glue_lines_together(
     config: Path, tail: str, ending: str
@@ -242,8 +272,8 @@ def test_a_config_with_no_final_newline_does_not_glue_lines_together(
     assert init.run() == 0
 
     after = read(config)
-    assert tomllib.loads(after)["keys"]["new_tab"] == "prefix+shift+c"
-    assert 'new_tab = "prefix+shift+c"' in [line.strip() for line in after.splitlines()]
+    assert tomllib.loads(after)["keys"]["settings"] == "prefix+comma"
+    assert 'settings = "prefix+comma"' in [line.strip() for line in after.splitlines()]
 
 
 def test_a_crlf_config_stays_crlf(config: Path) -> None:
@@ -282,7 +312,7 @@ def test_a_commented_out_dotted_key_is_not_a_refusal(config: Path) -> None:
     write(config, '# keys.new_tab = "prefix+c"\n[ui]\ntheme = "dark"\n')
 
     assert init.run() == 0
-    assert tomllib.loads(read(config))["keys"]["new_tab"] == "prefix+shift+c"
+    assert tomllib.loads(read(config))["keys"]["settings"] == "prefix+comma"
 
 
 def test_a_dotted_key_under_another_table_is_not_ours(config: Path) -> None:
@@ -290,34 +320,34 @@ def test_a_dotted_key_under_another_table_is_not_ours(config: Path) -> None:
     write(config, '[plugin]\nkeys.new_tab = "x"\n')
 
     assert init.run() == 0
-    assert tomllib.loads(read(config))["keys"]["new_tab"] == "prefix+shift+c"
+    assert tomllib.loads(read(config))["keys"]["settings"] == "prefix+comma"
 
 
-# --- new_tab lines with something after them -------------------------------
+# --- binding lines with something after them -------------------------------
 
 
 def test_a_custom_binding_with_a_comment_after_it_is_quoted_exactly(
     config: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write(config, PRISTINE.replace('# new_tab = "prefix+c"', 'new_tab = "ctrl+n"  # mine'))
+    write(config, PRISTINE.replace('# settings = "prefix+s"', 'settings = "ctrl+n"  # mine'))
 
     assert init.run() == 0
 
     out = capsys.readouterr().out
     assert '"ctrl+n"' in out  # the value, not the rest of the line
     assert "mine" not in out
-    assert 'new_tab = "ctrl+n"  # mine' in read(config)
+    assert 'settings = "ctrl+n"  # mine' in read(config)
 
 
 def test_a_default_binding_keeps_the_comment_written_after_it(config: Path) -> None:
     write(
         config,
-        PRISTINE.replace('# new_tab = "prefix+c"', 'new_tab = "prefix+c"  # herdr default'),
+        PRISTINE.replace('# settings = "prefix+s"', 'settings = "prefix+s"  # herdr default'),
     )
 
     assert init.run() == 0
 
-    assert 'new_tab = "prefix+shift+c"  # herdr default' in read(config)
+    assert 'settings = "prefix+comma"  # herdr default' in read(config)
 
 
 # --- doing it twice --------------------------------------------------------
@@ -353,13 +383,98 @@ def test_an_old_block_is_updated_not_duplicated(config: Path) -> None:
 def test_a_custom_binding_is_still_reported_on_a_later_run(
     config: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    write(config, PRISTINE.replace('# new_tab = "prefix+c"', 'new_tab = "ctrl+n"'))
+    write(config, PRISTINE.replace('# settings = "prefix+s"', 'settings = "ctrl+n"'))
     init.run()
     capsys.readouterr()
 
     init.run()
 
     assert "ctrl+n" in capsys.readouterr().out
+
+
+# --- migrating an install that has the old scheme ---------------------------
+
+
+def old_scheme(text: str = PRISTINE) -> str:
+    """A config an older paddock wired up: the chooser on prefix+c, new_tab moved aside."""
+    moved = text.replace(
+        '# new_tab = "prefix+c"', '# new_tab = "prefix+c"\nnew_tab = "prefix+shift+c"'
+    )
+    return f"{moved}\n{OLD_BLOCK}"
+
+
+def test_the_old_block_is_replaced_by_the_new_scheme(config: Path) -> None:
+    write(config, old_scheme())
+
+    assert init.run() == 0
+
+    keys = tomllib.loads(read(config))["keys"]
+    assert [command["key"] for command in keys["command"]] == ["prefix+s", "prefix+shift+s"]
+    assert keys["settings"] == "prefix+comma"
+
+
+def test_migrating_gives_the_new_tab_key_back_to_herdr(config: Path) -> None:
+    """Anyone on the old scheme has been pressing prefix+shift+c, and that line goes."""
+    write(config, old_scheme())
+
+    init.run()
+
+    after = read(config)
+    assert "new_tab" not in tomllib.loads(after)["keys"]
+    assert '# new_tab = "prefix+c"' in after  # herdr's own commented default is not paddock's
+
+
+def test_migrating_says_every_binding_that_changed(
+    config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write(config, old_scheme())
+
+    init.run()
+
+    said = capsys.readouterr().out
+    assert "your keybindings have changed" in said
+    assert "prefix+shift+c is no longer bound to anything." in said
+    assert "prefix+s" in said and "prefix+shift+s" in said
+    assert "prefix+comma" in said
+
+
+def test_a_fresh_install_does_not_claim_anything_changed(
+    empty_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    init.run()
+
+    said = capsys.readouterr().out
+    assert "your keybindings have changed" not in said
+    assert "prefix+s" in said
+
+
+def test_a_dry_run_shows_the_migration_and_touches_nothing(
+    config: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write(config, old_scheme())
+    before = read(config)
+
+    assert init.run(dry_run=True) == 0
+
+    out = capsys.readouterr().out
+    assert '-new_tab = "prefix+shift+c"' in out
+    assert '+key = "prefix+s"' in out
+    assert read(config) == before
+
+
+def test_a_new_tab_the_user_bound_survives_the_migration(config: Path) -> None:
+    """Only the value paddock wrote is taken away. Anything else is the user's answer."""
+    write(config, old_scheme().replace('new_tab = "prefix+shift+c"', 'new_tab = "ctrl+n"'))
+
+    assert init.run() == 0
+
+    assert tomllib.loads(read(config))["keys"]["new_tab"] == "ctrl+n"
+
+
+def test_a_config_on_the_new_scheme_is_not_migrating(config: Path) -> None:
+    init.run()
+
+    assert not init.migrating(read(config))
 
 
 # --- a config that is not there yet ----------------------------------------
@@ -372,7 +487,8 @@ def test_a_missing_config_is_written_fresh(
     assert init.run() == 0
 
     keys = tomllib.loads(read(empty_home))["keys"]
-    assert keys["new_tab"] == "prefix+shift+c"
+    assert keys["settings"] == "prefix+comma"
+    assert "new_tab" not in keys
     assert keys["command"][0]["command"] == "paddock"
     assert backups(empty_home) == []  # there was nothing to back up
     assert "wrote a new herdr config" in capsys.readouterr().out
@@ -404,7 +520,9 @@ def test_a_config_that_cannot_be_read_is_a_clear_error(
 @pytest.fixture
 def broken_splice(monkeypatch: pytest.MonkeyPatch) -> None:
     """A splice that would produce nonsense: the backstop is what has to catch it."""
-    monkeypatch.setattr(init, "splice", lambda text: (text + "\nnot = = toml\n", ""))
+    monkeypatch.setattr(
+        init, "splice", lambda text, created=False: (text + "\nnot = = toml\n", "")
+    )
 
 
 def test_a_result_that_would_not_parse_is_never_written(
@@ -509,6 +627,111 @@ def test_undo_reloads_herdr(config: Path, herdr: list[str]) -> None:
     assert herdr.count("reload") == 2
 
 
+def test_undo_removes_a_config_paddock_wrote_itself(
+    empty_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A fresh herdr install has no config, so init writes one and there is no backup.
+
+    Undo used to say "no paddock backup" and leave the file paddock made behind.
+    """
+    init.run()
+    capsys.readouterr()
+
+    assert init.run(undo=True) == 0
+
+    assert not empty_home.exists()
+    assert "removed" in capsys.readouterr().out
+
+
+def test_undo_keeps_a_copy_of_the_config_it_removes(empty_home: Path) -> None:
+    """Whatever the user added to it after paddock wrote it is not undo's to throw away."""
+    init.run()
+    wired = read(empty_home)
+
+    init.run(undo=True)
+
+    kept = undone(empty_home)
+    assert len(kept) == 1
+    assert read(kept[0]) == wired
+
+
+def test_undo_reloads_herdr_after_removing_the_config_it_wrote(
+    empty_home: Path, herdr: list[str]
+) -> None:
+    init.run()
+
+    init.run(undo=True)
+
+    assert herdr.count("reload") == 2
+
+
+def test_a_second_undo_of_a_removed_config_has_nothing_to_do(empty_home: Path) -> None:
+    init.run()
+    init.run(undo=True)
+
+    with pytest.raises(RuntimeError, match="no paddock backup"):
+        init.run(undo=True)
+
+
+def test_a_dry_run_undo_of_a_written_config_removes_nothing(
+    empty_home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    init.run()
+    capsys.readouterr()
+
+    assert init.run(dry_run=True, undo=True) == 0
+
+    assert empty_home.exists()
+    assert "would remove" in capsys.readouterr().out
+
+
+def test_a_config_paddock_wrote_says_so_inside_its_block(empty_home: Path) -> None:
+    """The mark is what a later undo reads, so it lives in the config and not in a state file."""
+    init.run()
+
+    assert init.CREATED in read(empty_home)
+    assert tomllib.loads(read(empty_home))["keys"]["settings"] == "prefix+comma"
+
+
+def test_a_second_init_keeps_the_mark_on_a_config_paddock_wrote(empty_home: Path) -> None:
+    """The file exists by then, so only the mark it carries says who wrote it."""
+    init.run()
+
+    init.run()
+
+    assert read(empty_home).count(init.CREATED) == 1
+
+
+def test_undo_after_a_second_init_puts_back_the_config_paddock_wrote(
+    empty_home: Path,
+) -> None:
+    """The second run backs up the first one's file, so undo restores it before removing it."""
+    init.run()
+    write(empty_home, read(empty_home) + '\n[ui]\ntheme = "dark"\n')
+    init.run()
+
+    init.run(undo=True)
+
+    assert empty_home.exists()
+    assert init.CREATED in read(empty_home)
+
+    init.run(undo=True)
+
+    assert not empty_home.exists()
+
+
+def test_undo_leaves_a_config_paddock_only_edited_alone(config: Path) -> None:
+    """No mark means the file was the user's before paddock touched it, backup or no backup."""
+    init.run()
+    for backup in backups(config):
+        backup.unlink()
+
+    with pytest.raises(RuntimeError, match="no paddock backup"):
+        init.run(undo=True)
+
+    assert config.exists()
+
+
 def test_a_dry_run_undo_names_the_backup_and_touches_nothing(
     config: Path, herdr: list[str], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -522,7 +745,7 @@ def test_a_dry_run_undo_names_the_backup_and_touches_nothing(
 
     out = capsys.readouterr().out
     assert saved[0].name in out
-    assert '-new_tab = "prefix+shift+c"' in out  # the diff, the other way round
+    assert '-settings = "prefix+comma"' in out  # the diff, the other way round
     assert read(config) == wired
     assert backups(config) == saved
     assert undone(config) == []
@@ -538,7 +761,7 @@ def test_a_dry_run_prints_the_diff_and_touches_nothing(
     assert init.run(dry_run=True) == 0
 
     out = capsys.readouterr().out
-    assert '+new_tab = "prefix+shift+c"' in out
+    assert '+settings = "prefix+comma"' in out
     assert "+[[keys.command]]" in out
     assert str(config) in out
     assert read(config) == PRISTINE
@@ -565,21 +788,33 @@ def test_the_config_is_the_one_under_home(tmp_path: Path, monkeypatch: pytest.Mo
     assert init.config_path() == tmp_path / ".config" / "herdr" / "config.toml"
 
 
-def test_herdr_checks_the_config_then_reloads(config: Path, herdr: list[str]) -> None:
+def test_herdr_checks_the_config_before_and_after_the_edit_then_reloads(
+    config: Path, herdr: list[str]
+) -> None:
+    """The first check is what tells a problem paddock caused from one it only found."""
     init.run()
 
-    assert herdr == ["check", "reload"]
+    assert herdr == ["check", "check", "reload"]
+
+
+def refuse_after_the_edit(monkeypatch: pytest.MonkeyPatch, why: str) -> None:
+    """herdr is happy with the config as it stands, and refuses what paddock made of it."""
+    checks: list[int] = []
+
+    def check() -> str:
+        checks.append(1)
+        if len(checks) > 1:
+            raise herdr_client.HerdrError(why)
+        return "config: ok"
+
+    monkeypatch.setattr(herdr_client, "check_config", check)
 
 
 def test_a_config_herdr_will_not_accept_is_put_back(
     config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The backstop parses TOML; herdr is the one that knows what a valid binding is."""
-
-    def refuse() -> None:
-        raise herdr_client.HerdrError("herdr config check failed: unknown key")
-
-    monkeypatch.setattr(herdr_client, "check_config", refuse)
+    refuse_after_the_edit(monkeypatch, "herdr config check failed: unknown key")
 
     assert init.run() == 1
 
@@ -591,13 +826,40 @@ def test_a_config_herdr_will_not_accept_is_put_back(
 def test_a_fresh_config_herdr_will_not_accept_is_taken_away_again(
     empty_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def refuse() -> None:
-        raise herdr_client.HerdrError("herdr config check failed")
-
-    monkeypatch.setattr(herdr_client, "check_config", refuse)
+    refuse_after_the_edit(monkeypatch, "herdr config check failed")
 
     assert init.run() == 1
     assert not empty_home.exists()
+
+
+def test_a_config_herdr_already_had_warnings_about_is_still_wired_up(
+    config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """paddock must not refuse over a problem it did not cause: it is not the config's owner."""
+
+    def refuse() -> None:
+        raise herdr_client.HerdrError("herdr config check failed: unknown config key ui.wat")
+
+    monkeypatch.setattr(herdr_client, "check_config", refuse)
+
+    assert init.run() == 0
+
+    assert '[[keys.command]]' in read(config)
+    assert len(backups(config)) == 1
+    assert "before paddock edited it" in capsys.readouterr().err
+
+
+def test_a_pre_existing_warning_is_named_so_nobody_hunts_for_it(
+    config: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def refuse() -> None:
+        raise herdr_client.HerdrError("herdr config check failed: unknown config key ui.wat")
+
+    monkeypatch.setattr(herdr_client, "check_config", refuse)
+
+    init.run()
+
+    assert "unknown config key ui.wat" in capsys.readouterr().err
 
 
 def test_no_herdr_to_check_with_is_not_a_refusal(

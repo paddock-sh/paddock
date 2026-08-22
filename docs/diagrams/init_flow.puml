@@ -10,8 +10,13 @@ start
 
 if (~--undo) then (yes)
   if (a config.toml.paddock-backup-* next to it?) then (no)
-    :error: nothing to restore from;
-    stop
+    if (does the block say paddock wrote the file?) then (no)
+      :error: nothing to restore from;
+      stop
+    else (yes)
+      :keep a copy as paddock-undone-<timestamp>,\nremove the file paddock wrote,\nreload herdr;
+      stop
+    endif
   else (yes)
   endif
   if (~--dry-run) then (yes)
@@ -36,17 +41,18 @@ partition "splice: text, not parsed TOML\n(a round trip would drop the user's co
   else (no)
   endif
   if (a [keys] table in what is left?) then (yes)
-    if (new_tab bound in it?) then (to herdr's default "prefix+c")
-      :rewrite that line to "prefix+shift+c",\nkeeping any comment after it;
+    if (settings bound in it?) then (to herdr's default "prefix+s")
+      :rewrite that line to "prefix+comma",\nkeeping any comment after it;
     elseif (not bound at all) then
-      :insert new_tab = "prefix+shift+c"\nunder herdr's commented default,\nor under [keys] when there is none;
+      :insert settings = "prefix+comma"\nunder herdr's commented default,\nor under [keys] when there is none;
     elseif (to something of the user's own) then
       :leave it alone, and say so;
     else (already moved)
     endif
-    :block = one ~[~[keys.command~]~] entry;
+    :delete a new_tab = "prefix+shift+c"\nan older paddock wrote, so herdr's\nown default applies again;
+    :block = the two ~[~[keys.command~]~] entries;
   else (no)
-    :block = [keys] + new_tab + ~[~[keys.command~]~];
+    :block = [keys] + settings + the two ~[~[keys.command~]~] entries;
   endif
   :append the block between the markers,\nin the file's own line ending;
 }
@@ -69,18 +75,23 @@ if (~--dry-run) then (yes)
 else (no)
 endif
 
+:herdr config check, before anything is written,\nso a problem paddock did not cause is known;
 :copy the config to\nconfig.toml.paddock-backup-<timestamp>\n(nothing to copy when there was no config);
-:write the spliced config;
+:write the spliced config,\nwith a marker in the block when\npaddock wrote the file itself;
 
 if (herdr config check) then (refused)
-  :put the old config back,\nor take the new file away;
-  :error: report what herdr said;
-  stop
+  if (was it already refusing before?) then (yes)
+    :say the warnings were there first,\nand keep the wiring;
+  else (no)
+    :put the old config back,\nor take the new file away;
+    :error: report what herdr said;
+    stop
+  endif
 else (ok, or no herdr to ask)
 endif
 
 :herdr_client.reload_config()\n(a failure is a message, not an error:\nherdr may not be running);
-:say to press prefix+c;
+:say what every key does now,\nand which ones changed;
 stop
 
 note right
@@ -88,7 +99,7 @@ note right
   the file is what makes a second run a no-op
   and an older block an update, not a copy.
   Everything outside the block and the one
-  new_tab line is byte for byte as it was.
+  settings line is byte for byte as it was.
 end note
 
 @enduml

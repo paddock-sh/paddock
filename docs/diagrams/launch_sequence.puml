@@ -21,7 +21,7 @@ participant "synth_config.py" as Synth
 participant "herdr_client.py" as Client
 participant "srt\n(Seatbelt / bubblewrap)" as Srt
 
-User -> Herdr : press prefix+c
+User -> Herdr : press prefix+s
 activate Herdr
 Herdr -> CLI : run `paddock` in a popup\nenv: HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID
 activate CLI
