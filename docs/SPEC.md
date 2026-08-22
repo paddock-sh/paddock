@@ -120,7 +120,8 @@ herdr pane run <pane_id> <command>...
 
 Creation and execution are separate on purpose. The tab exists with the right cwd
 and label before anything starts, so a failed launch leaves a usable pane instead
-of no window.
+of no window. The command is typed into the pane's shell, so it has to be short:
+§2.1 keeps it to one `exec` of a script.
 
 ### 1.4 v1.1: packaging as a herdr plugin (design record, not stubbed in v1)
 
@@ -229,8 +230,9 @@ settings file, so profiles stay portable between machines.
 Each session gets its own timestamped directory under
 `~/.local/state/paddock/runs/`, holding the settings file, the PATH shim dir, the
 synthesized config dir, the scratch workdir when the profile shares no host
-directory, and a small `launch.json` holding the command, workdir and environment, so a
-tab attaching later gets exactly what the first one got. `PADDOCK_STATE_DIR`
+directory, a small `launch.json` holding the command, workdir and environment, so a
+tab attaching later gets exactly what the first one got, and `launch.sh`, the same
+command as a script. `PADDOCK_STATE_DIR`
 overrides the state directory; tests point it at a temporary one. Nothing collects
 old run directories yet, including those of collected sessions: only the
 credential file inside one goes with the session (§3.4, §8).
@@ -244,6 +246,15 @@ srt --settings <settings-file> -c "<command>"
 `-c` matters. srt shell-quotes each argument and runs the result under bash, so
 the command has to arrive as one string; passed as bare words, srt's own flag
 parser reads the agent's flags as its own.
+
+**The pane is sent a short line, not that command.** `herdr pane run` types what
+it is given into the pane's shell, and a tty drops everything past 1024 bytes on
+one line. The composed command is longer than that, so it is written to
+`run_dir/launch.sh` (mode 0700) when the run is prepared, and the pane gets
+`exec /bin/sh <run_dir>/launch.sh`. The run dir is not writable from inside the
+sandbox, so the agent cannot rewrite its own launcher. `exec` replaces the pane's
+shell, so closing the agent closes the pane. Every tab on the session runs the
+same script.
 
 The inner command is the agent, wrapped so it starts from an empty environment:
 

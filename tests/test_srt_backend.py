@@ -655,6 +655,83 @@ def test_prepare_rejects_a_profile_naming_an_unknown_agent(which: dict[str, str]
         srt.prepare(Profile(agent="nope"))
 
 
+# --- the launch script -----------------------------------------------------
+
+
+def test_prepare_writes_the_command_to_a_launch_script(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """The pane gets a short line instead, because a tty truncates a long one."""
+    run = srt.prepare(Profile(tools=[]))
+
+    script = run.run_dir / "launch.sh"
+    assert script.read_text() == f"#!/bin/sh\n{run.command}\n"
+
+
+def test_the_launch_script_is_executable_by_its_owner_only(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    run = srt.prepare(Profile(tools=[]))
+
+    assert (run.run_dir / "launch.sh").stat().st_mode & 0o777 == 0o700
+
+
+def test_the_proxy_variables_reach_the_script_unexpanded(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """They are srt's own, so the script has to carry the names, not values (SPEC §2.1)."""
+    run = srt.prepare(Profile(tools=[]))
+
+    text = (run.run_dir / "launch.sh").read_text()
+    for name in PROXY_ENV:
+        assert f'{name}="${name}"' in text
+
+
+def test_the_pane_line_is_a_short_exec_of_the_script(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """`herdr pane run` types this into the pane's tty, which drops it past 1024 bytes."""
+    run = srt.prepare(Profile(tools=[]))
+
+    line = srt.launch_line(run.run_dir)
+
+    assert line == f"exec /bin/sh {run.run_dir}/launch.sh"
+    assert len(line) < 512
+
+
+def test_a_run_dir_with_a_space_is_still_one_argument(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run dir"
+
+    assert shlex.split(srt.launch_line(run_dir))[2] == str(run_dir / "launch.sh")
+
+
+def test_the_script_reaches_srt_with_everything_intact(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One more shell sits between the pane and srt now, so run the whole path past one."""
+    stub_dir = tmp_path / "stub bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "srt"
+    stub.write_text('#!/bin/sh\nfor arg in "$@"; do echo "$arg"; done\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub_dir))
+    monkeypatch.setenv("HTTPS_PROXY", "http://the-popups-proxy:1234")
+
+    command = srt.pane_command(
+        Profile(), CLAUDE, tmp_path / "s.json", tmp_path / "shim dir", NO_REDIRECT
+    )
+    srt.write_launch_script(tmp_path, command)
+    result = subprocess.run(srt.launch_line(tmp_path), shell=True, capture_output=True, text=True)
+
+    assert result.returncode == 0
+    argv = result.stdout.splitlines()
+    assert argv[:3] == ["--settings", str(tmp_path / "s.json"), "-c"]
+    assert f"PATH={tmp_path / 'shim dir'}:/usr/bin:/bin" in shlex.split(argv[3])
+    # srt's own shell expands these, and it is the only one that has the right values.
+    assert 'HTTPS_PROXY="$HTTPS_PROXY"' in argv[3]
+    assert "the-popups-proxy" not in result.stdout
+
+
 # --- attaching a pane to a prepared run ------------------------------------
 
 
@@ -678,7 +755,21 @@ def test_open_pane_creates_the_tab_then_runs_the_command(
     pane_id = srt.open_pane(run, label="sbx:demo")
 
     assert client.tabs == [(run.workdir, "sbx:demo", run.env)]
-    assert client.commands == [(pane_id, run.command)]
+    assert client.commands == [(pane_id, f"exec /bin/sh {run.run_dir}/launch.sh")]
+
+
+def test_a_second_pane_runs_the_script_the_first_one_did(
+    which: dict[str, str], fake_home: Path, client: FakeClient
+) -> None:
+    """A run is prepared once and attached to many times, so nothing is written again."""
+    run = srt.prepare(Profile(tools=[]))
+    written = (run.run_dir / "launch.sh").read_text()
+
+    srt.open_pane(srt.load_run(run.run_dir))
+    srt.open_pane(srt.load_run(run.run_dir))
+
+    assert client.commands[0][1] == client.commands[1][1]
+    assert (run.run_dir / "launch.sh").read_text() == written
 
 
 def test_open_pane_passes_the_config_dir_to_the_tab(

@@ -59,6 +59,9 @@ PROXY_ENV = (
 # The prepared run, written into the run dir so a later tab can attach to the same policy.
 LAUNCH_FILE = "launch.json"
 
+# The same command as a script, because the pane is sent a line, not a file (see launch_line).
+LAUNCH_SCRIPT = "launch.sh"
+
 
 class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
@@ -177,7 +180,7 @@ def build_settings(
 def pane_command(
     profile: Profile, agent: AgentSpec, settings: Path, shim: Path, synth: SynthConfig
 ) -> str:
-    """The command `herdr pane run` executes: srt wrapping the agent on a shimmed PATH."""
+    """The command the launch script holds: srt wrapping the agent on a shimmed PATH."""
     entries = [str(shim)]
     if profile.include_system_path:
         entries += ["/usr/bin", "/bin"]
@@ -192,6 +195,28 @@ def pane_command(
     # -c takes the whole command as one string. Passed as bare words, srt's own parser
     # reads the agent's flags as its own.
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
+
+
+def write_launch_script(run_dir: Path, command: str) -> Path:
+    """Put the composed command in the run dir, where the pane can run it by name.
+
+    The run dir is not writable from inside the sandbox, so the agent cannot rewrite
+    the script that launched it.
+    """
+    script = run_dir / LAUNCH_SCRIPT
+    script.write_text(f"#!/bin/sh\n{command}\n")
+    script.chmod(0o700)
+    return script
+
+
+def launch_line(run_dir: Path) -> str:
+    """What `herdr pane run` is sent: short on purpose.
+
+    herdr types the line into the pane's shell, and a tty in canonical mode drops
+    everything past 1024 bytes, which the composed command passes easily. `exec`
+    replaces that shell, so closing the agent closes the pane.
+    """
+    return f"exec /bin/sh {shlex.quote(str(run_dir / LAUNCH_SCRIPT))}"
 
 
 def prepare(profile: Profile) -> Run:
@@ -219,6 +244,7 @@ def prepare(profile: Profile) -> Run:
     settings.write_text(json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n")
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
+    write_launch_script(run_dir, command)
 
     run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
     (run_dir / LAUNCH_FILE).write_text(
@@ -239,7 +265,7 @@ def load_run(run_dir: Path) -> Run:
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
-    herdr_client.run_in_pane(pane_id, run.command)
+    herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
     return pane_id
 
 
