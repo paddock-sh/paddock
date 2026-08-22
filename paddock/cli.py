@@ -9,6 +9,7 @@ from pathlib import Path
 
 from paddock import init, log, sessions, tui
 from paddock.profiles import Profile, load_profiles
+from paddock.sessions import DEFAULT_BACKEND
 
 logger = log.get_logger(__name__)
 
@@ -24,6 +25,7 @@ class Command:
     profile: str = ""
     ref: str = ""
     cwd: str = ""
+    backend: str = DEFAULT_BACKEND
     dry_run: bool = False
     undo: bool = False
 
@@ -66,6 +68,7 @@ def parse_args(argv: list[str]) -> Command:
         profile=getattr(args, "profile", ""),
         ref=getattr(args, "ref", ""),
         cwd=getattr(args, "cwd", ""),
+        backend=getattr(args, "backend", "") or DEFAULT_BACKEND,
         dry_run=getattr(args, "dry_run", False),
         undo=getattr(args, "undo", False),
     )
@@ -79,6 +82,17 @@ def run(command: Command) -> int:
         return 0
     if command.name == "init":
         return init.run(dry_run=command.dry_run, undo=command.undo)
+
+    if command.name == "gc":
+        for session in sessions.reconcile():
+            print(f"collected {session.name}")
+        return 0
+    # Every command left here opens or lists sessions, so first drop the ones whose tabs
+    # are gone (SPEC §3.4). A dry run changes nothing, so it collects nothing either.
+    if not command.dry_run:
+        sessions.reconcile()
+    # Below the reconcile like every other session lookup: a ref that named a session whose
+    # tabs are all gone says so, rather than printing the pane log of a session that is over.
     if command.name == "logs":
         return logs(command.ref)
 
@@ -97,7 +111,7 @@ def run(command: Command) -> int:
         profile = saved[command.profile]
         if command.cwd:
             profile = replace(profile, shared_dir=str(cwd))
-        plan = tui.NewSession(profile=profile)
+        plan = tui.NewSession(profile=profile, backend=command.backend)
 
     if command.dry_run:
         print(describe(plan))
@@ -128,7 +142,7 @@ def perform(plan: tui.Plan) -> int:
     if plan.save_as:
         profile, message = tui.save_answers(profile, plan.save_as)
         print(message, file=sys.stderr)
-    _, pane_id = sessions.launch(profile, plan.name or None)
+    _, pane_id = sessions.launch(profile, plan.name or None, plan.backend)
     print(pane_id)
     return 0
 
@@ -164,6 +178,8 @@ def describe(plan: tui.Plan) -> str:
         f"agent {plan.profile.agent}",
         plan.profile.shared_dir or "isolated workdir",
     ]
+    if plan.backend != DEFAULT_BACKEND:
+        parts.append(f"on the {plan.backend} backend")
     if plan.agent_command:
         parts.append(f"remembering the command {plan.agent_command!r}")
     if plan.save_as:
@@ -204,11 +220,19 @@ def _parser() -> argparse.ArgumentParser:
         help="share this host directory with the sandbox, read-write "
         "(overrides the profile's shared_dir)",
     )
+    launch.add_argument(
+        "--backend",
+        default=DEFAULT_BACKEND,
+        help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
+    )
     attach = subcommands.add_parser(
         "attach", parents=[dry, where], help="put a new tab on a running session"
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
     subcommands.add_parser("profiles", help="list saved profiles")
+    subcommands.add_parser(
+        "gc", help="collect sessions whose tabs are all closed (every command does this first)"
+    )
     tail = subcommands.add_parser("logs", help="where paddock logged what it did, and the end")
     tail.add_argument(
         "ref",

@@ -16,7 +16,8 @@ PRESENTATION = ["paddock.tui", "paddock.cli"]
 DOOR = "paddock.sessions"
 
 # The backend modules `sessions` is allowed to reach. A new backend adds a line here.
-BACKENDS = ["paddock.backends.srt"]
+# In the order the import graph reports them, which is sorted by name.
+BACKENDS = ["paddock.backends.microsandbox", "paddock.backends.srt"]
 
 # Leaves anything may use: the process seam, and the log.
 LEAVES = ["paddock.herdr_client", "paddock.log"]

@@ -121,21 +121,27 @@ def context(**fields: object) -> str:
 CREDENTIALS_IN_A_URL = re.compile(r"([a-zA-Z][\w+.-]*://)[^\s/@]*@")
 
 
+# How the tools paddock shells out to spell "set this variable": herdr takes `--env`, msb
+# takes `-e`. Both are redacted, so neither backend can put a value in the log by accident.
+ENV_FLAGS = ("--env", "-e")
+
+
 def redact_env(args: tuple[str, ...] | list[str]) -> str:
-    """A command line with every `--env` value taken out. The name is kept, the value never is.
+    """A command line with every environment value taken out. The name is kept, the value never is.
 
     An environment value is a token as often as it is a path, so none of them is written.
-    Both spellings count: `--env NAME=VALUE` and `--env=NAME=VALUE`.
+    Every spelling counts: `--env NAME=VALUE`, `--env=NAME=VALUE`, and msb's `-e NAME=VALUE`.
     """
     parts, next_is_env = [], False
     for arg in args:
+        joined = next((flag for flag in ENV_FLAGS if arg.startswith(flag + "=")), "")
         if next_is_env:
             parts.append(arg.split("=", 1)[0] + "=...")
-        elif arg.startswith("--env="):
-            parts.append("--env=" + arg[len("--env=") :].split("=", 1)[0] + "=...")
+        elif joined:
+            parts.append(f"{joined}=" + arg[len(joined) + 1 :].split("=", 1)[0] + "=...")
         else:
             parts.append(arg)
-        next_is_env = arg == "--env"
+        next_is_env = arg in ENV_FLAGS
     return " ".join(parts)
 
 

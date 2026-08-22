@@ -1,0 +1,140 @@
+@startuml msb_flow
+title paddock: an msb session, from boot to collected (SPEC 2.2)
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+
+actor User
+participant "cli.py\n`paddock launch <profile>\n~--backend msb`" as CLI
+participant "sessions.py" as Sessions
+participant "backends/microsandbox.py" as Backend
+participant "herdr_client.py" as Client
+participant "Herdr" as Herdr
+participant "synth_config.py" as Synth
+participant "msb\n(one host process per VM)" as Msb
+participant "guest\n(microVM from the agent's image)" as Guest
+
+== create the session ==
+
+User -> CLI : paddock launch msb-live ~--backend msb
+CLI -> Sessions : launch(profile, name, backend="msb")
+activate Sessions
+Sessions -> Sessions : create_session(profile, name, "msb")\nbackend_for("msb") -> the microsandbox module
+Sessions -> Backend : prepare(profile)
+activate Backend
+Backend -> Backend : the agent needs an `image` in the registry\n(an agent without one is refused here, before a VM exists:\nthe guest holds what the image holds. `shell` gets alpine)
+Backend -> Backend : new_run_dir() -> <state>/runs/<timestamp>-<rand>/\nvm_handle -> paddock-<that directory's name>\nworkdir_for(profile) -> shared_dir, else run_dir/work,\nresolved, because msb mounts the source as written
+Backend -> Synth : build(profile, agent, run_dir,\nguest_dir="/paddock-config", defer_credentials=True)
+activate Synth
+Synth -> Synth : run_dir/config: the ticked skills, the generated MCP\nwhitelist, the config the agent rewrites. COPIED, not linked:\na link to a host path is outside the mount (SPEC 4.3).\nNO TOKEN YET: everything below can still fail.
+Synth --> Backend : dir (host side), env {CLAUDE_CONFIG_DIR=/paddock-config},\nargs ~--mcp-config /paddock-config/.mcp.json ~--strict-mcp-config
+deactivate Synth
+Backend -> Msb : msb create ~--name paddock-<run>\n~--mount-dir <resolved workdir>:/work ~--workdir /work\n[~--mount-dir <run_dir>/config:/paddock-config-src:ro\n-e CLAUDE_CONFIG_DIR=/paddock-config]\n~--net-default deny [~--net-rule allow@dns\n~--net-rule allow@<domain>:tcp:443 per allowed domain]\n<image from the agent entry, else alpine>
+activate Msb
+Msb -> Guest : boot (175ms to usable, measured in the spike)
+activate Guest
+Msb --> Backend : created
+Backend -> Msb : msb exec ~--timeout 110s paddock-<run> ~-- /bin/sh -c\n`command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code@<pinned>`\n(skipped when the agent has no `install`)
+Msb -> Guest : install the agent (about 21s, measured)
+note right
+  Once per SESSION, not once per image: a new sandbox is
+  a fresh clone, so msb's layer cache saves the 20s pull
+  and not the install. The install downloads over the same
+  deny-by-default network, so the profile has to allow the
+  registry, and msb cannot withdraw that rule afterwards.
+end note
+Backend -> Synth : place_credentials(profile, agent, run_dir)
+activate Synth
+Synth -> Synth : NOW write run_dir/config/.credentials.json, 0600.\nThe agent exists in the guest, so a token can be of use to it.
+deactivate Synth
+Backend -> Msb : msb exec ~--timeout 110s paddock-<run> ~-- /bin/sh -c\n`mkdir -p /paddock-config && cp -a /paddock-config-src/. /paddock-config/`
+Msb -> Guest : the guest takes its own copy, on its own filesystem
+note right
+  From here the guest reads and writes /paddock-config,
+  which is the overlay. The read-only mount is a source,
+  never a destination: nothing the agent writes to its
+  config reaches the host, and none of it survives the VM.
+
+  Anything that fails from `msb create` on: delete the
+  token, remove the VM, then raise. The session is not
+  registered yet, so nothing else would collect either.
+end note
+Backend -> Backend : write run_dir/launch.sh:\n`msb exec ~--tty paddock-<run> [~-- claude <config flags>]`\nwrite run_dir/launch.json: vm_handle, workdir, command
+Backend --> Sessions : Run(run_dir, workdir, vm_handle, command)
+deactivate Backend
+Sessions -> Sessions : register in <state>/sessions.json\nwith backend="msb" and vm_handle
+
+== attach a tab (once now, again for every later tab) ==
+
+Sessions -> Backend : load_run(run_dir) then open_pane(run, label="sbx:<session>")
+activate Backend
+Backend -> Client : create_tab(workdir, label)
+note right
+  The tab's own cwd is the HOST side of the mount,
+  so the pane and the guest shell see the same files.
+  No env is passed: a variable set on `msb create`
+  with -e reaches every later exec, the interactive
+  shell included. Verified on msb 0.6.13.
+end note
+Client -> Herdr : herdr tab create ~--cwd <workdir> ~--label sbx:<session> ~--focus
+Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:pA"}}}
+Backend -> Client : run_in_pane("wA:pA", launch_line(run_dir))
+Client -> Herdr : herdr pane run wA:pA\n`exec /bin/sh <run_dir>/launch.sh`
+deactivate Backend
+Herdr -> Msb : the pane's shell runs\n`msb exec ~--tty paddock-<run> [~-- claude <config flags>]`
+Msb -> Guest : exec with a PTY (20ms), in the same process namespace\nas every other tab on this session
+Guest --> User : the agent, or the image's own shell, at /work.\nThe agent reads its credentials and skills\nfrom /paddock-config and writes back there,\nwhich is the run dir on the host.
+Sessions --> CLI : (session, "wA:pA")
+deactivate Sessions
+
+== collect the session ==
+
+User -> Herdr : closes the last tab on the session
+note right
+  Nothing tells paddock. herdr has pane events on
+  its socket, but no paddock process is running to
+  hear them, so the VM keeps running until the next
+  paddock command reconciles (SPEC 3.4).
+end note
+
+User -> CLI : the next paddock command:\nchoose, launch, attach,\nor `paddock gc` on its own
+CLI -> Sessions : reconcile()
+activate Sessions
+Sessions -> Client : list_pane_ids()
+Client -> Herdr : herdr pane list
+Herdr --> Client : {"result":{"panes":[...]}}, no wA:pA among them
+Sessions -> Sessions : the pane list and the registry are both read\nunder the registry lock, so a tab another paddock\nopened a moment ago is in both and never reads as closed
+Sessions -> Sessions : wA:pA is gone and it was the last one,\nand keep_alive is not set, so drop the session\nfrom the registry
+Sessions -> Synth : discard_credentials(run_dir)\n(the copied token must not outlive the session, SPEC 8)
+Sessions -> Backend : collect(run_dir, vm_handle)
+activate Backend
+Backend -> Backend : load_run(run_dir).vm_handle,\nfalling back to the handle the registry kept
+Backend -> Msb : msb rm -f paddock-<run>
+Msb -> Guest : destroy
+deactivate Guest
+deactivate Msb
+note right
+  Always -f: `msb rm` on its own refuses a
+  running sandbox (`still running`, exit 1).
+  Best effort: reconciling runs ahead of a
+  launch and must not break one, so an msb
+  that will not answer leaves the VM up and
+  the message names the handle and the
+  `msb rm -f` that finishes the job.
+end note
+deactivate Backend
+deactivate Sessions
+
+note over Sessions, Guest
+  What the run dir keeps: launch.json and launch.sh, config/ for an
+  agent session, and work/ when the profile shares no host directory.
+  Collecting a session leaves them, because deleting a workdir would
+  lose work, but the credential file in config/ goes. config/ is as
+  the launcher built it: the guest wrote only to its own copy.
+
+  What the guest never had: the host filesystem. An unmounted path
+  is absent, not denied, so there is no PATH shim dir and no
+  deny list to get right (SPEC 4.1).
+end note
+
+@enduml

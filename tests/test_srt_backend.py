@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from paddock import backends
 from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
 from paddock.profiles import Profile
@@ -516,7 +517,7 @@ def test_no_srt_and_no_npx_names_the_install_command(which: dict[str, str]) -> N
 
 
 def test_each_launch_gets_its_own_timestamped_run_dir(state_dir: Path) -> None:
-    first, second = srt.new_run_dir(), srt.new_run_dir()
+    first, second = backends.new_run_dir(), backends.new_run_dir()
 
     assert first != second
     assert first.parent == state_dir / "runs"
@@ -714,7 +715,7 @@ def test_the_pane_line_is_a_short_exec_of_the_script(
     """`herdr pane run` types this into the pane's tty, which drops it past 1024 bytes."""
     run = srt.prepare(Profile(tools=[]))
 
-    line = srt.launch_line(run.run_dir)
+    line = backends.launch_line(run.run_dir)
 
     assert line == f"exec /bin/sh {run.run_dir}/launch.sh"
     assert len(line) < 512
@@ -723,7 +724,7 @@ def test_the_pane_line_is_a_short_exec_of_the_script(
 def test_a_run_dir_with_a_space_is_still_one_argument(tmp_path: Path) -> None:
     run_dir = tmp_path / "run dir"
 
-    assert shlex.split(srt.launch_line(run_dir))[2] == str(run_dir / "launch.sh")
+    assert shlex.split(backends.launch_line(run_dir))[2] == str(run_dir / "launch.sh")
 
 
 def stub_srt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
@@ -743,7 +744,7 @@ def run_script(run_dir: Path) -> subprocess.CompletedProcess:
     should not has to fail the build, not hang it.
     """
     return subprocess.run(
-        srt.launch_line(run_dir),
+        backends.launch_line(run_dir),
         shell=True,
         capture_output=True,
         text=True,
@@ -762,7 +763,7 @@ def test_the_script_reaches_srt_with_everything_intact(
     command = srt.pane_command(
         Profile(), CLAUDE, tmp_path / "s.json", tmp_path / "shim dir", NO_REDIRECT
     )
-    srt.write_launch_script(tmp_path, command)
+    backends.write_launch_script(tmp_path, command)
     result = run_script(tmp_path)
 
     assert result.returncode == 0
@@ -782,7 +783,7 @@ def test_the_launch_keeps_its_stderr_and_replays_it_when_it_fails(
 ) -> None:
     """A pane that closed on failure took the one line that said why with it."""
     stub_srt(tmp_path, monkeypatch, 'echo "srt: sandbox setup failed" >&2\nexit 7')
-    srt.write_launch_script(tmp_path, "srt --settings s.json")
+    backends.write_launch_script(tmp_path, "srt --settings s.json")
 
     result = run_script(tmp_path)
 
@@ -801,7 +802,7 @@ def test_a_launch_that_leaves_a_process_behind_still_closes_the_pane(
     so a clean launch could wedge the pane. A file has no such thing to wait for.
     """
     stub_srt(tmp_path, monkeypatch, "sleep 30 >/dev/null &\nexit 0")
-    srt.write_launch_script(tmp_path, "srt")
+    backends.write_launch_script(tmp_path, "srt")
 
     result = run_script(tmp_path)
 
@@ -812,7 +813,7 @@ def test_a_failed_launch_says_what_happened_and_waits(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     stub_srt(tmp_path, monkeypatch, "exit 3")
-    srt.write_launch_script(tmp_path, "srt --settings s.json")
+    backends.write_launch_script(tmp_path, "srt --settings s.json")
 
     result = run_script(tmp_path)
 
@@ -835,9 +836,9 @@ def test_an_agent_that_ran_a_while_and_then_exited_does_not_hold_the_pane(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Ctrl-C is exit 130. Holding the pane on that would hold it hostage."""
-    monkeypatch.setattr(srt, "HOLD_WITHIN_SECONDS", 1)
+    monkeypatch.setattr(backends, "HOLD_WITHIN_SECONDS", 1)
     stub_srt(tmp_path, monkeypatch, "sleep 2\nexit 130")
-    srt.write_launch_script(tmp_path, "srt")
+    backends.write_launch_script(tmp_path, "srt")
 
     result = run_script(tmp_path)
 
@@ -851,12 +852,12 @@ def test_a_big_pane_log_is_moved_aside_before_the_launch(
 ) -> None:
     """One generation, so a session nobody closes cannot fill the disk."""
     stub_srt(tmp_path, monkeypatch, 'echo "this run" >&2')
-    srt.write_launch_script(tmp_path, "srt")
-    (tmp_path / "pane.log").write_text("x" * (srt.PANE_LOG_MAX_BYTES + 1))
+    backends.write_launch_script(tmp_path, "srt")
+    (tmp_path / "pane.log").write_text("x" * (backends.PANE_LOG_MAX_BYTES + 1))
 
     run_script(tmp_path)
 
-    assert (tmp_path / "pane.log.1").stat().st_size == srt.PANE_LOG_MAX_BYTES + 1
+    assert (tmp_path / "pane.log.1").stat().st_size == backends.PANE_LOG_MAX_BYTES + 1
     assert (tmp_path / "pane.log").read_text() == "this run\n"
 
 
@@ -864,7 +865,7 @@ def test_a_small_pane_log_is_left_where_it_is(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     stub_srt(tmp_path, monkeypatch, 'echo "this run" >&2')
-    srt.write_launch_script(tmp_path, "srt")
+    backends.write_launch_script(tmp_path, "srt")
     (tmp_path / "pane.log").write_text("an earlier run\n")
 
     run_script(tmp_path)
@@ -882,7 +883,7 @@ def test_a_clean_launch_closes_the_pane_as_it_always_did(
     complains about that shows up: nothing the script does may reach the pane.
     """
     stub_srt(tmp_path, monkeypatch, "echo done")
-    srt.write_launch_script(tmp_path, "srt")
+    backends.write_launch_script(tmp_path, "srt")
 
     result = run_script(tmp_path)
 
@@ -896,7 +897,7 @@ def test_a_second_pane_appends_to_the_same_log(
 ) -> None:
     """Tabs share a run, so they share its log rather than overwriting each other's."""
     stub_srt(tmp_path, monkeypatch, 'echo "first and second" >&2')
-    srt.write_launch_script(tmp_path, "srt")
+    backends.write_launch_script(tmp_path, "srt")
 
     run_script(tmp_path)
     run_script(tmp_path)
@@ -960,7 +961,7 @@ def test_a_run_dir_without_a_launch_script_gets_one_back(
 
 def test_a_run_dir_with_no_launch_record_still_raises(tmp_path: Path) -> None:
     """Writing a missing script back must not paper over a run dir nothing can attach to."""
-    with pytest.raises(srt.RunNotFound, match=str(tmp_path)):
+    with pytest.raises(backends.RunNotFound, match=str(tmp_path)):
         srt.load_run(tmp_path)
 
     assert not (tmp_path / "launch.sh").exists()

@@ -16,13 +16,19 @@ import os
 import shlex
 import shutil
 import sys
-import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, log, state_dir, synth_config
+from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
+from paddock.backends import (
+    LAUNCH_FILE,
+    RunNotFound,
+    ensure_launch_script,
+    launch_line,
+    new_run_dir,
+    write_launch_script,
+)
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
 
@@ -58,29 +64,9 @@ PROXY_ENV = (
     "GIT_SSH_COMMAND",
 )
 
-# The prepared run, written into the run dir so a later tab can attach to the same policy.
-LAUNCH_FILE = "launch.json"
-
-# The same command as a script, because the pane is sent a line, not a file (see launch_line).
-LAUNCH_SCRIPT = "launch.sh"
-
-# A launch that fails does so at once. A non-zero exit later than this is the agent ending,
-# ctrl-c included, and holding the pane on that would hold it hostage.
-HOLD_WITHIN_SECONDS = 10
-
-# How much of pane.log a failed launch replays into the pane before it waits.
-TAIL_ON_FAILURE = 20
-
-# One earlier generation of pane.log is kept, at this size.
-PANE_LOG_MAX_BYTES = 1_000_000
-
 
 class SrtNotFound(RuntimeError):
     """No `srt` on PATH and no `npx` to fetch it."""
-
-
-class RunNotFound(RuntimeError):
-    """The run dir holds no usable launch record, so nothing can attach to it."""
 
 
 @dataclass
@@ -100,13 +86,6 @@ def find_srt() -> list[str]:
     if shutil.which("npx"):
         return ["npx", "-y", "@anthropic-ai/sandbox-runtime"]
     raise SrtNotFound(f"srt not found, and no npx to run it. Install it with: {INSTALL_COMMAND}")
-
-
-def new_run_dir() -> Path:
-    """A fresh directory for this launch: its shim dir, settings file and scratch workdir."""
-    runs = state_dir() / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-"), dir=runs))
 
 
 def workdir_for(profile: Profile, run_dir: Path) -> Path:
@@ -213,83 +192,6 @@ def pane_command(
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
 
 
-def write_launch_script(run_dir: Path, command: str) -> Path:
-    """Put the composed command in the run dir, where the pane can run it by name.
-
-    The run dir is not writable from inside the sandbox, so the agent cannot rewrite
-    the script that launched it.
-    """
-    script = run_dir / LAUNCH_SCRIPT
-    script.write_text(_script_text(run_dir, command))
-    script.chmod(0o700)
-    return script
-
-
-def _script_text(run_dir: Path, command: str) -> str:
-    """The script the pane runs: the command, its stderr kept, and a pane that stays put.
-
-    A launch that failed used to take the pane with it, error and all, so the one thing
-    that would have said why was gone before anyone could read it. Now stderr is appended
-    to `pane.log`, and a failure replays the end of it and waits.
-
-    The launch runs in the foreground with a plain file redirection, not through a pipe.
-    A pipe closes when its last writer does, and an agent that backgrounds anything leaves
-    a process holding stderr for as long as it lives, so the pane would hang on a launch
-    that went perfectly well. stdout is untouched either way: the agent draws its interface
-    there, and it has to stay a terminal.
-    """
-    pane_log = shlex.quote(str(log.pane_log_path(run_dir)))
-    return "\n".join(
-        [
-            "#!/bin/sh",
-            "# Written by paddock when the run was prepared.",
-            f"paddock_log={pane_log}",
-            "",
-            "# One earlier generation is kept, so a run nobody closes cannot fill the disk.",
-            "# The braces matter: without them the shell, not wc, reports a log that is not",
-            "# there yet, and the first launch of every run would print an error at the user.",
-            "paddock_size=$( { wc -c < \"$paddock_log\"; } 2>/dev/null | tr -dc '0-9' )",
-            '[ -n "$paddock_size" ] && [ "$paddock_size" -gt '
-            f'{PANE_LOG_MAX_BYTES} ] && mv -f "$paddock_log" "$paddock_log.1"',
-            "",
-            "paddock_launch() {",
-            command,
-            "}",
-            "",
-            "paddock_start=$(date +%s 2>/dev/null || echo 0)",
-            'paddock_launch 2>>"$paddock_log"',
-            "paddock_exit=$?",
-            '[ "$paddock_exit" = 0 ] && exit 0',
-            "",
-            "# Only a launch that failed holds the pane. An agent that ran for a while and",
-            "# then exited non-zero (ctrl-c is 130) was watched by whoever was sitting there.",
-            "paddock_end=$(date +%s 2>/dev/null || echo 0)",
-            '[ "$((paddock_end - paddock_start))" -ge '
-            f'{HOLD_WITHIN_SECONDS} ] && exit "$paddock_exit"',
-            "",
-            "# An interface that died can leave the terminal raw, and then nothing echoes.",
-            "stty sane 2>/dev/null",
-            "printf 'paddock: launch failed (exit %s), log: %s\\n'"
-            ' "$paddock_exit" "$paddock_log" >&2',
-            f'tail -n {TAIL_ON_FAILURE} "$paddock_log" >&2',
-            "printf 'paddock: press enter to close this pane. ' >&2",
-            "read -r paddock_key",
-            'exit "$paddock_exit"',
-            "",
-        ]
-    )
-
-
-def launch_line(run_dir: Path) -> str:
-    """What `herdr pane run` is sent: short on purpose.
-
-    herdr types the line into the pane's shell, and a tty in canonical mode drops
-    everything past 1024 bytes, which the composed command passes easily. `exec`
-    replaces that shell, so closing the agent closes the pane.
-    """
-    return f"exec /bin/sh {shlex.quote(str(run_dir / LAUNCH_SCRIPT))}"
-
-
 def prepare(profile: Profile) -> Run:
     """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
 
@@ -360,17 +262,8 @@ def load_run(run_dir: Path) -> Run:
         run = Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
-    if _written_script(run_dir) != _script_text(run_dir, run.command):
-        write_launch_script(run_dir, run.command)
-        logger.debug("launch script rewritten %s", log.context(path=run_dir / LAUNCH_SCRIPT))
+    ensure_launch_script(run_dir, run.command)
     return run
-
-
-def _written_script(run_dir: Path) -> str:
-    try:
-        return (run_dir / LAUNCH_SCRIPT).read_text()
-    except OSError:
-        return ""
 
 
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
@@ -380,6 +273,10 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     herdr_client.run_in_pane(pane_id, line)
     logger.debug("pane opened %s", log.context(pane=pane_id, label=label, line=line))
     return pane_id
+
+
+def collect(run_dir: Path, vm_handle: str = "") -> None:
+    """Nothing is left running: an srt session is a settings file and a workdir (SPEC §3.2)."""
 
 
 def _expand(path: str) -> Path:

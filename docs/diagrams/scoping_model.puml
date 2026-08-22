@@ -31,15 +31,15 @@ node "HOST" as Host {
   artifact "srt settings file\nruns/<session>/srt-settings.json" as SrtSettings
 }
 
-frame "Session A, 'build'   backend: microsandbox (v1.1)\nSHARED RUNTIME: one persistent microVM" as SessionA {
-  component "shell / agent\n(tab 3)" as G3
-  component "shell / agent\n(tab 4)" as G4
+frame "Session A, 'build'   backend: msb\nSHARED RUNTIME: one persistent microVM" as SessionA {
+  component "shell\n(tab 3)" as G3
+  component "shell\n(tab 4)" as G4
   database "guest filesystem" as GuestFs
   component "shared process namespace\n(tabs see each other's processes)" as GuestProcs
-  component "build.localhost\n(portless)" as Portless
+  folder "/work\nthe one host directory mounted in\n(shared_dir, else the run dir's work/)" as GuestWork
 }
 
-frame "Session B, 'review'   backend: srt (v1)\nSHARED POLICY + FILES, separate process trees" as SessionB {
+frame "Session B, 'review'   backend: srt\nSHARED POLICY + FILES, separate process trees" as SessionB {
   component "srt-wrapped process tree\n(tab 5)" as P5
   component "(a second attached tab would get\nits own process tree here:\nsame settings file, same workdir)" as P6
 }
@@ -55,7 +55,7 @@ G3 --> GuestFs
 G4 --> GuestFs
 G3 --> GuestProcs
 G4 --> GuestProcs
-Portless ..> Host : reachable from the host browser
+GuestWork --> HostFs : the only host directory in the guest,\nread-write through virtiofs
 
 T5 --> P5 : attach = new process under\nthe same settings + workdir
 P5 --> SrtSettings : enforced by
@@ -71,17 +71,24 @@ Binding ..> Ws : applies to new tabs
 note bottom of SessionA
   Sessions survive Herdr detach and restart:
   the VM keeps running with no tab attached.
-  When the last tab closes the user is prompted,
-  with a keep-alive option, never silently
-  destroyed, never silently leaked.
+  The last tab closing destroys it, unless
+  keep_alive is set: never silently destroyed,
+  never silently leaked. The prompt that offers
+  keep-alive arrives with the TUI; today it is a
+  field a caller sets.
+
+  An agent session boots the agent's image, installs
+  the agent when the image lacks it, and gives the guest
+  its own copy of the synthesized config dir. A shell
+  session gets alpine and none of that.
 end note
 
 note bottom of SessionB
   srt has no persistent guest for a second
   process to join, so attached tabs share
   **policy and files**, never a **runtime**.
-  Tab groups are useful in v1 anyway;
-  true shared runtime arrives with msb.
+  Tab groups are useful anyway; shared
+  runtime is what msb adds.
 end note
 
 @enduml

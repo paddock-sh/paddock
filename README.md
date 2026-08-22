@@ -17,7 +17,10 @@ You choose what each sandbox gets:
 - **Files**: writes denied by default, plus one optional shared directory
 
 Enforced by the OS: Seatbelt on macOS, bubblewrap on Linux. Saved profiles make
-it two keystrokes. Per-session VPNs, isolated IPs, and microVMs are on the
+it two keystrokes. A session can run in a microVM instead, with
+`paddock launch <profile> --backend msb`: its own kernel, and only the directory
+you shared. The agent is installed in the guest on the way up, which costs about
+21s for Claude Code. Per-session VPNs and isolated IPs are on the
 [roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
 
 > **Status:** the v1 launcher works end to end. It has had no outside security
@@ -50,8 +53,8 @@ New window:
 A wrong answer is not a restart: every list question has a **← Back** entry, and
 the last screen is a summary of the answers you can edit before it launches.
 
-**Attach to an existing session** lists live sessions with their name, agent,
-profile and attached tabs.
+**Attach to an existing session** lists live sessions with their name, backend,
+agent, profile and attached tabs.
 
 Save any set of answers as a **profile** and reuse it next time. Plain new-tab
 moves to `prefix+shift+c`.
@@ -73,6 +76,11 @@ Sessions outlive the popup that made them and survive Herdr restarts. With the
 v1 backend, attached tabs share a settings file and a workdir but get **separate
 process trees**: shared files, never a shared runtime. See
 [docs/SPEC.md §3](docs/SPEC.md#3-sandbox-sessions).
+
+When a session's last tab closes it is collected: dropped from the registry, its
+copied credentials deleted, and its microVM destroyed if it had one. Nothing is
+running to watch for that, so it happens at the next `paddock` command rather
+than the instant the tab closes. `paddock gc` forces it.
 
 ## Trust model
 
@@ -108,6 +116,7 @@ The popup is the usual way in. The same jobs work without questions:
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock profiles                # list saved profiles
+paddock gc                      # collect sessions whose tabs are all closed
 paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```

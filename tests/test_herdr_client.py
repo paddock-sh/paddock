@@ -11,11 +11,18 @@ from paddock.herdr_client import (
     HerdrMissing,
     check_config,
     create_tab,
+    list_pane_ids,
     reload_config,
     run_in_pane,
 )
 
 PANE_JSON = json.dumps({"result": {"root_pane": {"pane_id": "wA:p2"}}})
+
+
+def pane_list_json(*pane_ids: str) -> str:
+    """What `herdr pane list` answers, cut down to the one field paddock reads."""
+    panes = [{"pane_id": pane_id, "tab_id": "w1:t1", "workspace_id": "w1"} for pane_id in pane_ids]
+    return json.dumps({"id": "cli:pane:list", "result": {"panes": panes, "type": "pane_list"}})
 
 
 class FakeHerdr:
@@ -117,6 +124,58 @@ def test_run_in_pane_passes_the_command_as_one_argument(herdr: FakeHerdr) -> Non
     run_in_pane("wA:p2", command)
 
     assert herdr.argv == ["herdr", "pane", "run", "wA:p2", command]
+
+
+def test_list_pane_ids_asks_herdr_for_every_pane(herdr: FakeHerdr) -> None:
+    """No workspace filter: a session's tabs can be in any of them."""
+    herdr.stdout = pane_list_json("w1:p1", "wA:p2")
+
+    list_pane_ids()
+
+    assert herdr.argv == ["herdr", "pane", "list"]
+
+
+def test_list_pane_ids_returns_the_ids(herdr: FakeHerdr) -> None:
+    herdr.stdout = pane_list_json("w1:p1", "wA:p2")
+
+    assert list_pane_ids() == {"w1:p1", "wA:p2"}
+
+
+def test_no_panes_open_is_an_empty_answer_not_an_error(herdr: FakeHerdr) -> None:
+    herdr.stdout = pane_list_json()
+
+    assert list_pane_ids() == set()
+
+
+def test_a_pane_list_that_is_not_json_is_a_clear_error(herdr: FakeHerdr) -> None:
+    herdr.stdout = "herdr: command not understood"
+
+    with pytest.raises(HerdrError, match="JSON"):
+        list_pane_ids()
+
+
+def test_a_pane_list_without_panes_is_a_clear_error(herdr: FakeHerdr) -> None:
+    """Empty is one answer; the wrong shape is another, and guessing between them is worse."""
+    herdr.stdout = json.dumps({"result": {}})
+
+    with pytest.raises(HerdrError, match="pane"):
+        list_pane_ids()
+
+
+def test_a_pane_without_an_id_is_a_clear_error(herdr: FakeHerdr) -> None:
+    herdr.stdout = json.dumps({"result": {"panes": [{"tab_id": "w1:t1"}]}})
+
+    with pytest.raises(HerdrError, match="pane"):
+        list_pane_ids()
+
+
+def test_no_herdr_server_to_ask_is_an_error_the_caller_can_catch(herdr: FakeHerdr) -> None:
+    """Reconciling has to survive this, so it must arrive as HerdrError and not a crash."""
+    herdr.returncode = 1
+    herdr.stderr = "no herdr server\n"
+
+    with pytest.raises(HerdrError, match="no herdr server"):
+        list_pane_ids()
 
 
 def test_reload_config_asks_the_server_to_re_read_its_config(herdr: FakeHerdr) -> None:

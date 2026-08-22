@@ -29,6 +29,7 @@ from paddock.profiles import (
     load_profiles,
     save_profile,
 )
+from paddock.sessions import DEFAULT_BACKEND
 
 # The "none of the saved ones" entry in the profile and agent lists. It is not a
 # name anyone would give a file, so it cannot collide with a real key.
@@ -117,6 +118,8 @@ class NewSession:
     save_as: str = ""
     # A command the user typed instead of picking an agent, remembered as `profile.agent`.
     agent_command: str = ""
+    # Which backend runs it. The chooser does not ask yet, so only `paddock launch` sets this.
+    backend: str = DEFAULT_BACKEND
 
 
 Plan = Local | Attach | NewSession
@@ -393,10 +396,13 @@ def first_choices(has_sessions: bool) -> list[tuple[str, str]]:
 
 
 def session_label(session: sessions.Session) -> str:
-    """A session by what it is (agent, permissions, size), not by its name alone (SPEC §3.1)."""
+    """A session by what it is (backend, agent, permissions, size), not by its name (SPEC §3.1).
+
+    The backend is there because attaching means a different thing on each one (SPEC §3.2).
+    """
     panes = len(session.pane_ids)
     return (
-        f"{session.name}: {session.agent} / {session.profile_name}, "
+        f"{session.name} [{session.backend}]: {session.agent} / {session.profile_name}, "
         f"{panes} tab{'' if panes == 1 else 's'}"
     )
 

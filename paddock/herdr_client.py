@@ -43,6 +43,21 @@ def create_tab(cwd: Path, label: str = "", env: dict[str, str] | None = None) ->
         raise HerdrError(f"herdr tab create returned no pane id: {output!r}") from error
 
 
+def list_pane_ids() -> set[str]:
+    """Every pane herdr has open right now. No workspace filter: a session's tabs can be anywhere.
+
+    herdr sends no event paddock is around to hear, so this is how a closed tab is noticed
+    (SPEC §3.4). An empty set is a real answer; herdr not answering raises.
+    """
+    output = _run("pane", "list")
+    try:
+        return {pane["pane_id"] for pane in json.loads(output)["result"]["panes"]}
+    except json.JSONDecodeError as error:
+        raise HerdrError(f"herdr pane list returned no JSON: {output!r}") from error
+    except (KeyError, TypeError) as error:
+        raise HerdrError(f"herdr pane list returned no pane ids: {output!r}") from error
+
+
 def run_in_pane(pane_id: str, command: str) -> None:
     """Run a command in an existing pane. The command is one argument, quoted by the caller."""
     _run("pane", "run", pane_id, command)

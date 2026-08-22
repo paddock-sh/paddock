@@ -24,17 +24,22 @@ class Session:
     run_dir: str = "/state/runs/s1"
     keep_alive: bool = False
     pane_ids: list[str] = field(default_factory=list)
+    backend: str = "srt"
+    vm_handle: str = ""
 
 
 # What the fake was asked to do, in order, as ("name", *arguments).
 calls: list[tuple] = []
 # Sessions a test wants to exist.
 registry: list[Session] = []
+# Sessions a test wants `reconcile` to say it collected.
+collects: list[Session] = []
 
 
 def reset() -> None:
     calls.clear()
     registry.clear()
+    collects.clear()
 
 
 def list_sessions() -> list[Session]:
@@ -50,9 +55,14 @@ def get_session(ref: str) -> Session | None:
     return None
 
 
-def create_session(profile: Profile, name: str | None = None) -> Session:
-    calls.append(("create_session", profile, name))
-    return Session(name=name or "generated", profile_name=profile.name, agent=profile.agent)
+def create_session(profile: Profile, name: str | None = None, backend: str = "srt") -> Session:
+    calls.append(("create_session", profile, name, backend))
+    return Session(
+        name=name or "generated",
+        profile_name=profile.name,
+        agent=profile.agent,
+        backend=backend,
+    )
 
 
 def attach(session: Session, cwd: Path | None = None) -> str:
@@ -60,14 +70,24 @@ def attach(session: Session, cwd: Path | None = None) -> str:
     return "wA:p9"
 
 
-def launch(profile: Profile, name: str | None = None) -> tuple[Session, str]:
-    calls.append(("launch", profile, name))
-    session = Session(name=name or "generated", profile_name=profile.name, agent=profile.agent)
+def launch(profile: Profile, name: str | None = None, backend: str = "srt") -> tuple[Session, str]:
+    calls.append(("launch", profile, name, backend))
+    session = Session(
+        name=name or "generated",
+        profile_name=profile.name,
+        agent=profile.agent,
+        backend=backend,
+    )
     return session, "wA:p3"
 
 
 def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
+
+
+def reconcile() -> list[Session]:
+    calls.append(("reconcile",))
+    return list(collects)
 
 
 def launch_local(cwd: Path | None = None) -> str:

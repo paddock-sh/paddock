@@ -39,7 +39,8 @@ alt Local namespace chosen
 else Attach to an existing session chosen
   TUI -> Sessions : get_session(name or id)
   TUI -> Sessions : attach(session)
-  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json; the pane runs\nrun_dir/launch.sh, written back here\nwhen the run dir has none
+  Sessions -> Sessions : backend_for(session.backend)\nthe module sessions.BACKENDS maps that name to.\nA name this paddock does not have raises ValueError\nhere, before any pane is opened
+  Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json; the pane runs\nrun_dir/launch.sh, written back here when the run\ndir has none or holds one an upgrade has moved on from\n(both backends, through backends/__init__.py)
   Sessions -> Backend : open_pane(run, label="sbx:<session>")
   note right
     msb: exec a shell into the running guest.

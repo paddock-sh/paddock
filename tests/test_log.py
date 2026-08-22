@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from paddock import cli, log, sessions
+from paddock.backends import microsandbox
 from paddock.profiles import Profile
 from tests.conftest import FakeClient
 
@@ -321,3 +322,75 @@ def test_an_environment_value_written_as_one_word_is_redacted_too() -> None:
     redacted = log.redact_env(["tab", "create", f"--env=TOKEN={FAKE_TOKEN}", "--focus"])
 
     assert redacted == "tab create --env=TOKEN=... --focus"
+
+
+def test_the_msb_spelling_of_an_environment_value_is_redacted_too() -> None:
+    """msb takes `-e NAME=VALUE` where herdr takes `--env`, and the rule is the rule."""
+    redacted = log.redact_env(["create", "-e", f"TOKEN={FAKE_TOKEN}", "--name", "paddock-1"])
+
+    assert redacted == "create -e TOKEN=... --name paddock-1"
+
+
+def test_a_full_msb_launch_writes_no_secrets_to_the_log(
+    which: dict[str, str],
+    client: FakeClient,
+    keychain: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same rule over the other backend: msb's argv is mounts and names, and stays so.
+
+    msb is given no token: the config dir is mounted and the guest copies it, so what could
+    leak is a path, never a credential. The argv is asserted as well as the log, so an
+    argument that started carrying a secret would fail here rather than quietly get written.
+    """
+    home = tmp_path / "home"
+    (home / ".claude" / "skills" / "writing").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    (home / ".claude.json").write_text(json.dumps({"mcpServers": {}, "token": FAKE_TOKEN}))
+    keychain["Claude Code-credentials"] = json.dumps({"claudeAiOauth": {"token": FAKE_TOKEN}})
+    monkeypatch.setenv("PADDOCK_LOG", "debug")
+
+    argv: list[list[str]] = []
+    booted: list[str] = []
+
+    def run(*args: str) -> str:
+        argv.append(list(args))
+        if args[1] == "create":
+            booted.append(args[args.index("--name") + 1])
+        elif args[1] == "ls":
+            return json.dumps([{"name": name, "status": "Running"} for name in booted])
+        return ""
+
+    monkeypatch.setattr(microsandbox, "_run", run)
+    log.setup()
+
+    sessions.launch(
+        Profile(name="claude-vm", agent="claude", skills=["writing"]), backend="msb"
+    )
+
+    assert [call for call in argv if call[1] == "create"]  # the VM really was asked for
+    assert FAKE_TOKEN not in " ".join(word for call in argv for word in call)
+    written = log.log_path().read_text()
+    assert "paddock.backends.microsandbox prepare" in written  # the boot really was logged
+    assert FAKE_TOKEN not in written
+    assert "claudeAiOauth" not in written
+
+
+def test_every_msb_command_is_logged_with_its_environment_values_left_out(
+    which: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_run` is the one place the msb backend shells out, so it is the one place to redact."""
+    monkeypatch.setenv("PADDOCK_LOG", "debug")
+
+    def answer(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", answer)
+    log.setup()
+
+    microsandbox._run("msb", "create", "-e", f"TOKEN={FAKE_TOKEN}", "--name", "paddock-1")
+
+    written = log.log_path().read_text()
+    assert "msb create -e TOKEN=... --name paddock-1" in written
+    assert FAKE_TOKEN not in written
