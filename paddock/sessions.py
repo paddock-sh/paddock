@@ -149,16 +149,27 @@ def create_session(
         return session
 
 
-def attach(session: Session, cwd: Path | None = None) -> str:
+def pane_label(name: str, shell: bool = False) -> str:
+    """What the tab is called in the tab bar (SPEC §3.5). A shell tab says which it is."""
+    return f"sbx:{name} (shell)" if shell else f"sbx:{name}"
+
+
+def attach(session: Session, cwd: Path | None = None, shell: bool = False) -> str:
     """Open a tab on the session and start the agent in it. Returns the pane id.
 
     The tab starts in the session's workdir unless another directory is named, which
     not every backend can honour: an msb tab always opens in the guest (SPEC §2.2).
+
+    `shell` opens a plain shell inside the same sandbox instead of the agent. It is a tab
+    on the session like any other: it is registered, it holds the session open, and the
+    session is collected when it is the last one to close.
     """
     backend = backend_for(session.backend)
     run = backend.load_run(Path(session.run_dir))
     try:
-        pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+        pane_id = backend.open_pane(
+            run, label=pane_label(session.name, shell), cwd=cwd, shell=shell
+        )
     except SandboxGone as error:
         # There is nothing left to attach to, so the session ends here rather than
         # sitting in the registry offering tabs that cannot open (SPEC §3.4).
@@ -174,6 +185,7 @@ def attach(session: Session, cwd: Path | None = None) -> str:
             backend=session.backend,
             pane=pane_id,
             cwd=cwd,
+            shell=shell,
         ),
     )
     return pane_id

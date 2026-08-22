@@ -1037,3 +1037,69 @@ def test_a_required_tool_the_profile_already_ticked_is_reported_once(
     srt.prepare(Profile(agent="codex", tools=["node"]))
 
     assert capsys.readouterr().err.strip() == "paddock: left off the sandbox PATH: node"
+
+
+# --- a shell in the sandbox the agent is in ---------------------------------
+
+
+def test_a_shell_tab_runs_the_users_shell_under_the_same_settings(
+    which: dict[str, str], fake_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same policy file, same workdir, no agent: that is what makes it the same sandbox."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+
+    run = srt.prepare(Profile(tools=["git"]))
+
+    argv = shlex.split(run.shell_command)
+    assert argv[2] == str(run.run_dir / "srt-settings.json")
+    assert shlex.split(argv[4])[-1] == "/bin/zsh"
+
+
+def test_a_shell_tab_gets_the_config_dir_but_not_the_agents_flags(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """The flags are the agent's. The variable is the sandbox's, so a shell may use it."""
+    (fake_home / ".claude").mkdir()
+
+    run = srt.prepare(Profile())
+
+    inner = shlex.split(run.shell_command)[4]
+    assert "CLAUDE_CONFIG_DIR=" in inner
+    assert "--strict-mcp-config" not in inner
+
+
+def test_the_shell_script_is_a_second_script_beside_the_agents(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    run = srt.prepare(Profile())
+
+    assert (run.run_dir / "shell.sh").is_file()
+    assert run.shell_command in (run.run_dir / "shell.sh").read_text()
+
+
+def test_a_shell_pane_runs_the_shell_script_and_the_agent_pane_the_other(
+    which: dict[str, str], fake_home: Path, client: FakeClient
+) -> None:
+    run = srt.prepare(Profile())
+
+    srt.open_pane(run, label="sbx:demo")
+    srt.open_pane(run, label="sbx:demo (shell)", shell=True)
+
+    assert client.commands[0][1].endswith("launch.sh")
+    assert client.commands[1][1].endswith("shell.sh")
+
+
+def test_a_run_prepared_before_shell_tabs_says_so_instead_of_opening_a_dead_one(
+    which: dict[str, str], fake_home: Path, client: FakeClient
+) -> None:
+    """An older run dir has no shell command, and a tab that runs nothing is worse than a no."""
+    run = srt.prepare(Profile())
+    record = json.loads((run.run_dir / "launch.json").read_text())
+    del record["shell_command"]
+    (run.run_dir / "launch.json").write_text(json.dumps(record))
+
+    reloaded = srt.load_run(run.run_dir)
+
+    with pytest.raises(ValueError, match="before paddock could open a shell"):
+        srt.open_pane(reloaded, shell=True)
+    assert client.commands == []

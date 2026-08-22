@@ -39,7 +39,7 @@ class FakeBackend:
         self.fails_with = fails_with
         self.prepared: list[Profile] = []
         self.loaded: list[Path] = []
-        self.opened: list[tuple[object, str, Path | None]] = []
+        self.opened: list[tuple[object, str, Path | None, bool]] = []
         self.collected: list[tuple[Path, str]] = []
 
     def prepare(self, profile: Profile) -> FakeRun:
@@ -50,11 +50,14 @@ class FakeBackend:
         self.loaded.append(run_dir)
         return self.run
 
-    def open_pane(self, run: FakeRun, label: str = "", cwd: Path | None = None) -> str:
+    def open_pane(
+        self, run: FakeRun, label: str = "", cwd: Path | None = None, shell: bool = False
+    ) -> str:
         if self.fails_with is not None:
             raise self.fails_with
-        self.opened.append((run, label, cwd))
-        return "wA:p7"
+        self.opened.append((run, label, cwd, shell))
+        # A new id per tab, as herdr gives: two tabs on one session are two panes.
+        return f"wA:p{6 + len(self.opened)}"
 
     def collect(self, run_dir: Path, vm_handle: str = "") -> None:
         self.collected.append((run_dir, vm_handle))
@@ -396,7 +399,7 @@ def test_attach_goes_through_the_backend_the_session_names(
     pane_id = sessions.attach(session)
 
     assert fake.loaded == [Path(session.run_dir)]
-    assert fake.opened == [(fake.run, "sbx:demo", None)]
+    assert fake.opened == [(fake.run, "sbx:demo", None, False)]
     assert pane_id == "wA:p7"
     assert sessions.get_session("demo").pane_ids == ["wA:p7"]
 
@@ -888,3 +891,48 @@ def test_launch_local_makes_a_plain_unlabelled_tab(client: FakeClient, tmp_path:
     assert client.commands == []
     assert sessions.list_sessions() == []
     assert pane_id == "wA:p2"
+
+
+# --- a shell tab on a session that is already running -----------------------
+
+
+def test_a_shell_tab_asks_the_backend_for_a_shell_and_is_labelled_as_one(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tab bar has to tell the two apart: they are the same sandbox, not the same thing."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    write_registry(state_dir, [record(backend="fake")])
+
+    sessions.attach(sessions.get_session("demo"), shell=True)
+
+    assert fake.opened == [(fake.run, "sbx:demo (shell)", None, True)]
+
+
+def test_a_shell_tab_is_a_pane_of_the_session_like_any_other(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It holds the session open, and closing it is what ends the session when it is last."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    write_registry(state_dir, [record(backend="fake")])
+    session = sessions.get_session("demo")
+
+    agent_pane = sessions.attach(session)
+    shell_pane = sessions.attach(sessions.get_session("demo"), shell=True)
+    client.live.update({agent_pane, shell_pane})  # the fake backend opens its own panes
+
+    assert sessions.get_session("demo").pane_ids == [agent_pane, shell_pane]
+
+    client.close_pane(agent_pane)
+    assert [collected.name for collected in sessions.reconcile()] == []
+    assert sessions.get_session("demo").pane_ids == [shell_pane]
+
+    client.close_pane(shell_pane)
+    assert [collected.name for collected in sessions.reconcile()] == ["demo"]
+    assert sessions.get_session("demo") is None
+
+
+def test_the_label_says_shell_only_when_it_is_one() -> None:
+    assert sessions.pane_label("review") == "sbx:review"
+    assert sessions.pane_label("review", shell=True) == "sbx:review (shell)"

@@ -29,6 +29,8 @@ from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
+    LAUNCH_SCRIPT,
+    SHELL_SCRIPT,
     RunNotFound,
     SandboxGone,
     ensure_launch_script,
@@ -58,6 +60,12 @@ GUEST_CONFIG = "/paddock-config"
 # The agent that means "the guest's own shell": there is nothing to install and nothing to
 # point at a config dir, and the image's default shell is what a tab attaches to.
 SHELL_AGENT = "shell"
+
+# What a shell tab execs in the guest. Named, not left to the image: `msb exec` with no argv
+# runs the image's own command, which for node:22-slim is the Node REPL and not a shell.
+# Every image this backend boots already has to have it: the boot script and the config copy
+# both run through `/bin/sh -c`.
+GUEST_SHELL = "/bin/sh"
 
 # What msb allows the boot-time execs, the install and the config copy. The install is the
 # one slow step: 21s for claude, on top of a first image pull. Shorter than COMMAND_TIMEOUT
@@ -89,6 +97,9 @@ class Run:
     workdir: Path
     vm_handle: str
     command: str
+    # The same guest entered as its own shell, alongside whatever the agent tab is doing:
+    # `msb exec` joins the running VM, so both are in one process namespace (SPEC §3.2).
+    shell_command: str = ""
 
 
 def find_msb() -> str:
@@ -323,12 +334,22 @@ def prepare(profile: Profile) -> Run:
             synth_config.place_credentials(profile, agent, run_dir)
             _run(*copy_config_argv(handle))
         command = attach_command(handle, _agent_argv(profile, agent, synth))
+        # Named rather than left to the image, and the guest's own rather than the host's:
+        # a host `$SHELL` need not exist in there (see `_agent_argv`).
+        shell = attach_command(handle, [GUEST_SHELL])
         script = write_launch_script(run_dir, command)
+        write_launch_script(run_dir, shell, SHELL_SCRIPT)
         # The length, never the command: the same rule the srt backend writes under.
         logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
         (run_dir / LAUNCH_FILE).write_text(
             json.dumps(
-                {"vm_handle": handle, "workdir": str(workdir), "command": command}, indent=2
+                {
+                    "vm_handle": handle,
+                    "workdir": str(workdir),
+                    "command": command,
+                    "shell_command": shell,
+                },
+                indent=2,
             )
             + "\n"
         )
@@ -338,7 +359,13 @@ def prepare(profile: Profile) -> Run:
         synth_config.discard_credentials(run_dir)
         stop_vm(handle)
         raise
-    return Run(run_dir=run_dir, workdir=workdir, vm_handle=handle, command=command)
+    return Run(
+        run_dir=run_dir,
+        workdir=workdir,
+        vm_handle=handle,
+        command=command,
+        shell_command=shell,
+    )
 
 
 def load_run(run_dir: Path) -> Run:
@@ -350,31 +377,50 @@ def load_run(run_dir: Path) -> Run:
     """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        run = Run(run_dir, Path(data["workdir"]), str(data["vm_handle"]), str(data["command"]))
+        run = Run(
+            run_dir,
+            Path(data["workdir"]),
+            str(data["vm_handle"]),
+            str(data["command"]),
+            # Absent on a run prepared before shell tabs existed, which open_pane reports.
+            str(data.get("shell_command", "")),
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
     ensure_launch_script(run_dir, run.command)
+    if run.shell_command:
+        ensure_launch_script(run_dir, run.shell_command, SHELL_SCRIPT)
     return run
 
 
-def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
+def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = False) -> str:
     """Open a tab and exec a shell into the session's VM. Returns the pane id.
 
     The tab's own directory is the host side of the mount, so the pane and the guest
     shell are looking at the same files.
+
+    `shell` execs the image's own shell instead of the agent. `msb exec` joins the VM that
+    is already running, so it lands in the same guest, the same /work and the same process
+    namespace as the agent tab (SPEC §3.2).
     """
     if cwd is not None:
         raise ValueError(
             f"an msb session always opens in the guest workdir {GUEST_WORKDIR}: "
             f"{cwd} would only set the host tab's own directory, which the guest shell replaces"
         )
+    if shell and not run.shell_command:
+        raise ValueError(
+            f"the session in {run.run_dir} was prepared before paddock could open a shell "
+            "in it, so start a new session to get one"
+        )
     if not vm_is_running(run.vm_handle):
         raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
     pane_id = herdr_client.create_tab(run.workdir, label=label)
-    line = launch_line(run.run_dir)
+    line = launch_line(run.run_dir, SHELL_SCRIPT if shell else LAUNCH_SCRIPT)
     herdr_client.run_in_pane(pane_id, line)
     logger.debug(
-        "pane opened %s", log.context(pane=pane_id, label=label, vm=run.vm_handle, line=line)
+        "pane opened %s",
+        log.context(pane=pane_id, label=label, vm=run.vm_handle, shell=shell, line=line),
     )
     return pane_id
 

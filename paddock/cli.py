@@ -28,6 +28,7 @@ class Command:
     backend: str = DEFAULT_BACKEND
     dry_run: bool = False
     undo: bool = False
+    shell: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -71,6 +72,7 @@ def parse_args(argv: list[str]) -> Command:
         backend=getattr(args, "backend", "") or DEFAULT_BACKEND,
         dry_run=getattr(args, "dry_run", False),
         undo=getattr(args, "undo", False),
+        shell=getattr(args, "shell", False),
     )
 
 
@@ -103,7 +105,7 @@ def run(command: Command) -> int:
         return choose(cwd, command.dry_run)
     if command.name == "attach":
         # Only an asked-for cwd, so an attached tab otherwise keeps the session's workdir.
-        plan = tui.Attach(ref=command.ref, cwd=command.cwd)
+        plan = tui.Attach(ref=command.ref, cwd=command.cwd, shell=command.shell)
     else:  # launch
         saved = load_profiles()
         if command.profile not in saved:
@@ -162,7 +164,8 @@ def perform(plan: tui.Plan) -> int:
         session = sessions.get_session(plan.ref)
         if session is None:
             return _fail(f"no session named {plan.ref!r}")
-        print(sessions.attach(session, Path(plan.cwd) if plan.cwd else None))
+        where = Path(plan.cwd) if plan.cwd else None
+        print(sessions.attach(session, where, shell=plan.shell))
         return 0
 
     profile = plan.profile
@@ -205,7 +208,8 @@ def describe(plan: tui.Plan) -> str:
         return f"would open a local tab in {plan.cwd}"
     if isinstance(plan, tui.Attach):
         where = plan.cwd or "its own workdir"
-        return f"would attach a tab to session {plan.ref!r} in {where}"
+        what = "a shell" if plan.shell else "a tab"
+        return f"would attach {what} to session {plan.ref!r} in {where}"
     parts = [
         f"would launch session {plan.name or '(generated name)'}",
         f"profile {plan.profile.name}",
@@ -265,6 +269,11 @@ def _parser() -> argparse.ArgumentParser:
         "attach", parents=[dry, where], help="put a new tab on a running session"
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
+    attach.add_argument(
+        "--shell",
+        action="store_true",
+        help="open a plain shell inside the sandbox instead of the agent",
+    )
     subcommands.add_parser("profiles", help="list saved profiles")
     subcommands.add_parser(
         "gc", help="collect sessions whose tabs are all closed (every command does this first)"

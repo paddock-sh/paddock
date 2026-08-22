@@ -151,6 +151,16 @@ NO_SANDBOX = "No sandbox, so there is nothing to permit."
 # How many domains the confirm screen names before it falls back to counting them (section 5.7).
 SHOWN_DOMAINS = 9
 
+# The second question the Open field asks about a live session: what goes in the new tab.
+ATTACH_TITLE = "What goes in the tab?"
+ATTACH_CHOICES = (
+    ("Attach the agent", "The agent again, under the same policy and on the same files."),
+    (
+        "Open a shell inside it",
+        "A plain shell in the same sandbox: the same files, the same policy, no second agent.",
+    ),
+)
+
 # One line per entry on the Open list.
 OPEN_HINTS = {
     NEW: "An agent under the OS sandbox, with the permissions below. Seatbelt on macOS, "
@@ -187,6 +197,8 @@ class Attach:
     ref: str
     # Blank leaves the session its own workdir, which is what attaching usually means.
     cwd: str = ""
+    # A plain shell inside the sandbox rather than the agent again (SPEC §3.2).
+    shell: bool = False
 
 
 @dataclass
@@ -243,7 +255,7 @@ def plan_from(answers: dict, base: Profile, cwd: Path) -> Plan:
     if opened == LOCAL:
         return Local(cwd=str(cwd))
     if opened != NEW:  # anything else on the Open list is a session to attach to
-        return Attach(ref=opened)
+        return Attach(ref=opened, shell=bool(answers.get("shell")))
     return build_session(base, answers)
 
 
@@ -289,11 +301,26 @@ def _edit(
 
 
 def _edit_open(answers: dict, live: list[sessions.Session]) -> dict:
+    """The Open list, and for a live session the second question of what to put in the tab.
+
+    Two screens for one field, so escape from the second backs out to the list, not to the
+    form, exactly as the Files field's directory box does.
+    """
     choices = open_choices(live)
     rows = [(title, open_hint(value)) for title, value in choices]
     where = _at(choices, str(answers.get("open", NEW)))
-    index = screen.pick(FIELD_TITLES["open"], rows, cursor=where, rule_after=open_rule(live))
-    return answers if index is None else dict(answers, open=choices[index][1])
+    while True:
+        index = screen.pick(FIELD_TITLES["open"], rows, cursor=where, rule_after=open_rule(live))
+        if index is None:
+            return answers
+        opened = choices[index][1]
+        if opened in (NEW, LOCAL):
+            return dict(answers, open=opened, shell=False)
+        was = int(bool(answers.get("shell")))
+        how = screen.pick(ATTACH_TITLE, list(ATTACH_CHOICES), cursor=was)
+        if how is not None:
+            return dict(answers, open=opened, shell=how == 1)
+        where = index  # backed out of the second question, so the list opens where it was
 
 
 def _edit_profile(answers: dict, saved: dict[str, Profile], registry: dict[str, AgentSpec]) -> dict:
@@ -513,7 +540,7 @@ def form_rows(
     it every attach would read as a new sandbox, which is the opposite of what it does.
     """
     opened = str(answers.get("open", NEW))
-    values = _field_values(answers, base, registry, live, cwd)
+    values = _field_values(answers, base, registry, live, cwd, bool(answers.get("shell")))
     notes = _field_notes(answers, base)
     rows = []
     for field in FIELDS:
@@ -604,6 +631,7 @@ def _field_values(
     registry: dict[str, AgentSpec],
     live: list[sessions.Session],
     cwd: str,
+    shell: bool = False,
 ) -> dict[str, str]:
     """What each field reads as. Every value says the answer, not the question."""
     plan = build_session(base, answers)
@@ -611,7 +639,7 @@ def _field_values(
     opened = str(answers.get("open", NEW))
     tools = " ".join(profile.tools)
     return {
-        "open": _open_value(opened, live),
+        "open": _open_value(opened, live, shell),
         "profile": profile_label(str(answers.get("profile", CUSTOM))),
         "backend": _backend_value(answers),
         "agent": agent_title(profile.agent, registry),
@@ -655,7 +683,7 @@ def _backend_value(answers: dict) -> str:
     return BACKEND_LABELS.get(backend, backend)
 
 
-def _open_value(opened: str, live: list[sessions.Session]) -> str:
+def _open_value(opened: str, live: list[sessions.Session], shell: bool = False) -> str:
     """A session that ended between the list and the form says so, rather than reading as new."""
     if opened == NEW:
         return "New sandbox"
@@ -663,7 +691,8 @@ def _open_value(opened: str, live: list[sessions.Session]) -> str:
         return "Local tab"
     for session in live:
         if session.session_id == opened:
-            return f"Attach: {session.name}"
+            what = "a shell in" if shell else "the agent on"
+            return f"Attach {what} {session.name}"
     return f"session is gone: {opened}"
 
 
@@ -1005,7 +1034,7 @@ def answers_from(plan: Plan, saved: dict[str, Profile]) -> dict:
     if isinstance(plan, Local):
         return {"open": LOCAL}
     if isinstance(plan, Attach):
-        return {"open": plan.ref}
+        return {"open": plan.ref, "shell": plan.shell}
     profile = plan.profile
     base = profile.name.removesuffix("+custom")
     return {

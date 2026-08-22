@@ -16,13 +16,15 @@ import os
 import shlex
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from paddock import herdr_client, log, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.backends import (
     LAUNCH_FILE,
+    LAUNCH_SCRIPT,
+    SHELL_SCRIPT,
     RunNotFound,
     ensure_launch_script,
     launch_line,
@@ -77,6 +79,9 @@ class Run:
     workdir: Path
     command: str
     env: dict[str, str]
+    # The same sandbox entered as a plain shell (SPEC §3.2). Blank on a run prepared
+    # before paddock could do that, which is a message rather than a broken tab.
+    shell_command: str = ""
 
 
 def find_srt() -> list[str]:
@@ -192,6 +197,23 @@ def pane_command(
     return shlex.join([*find_srt(), "--settings", str(settings), "-c", inner])
 
 
+def host_shell() -> str:
+    """The shell a shell tab runs. The user's, as the `shell` agent uses it."""
+    return os.environ.get("SHELL") or "/bin/sh"
+
+
+def shell_command(profile: Profile, settings: Path, shim: Path, synth: SynthConfig) -> str:
+    """The same sandbox entered as a plain shell: one settings file, one workdir, no agent.
+
+    Composed the way the agent's own command is, so the policy, the PATH and the kept
+    environment cannot drift apart between the two. The config dir variable stays set, so
+    a shell that runs the agent by hand gets the same synthesized config. The agent's
+    command-line flags do not come with it: they are the agent's, not the shell's.
+    """
+    shell = AgentSpec(name="shell", command=host_shell())
+    return pane_command(profile, shell, settings, shim, replace(synth, args=[]))
+
+
 def prepare(profile: Profile) -> Run:
     """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
 
@@ -242,13 +264,26 @@ def prepare(profile: Profile) -> Run:
     logger.debug("settings written %s", log.context(path=settings, size=f"{len(text)} bytes"))
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
+    shell = shell_command(profile, settings, shim, synth)
     script = write_launch_script(run_dir, command)
+    write_launch_script(run_dir, shell, SHELL_SCRIPT)
     # The length, never the command: it carries every environment value the sandbox keeps.
     logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
 
-    run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
+    run = Run(
+        run_dir=run_dir, workdir=workdir, command=command, env=synth.env, shell_command=shell
+    )
     (run_dir / LAUNCH_FILE).write_text(
-        json.dumps({"workdir": str(workdir), "command": command, "env": synth.env}, indent=2) + "\n"
+        json.dumps(
+            {
+                "workdir": str(workdir),
+                "command": command,
+                "env": synth.env,
+                "shell_command": shell,
+            },
+            indent=2,
+        )
+        + "\n"
     )
     return run
 
@@ -263,19 +298,37 @@ def load_run(run_dir: Path) -> Run:
     """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        run = Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
+        run = Run(
+            run_dir,
+            Path(data["workdir"]),
+            str(data["command"]),
+            dict(data["env"]),
+            # Absent on a run prepared before shell tabs existed, which open_pane reports.
+            str(data.get("shell_command", "")),
+        )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
     ensure_launch_script(run_dir, run.command)
+    if run.shell_command:
+        ensure_launch_script(run_dir, run.shell_command, SHELL_SCRIPT)
     return run
 
 
-def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
-    """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
+def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = False) -> str:
+    """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id.
+
+    `shell` runs the user's shell under the same settings file and workdir instead, so the
+    tab is inside the sandbox the agent is in without being a second agent (SPEC §3.2).
+    """
+    if shell and not run.shell_command:
+        raise ValueError(
+            f"the session in {run.run_dir} was prepared before paddock could open a shell "
+            "in it, so start a new session to get one"
+        )
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
-    line = launch_line(run.run_dir)
+    line = launch_line(run.run_dir, SHELL_SCRIPT if shell else LAUNCH_SCRIPT)
     herdr_client.run_in_pane(pane_id, line)
-    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, line=line))
+    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, shell=shell, line=line))
     return pane_id
 
 

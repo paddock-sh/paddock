@@ -511,7 +511,7 @@ def test_attaching_names_the_session_and_keeps_its_workdir() -> None:
     shown = tui.form_rows({"open": "s1"}, Profile(), {}, live)
     rows = dict((label, value) for label, value, _, _ in shown)
 
-    assert rows["Open"] == "Attach: review"
+    assert rows["Open"] == "Attach the agent on review"
     assert rows["Files"] == "the session's own workdir"
 
 
@@ -801,7 +801,7 @@ def test_a_live_session_is_on_the_same_field_as_the_new_one(
     """No cwd: an attached tab belongs in the session's own workdir."""
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
 
-    plan = press(f"{OPEN_FIELD}{DOWN}{DOWN}\rL", lambda: tui.choose(tmp_path))
+    plan = press(f"{OPEN_FIELD}{DOWN}{DOWN}\r\rL", lambda: tui.choose(tmp_path))
 
     assert plan == tui.Attach(ref="s1")
 
@@ -1247,7 +1247,7 @@ def test_the_profile_a_plan_stood_on_is_read_back_off_its_name(config_dir: Path)
 
 def test_a_local_or_attached_tab_gives_back_the_one_answer_it_has() -> None:
     assert tui.answers_from(tui.Local(cwd="/tmp"), {}) == {"open": tui.LOCAL}
-    assert tui.answers_from(tui.Attach(ref="s1"), {}) == {"open": "s1"}
+    assert tui.answers_from(tui.Attach(ref="s1"), {}) == {"open": "s1", "shell": False}
 
 
 # --- what the agent needs on the PATH beyond what was ticked ----------------
@@ -1303,3 +1303,58 @@ def test_the_interpreter_being_there_is_enough_to_choose_it(
     monkeypatch.setattr(shutil, "which", {"codex": "/usr/bin/codex", "node": "/usr/bin/node"}.get)
 
     assert tui.agent_refusal("codex", load_agents()) == ""
+
+
+# --- a shell in a session that is already running ---------------------------
+
+
+def test_the_open_field_asks_what_goes_in_an_attached_tab(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Attaching the agent again and opening a shell are the same field, one question apart."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    agent = press(f"{OPEN_FIELD}{DOWN}{DOWN}\r\rL", lambda: tui.choose(tmp_path))
+    shell = press(f"{OPEN_FIELD}{DOWN}{DOWN}\r{DOWN}\rL", lambda: tui.choose(tmp_path))
+
+    assert agent == tui.Attach(ref="s1", shell=False)
+    assert shell == tui.Attach(ref="s1", shell=True)
+
+
+def test_backing_out_of_that_question_goes_to_the_session_list_not_the_form(
+    press, fake_sessions, tmp_path: Path
+) -> None:
+    """Two screens for one field, so escape backs out one level, as the Files field does."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    keys = f"{OPEN_FIELD}{DOWN}{DOWN}\r{ESC}{DOWN}{DOWN}\r{DOWN}\rL"
+    plan = press(keys, lambda: tui.choose(tmp_path))
+
+    assert plan == tui.Attach(ref="s1", shell=True)
+
+
+def test_a_new_sandbox_is_never_a_shell_attach(press, fake_sessions, tmp_path: Path) -> None:
+    """Nothing is running yet, so there is no second question and nothing to answer it with."""
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    plan = press(f"{OPEN_FIELD}\rL", lambda: tui.choose(tmp_path))
+
+    assert isinstance(plan, tui.NewSession)
+
+
+def test_the_form_says_which_of_the_two_an_attach_is() -> None:
+    live = [Session(session_id="s1", name="review")]
+
+    agent = tui.form_rows({"open": "s1"}, Profile(), {}, live)
+    shell = tui.form_rows({"open": "s1", "shell": True}, Profile(), {}, live)
+
+    assert dict((label, value) for label, value, _, _ in agent)["Open"] == (
+        "Attach the agent on review"
+    )
+    assert dict((label, value) for label, value, _, _ in shell)["Open"] == (
+        "Attach a shell in review"
+    )
+
+
+def test_a_shell_attach_goes_back_to_the_form_as_one() -> None:
+    assert tui.answers_from(tui.Attach(ref="s1", shell=True), {}) == {"open": "s1", "shell": True}

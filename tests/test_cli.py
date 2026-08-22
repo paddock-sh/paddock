@@ -210,7 +210,7 @@ def test_attach_finds_the_session_then_puts_a_tab_on_it(
     assert cli.main(["attach", "review", "--cwd", "/work"]) == 0
     assert rest(fake_sessions.calls) == [
         ("get_session", "review"),
-        ("attach", session, Path("/work")),
+        ("attach", session, Path("/work"), False),
     ]
     assert capsys.readouterr().out.strip() == "wA:p9"
 
@@ -221,7 +221,7 @@ def test_attach_without_a_cwd_leaves_the_session_its_own_workdir(fake_sessions) 
     fake_sessions.registry.append(session)
 
     assert cli.main(["attach", "review"]) == 0
-    assert rest(fake_sessions.calls)[1] == ("attach", session, None)
+    assert rest(fake_sessions.calls)[1] == ("attach", session, None, False)
 
 
 def test_attaching_to_a_session_that_is_gone_says_so(
@@ -776,3 +776,41 @@ def test_a_dry_run_names_what_the_agent_will_add_to_the_path() -> None:
 
 def test_a_dry_run_says_nothing_extra_for_an_agent_that_needs_nothing() -> None:
     assert "needed by" not in cli.describe(tui.NewSession(profile=Profile(agent="claude")))
+
+
+# --- a shell in a sandbox that is already running ---------------------------
+
+
+def test_attach_shell_asks_sessions_for_a_shell(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session = Session(session_id="s1", name="review")
+    fake_sessions.registry.append(session)
+
+    assert cli.main(["attach", "review", "--shell"]) == 0
+    assert rest(fake_sessions.calls)[1] == ("attach", session, None, True)
+
+
+def test_attach_without_the_flag_is_still_the_agent(fake_sessions) -> None:
+    fake_sessions.registry.append(Session(session_id="s1", name="review"))
+
+    assert cli.main(["attach", "review"]) == 0
+    assert rest(fake_sessions.calls)[1][3] is False
+
+
+def test_a_dry_run_says_which_of_the_two_it_would_open() -> None:
+    shell = cli.describe(tui.Attach(ref="review", shell=True))
+    agent = cli.describe(tui.Attach(ref="review"))
+
+    assert "would attach a shell to session 'review'" in shell
+    assert "would attach a tab to session 'review'" in agent
+
+
+def test_the_chooser_can_ask_for_a_shell_too(fake_sessions, chooser) -> None:
+    """The Open field's second question, carried through the same plan as everything else."""
+    session = Session(session_id="s1", name="review")
+    fake_sessions.registry.append(session)
+    chooser(tui.Attach(ref="s1", shell=True))
+
+    assert cli.main(["choose"]) == 0
+    assert rest(fake_sessions.calls)[1] == ("attach", session, None, True)

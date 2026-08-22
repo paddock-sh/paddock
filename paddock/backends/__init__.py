@@ -26,6 +26,10 @@ LAUNCH_FILE = "launch.json"
 # The command as a script, because the pane is sent a line, not a file (see launch_line).
 LAUNCH_SCRIPT = "launch.sh"
 
+# The same run entered as a plain shell instead of as the agent (SPEC §3.2). A second script
+# rather than a second kind of pane: a shell tab is held, logged and replayed like any other.
+SHELL_SCRIPT = "shell.sh"
+
 # A launch that fails does so at once. A non-zero exit later than this is the agent ending,
 # ctrl-c included, and holding the pane on that would hold it hostage.
 HOLD_WITHIN_SECONDS = 10
@@ -58,19 +62,20 @@ def new_run_dir() -> Path:
     return Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-"), dir=runs))
 
 
-def write_launch_script(run_dir: Path, command: str) -> Path:
+def write_launch_script(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) -> Path:
     """Put the composed command in the run dir, where the pane can run it by name.
 
     The run dir is not writable from inside the sandbox, so the agent cannot rewrite
-    the script that launched it.
+    the script that launched it. `name` is which of the run's scripts this is: the agent's,
+    or the shell one that enters the same sandbox without it.
     """
-    script = run_dir / LAUNCH_SCRIPT
+    script = run_dir / name
     script.write_text(script_text(run_dir, command))
     script.chmod(0o700)
     return script
 
 
-def ensure_launch_script(run_dir: Path, command: str) -> bool:
+def ensure_launch_script(run_dir: Path, command: str, name: str = LAUNCH_SCRIPT) -> bool:
     """Rewrite the script when it is not the one this paddock would write. Did it rewrite?
 
     This covers a run dir prepared before paddock wrote scripts at all (it has none, and
@@ -78,17 +83,17 @@ def ensure_launch_script(run_dir: Path, command: str) -> bool:
     record holds the exact command either way, so a session gets today's launch behaviour
     on its next tab, on whichever backend it runs.
     """
-    if written_script(run_dir) == script_text(run_dir, command):
+    if written_script(run_dir, name) == script_text(run_dir, command):
         return False
-    write_launch_script(run_dir, command)
-    logger.debug("launch script rewritten %s", log.context(path=run_dir / LAUNCH_SCRIPT))
+    write_launch_script(run_dir, command, name)
+    logger.debug("launch script rewritten %s", log.context(path=run_dir / name))
     return True
 
 
-def written_script(run_dir: Path) -> str:
+def written_script(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:
     """The script as it is on disk, or nothing when there is none."""
     try:
-        return (run_dir / LAUNCH_SCRIPT).read_text()
+        return (run_dir / name).read_text()
     except OSError:
         return ""
 
@@ -148,11 +153,11 @@ def script_text(run_dir: Path, command: str) -> str:
     )
 
 
-def launch_line(run_dir: Path) -> str:
+def launch_line(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:
     """What `herdr pane run` is sent: short on purpose.
 
     herdr types the line into the pane's shell, and a tty in canonical mode drops
     everything past 1024 bytes, which a composed command passes easily. `exec`
     replaces that shell, so closing the sandbox closes the pane.
     """
-    return f"exec /bin/sh {shlex.quote(str(run_dir / LAUNCH_SCRIPT))}"
+    return f"exec /bin/sh {shlex.quote(str(run_dir / name))}"

@@ -73,7 +73,10 @@ cancels from any depth, and nothing has been launched or written by then.
 
 `Open` lists every live session by its name, backend, agent, profile and
 attached tabs, so a second tab on one of them is a pick and not a screen of its
-own.
+own. Picking one asks what goes in the tab: the agent again, or a plain shell
+inside the same sandbox, which is `paddock attach <session> --shell` on the
+command line. A shell tab is labelled `sbx:<name> (shell)` and counts as a tab of
+the session like any other.
 
 `s` saves the answers as a profile, which makes them one pick next time. It is
 for a sandbox: a local tab and an attached one have no permissions of their own
@@ -135,6 +138,7 @@ The popup is the usual way in. The same jobs work without questions:
 ```sh
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
+paddock attach review --shell   # ... or a plain shell inside its sandbox
 paddock profiles                # list saved profiles
 paddock gc                      # collect sessions whose tabs are all closed
 paddock logs                    # where paddock logged what it did, and the end of it
@@ -142,8 +146,9 @@ paddock init                    # wire the chooser into herdr's config
 ```
 
 `launch` and `attach` take `--cwd` to say which directory to work in, and
-`--dry-run` prints what would happen instead of doing it. `paddock init` also
-takes `--undo`.
+`--dry-run` prints what would happen instead of doing it. `attach` takes
+`--shell` for a plain shell inside the sandbox instead of the agent. `paddock
+init` also takes `--undo`.
 
 ## Install
 

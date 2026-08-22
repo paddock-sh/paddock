@@ -65,8 +65,8 @@ def create_session(profile: Profile, name: str | None = None, backend: str = "sr
     )
 
 
-def attach(session: Session, cwd: Path | None = None) -> str:
-    calls.append(("attach", session, cwd))
+def attach(session: Session, cwd: Path | None = None, shell: bool = False) -> str:
+    calls.append(("attach", session, cwd, shell))
     return "wA:p9"
 
 

@@ -836,3 +836,67 @@ def test_the_record_wins_over_a_handle_that_disagrees(
     msb.collect(run.run_dir, "paddock-stale")
 
     assert msb_calls[-1] == ["msb", "rm", "-f", run.vm_handle]
+
+
+# --- a shell in the guest the agent is in -----------------------------------
+
+
+def test_a_shell_tab_execs_the_guests_own_shell_into_the_running_vm(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    """Same guest, same /work, same process namespace: that is what `msb exec` joins.
+
+    The shell is named. `msb exec` with no argv runs the image's own command, which for
+    node:22-slim is the Node REPL, and a tab that drops into that is not a shell tab.
+    """
+    run = msb.prepare(CLAUDE)
+
+    assert run.shell_command == f"msb exec --tty {run.vm_handle} -- /bin/sh"
+    assert run.command.startswith(f"msb exec --tty {run.vm_handle} -- claude")
+
+
+def test_the_shell_script_is_a_second_script_beside_the_agents(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path
+) -> None:
+    run = msb.prepare(CLAUDE)
+
+    assert (run.run_dir / "shell.sh").is_file()
+    assert run.shell_command in (run.run_dir / "shell.sh").read_text()
+
+
+def test_a_shell_pane_runs_the_shell_script_and_the_agent_pane_the_other(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path, client: FakeClient
+) -> None:
+    run = msb.prepare(CLAUDE)
+
+    msb.open_pane(run, label="sbx:demo")
+    msb.open_pane(run, label="sbx:demo (shell)", shell=True)
+
+    assert client.commands[0][1].endswith("launch.sh")
+    assert client.commands[1][1].endswith("shell.sh")
+    assert [label for _, label, _ in client.tabs] == ["sbx:demo", "sbx:demo (shell)"]
+
+
+def test_a_shell_tab_is_refused_when_the_vm_is_gone_like_any_other(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path, client: FakeClient
+) -> None:
+    run = msb.prepare(CLAUDE)
+    msb._run(*msb.stop_argv(run.vm_handle))
+
+    with pytest.raises(SandboxGone):
+        msb.open_pane(run, shell=True)
+
+
+def test_a_run_prepared_before_shell_tabs_says_so_instead_of_opening_a_dead_one(
+    which: dict[str, str], msb_calls: list[list[str]], home: Path, client: FakeClient
+) -> None:
+    run = msb.prepare(CLAUDE)
+    record = json.loads((run.run_dir / "launch.json").read_text())
+    del record["shell_command"]
+    (run.run_dir / "launch.json").write_text(json.dumps(record))
+
+    reloaded = msb.load_run(run.run_dir)
+
+    with pytest.raises(ValueError, match="before paddock could open a shell"):
+        msb.open_pane(reloaded, shell=True)
+    assert client.commands == []

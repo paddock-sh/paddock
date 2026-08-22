@@ -638,6 +638,18 @@ of why people want a group. Shared *runtime* is what `msb` adds. Seatbelt and
 bubblewrap wrap a process tree and have no guest for a second process to join, so
 srt can share policy and files, never a runtime. The UI must not imply otherwise.
 
+**A tab can hold a shell instead of the agent.** `paddock attach <session>
+--shell`, or the second question the chooser's Open field asks about a live
+session, opens the user's shell inside the sandbox the agent is already in: srt
+runs it under the same settings file and workdir, and msb execs the guest's `/bin/sh`
+into the running VM, so it lands beside the agent in one process namespace.
+Named, not left to the image: `msb exec` with no argv runs the image's own
+command, which for `node:22-slim` is the Node REPL. It is a tab on the session like any other, registered and counted, and
+the session ends when the last of them closes, whichever kind it was. Each run
+dir holds two scripts for this, `launch.sh` and `shell.sh`, composed the same way
+and wrapped by the same launcher (§9), so a shell tab that cannot start is held,
+logged and replayed exactly as an agent tab is.
+
 ### 3.3 Workspace default binding
 
 An optional binding (*new tabs in workspace W attach to session S*) stored in
@@ -734,8 +746,9 @@ before any tab exists:
 
 ### 3.5 Pane labels
 
-Panes are labelled `sbx:<session>`, so groupings are visible in the tab bar. An
-unlabelled tab is local: no session, no sandbox.
+Panes are labelled `sbx:<session>`, so groupings are visible in the tab bar. A
+shell tab is `sbx:<session> (shell)`, because it is the same sandbox and not the
+same thing. An unlabelled tab is local: no session, no sandbox.
 
 ---
 

@@ -19,6 +19,7 @@ node "HOST" as Host {
     component "tab 3\nlabel: sbx:build" as T3
     component "tab 4\nlabel: sbx:build" as T4
     component "tab 5\nlabel: sbx:review" as T5
+    component "tab 6\nlabel: sbx:review (shell)" as T6
   }
 
   database "session registry\n(plugin state dir)\nsession_id, name, backend,\nprofile, attached_panes,\nvm_handle, created_at" as Registry
@@ -40,8 +41,8 @@ frame "Session A, 'build'   backend: msb\nSHARED RUNTIME: one persistent microVM
 }
 
 frame "Session B, 'review'   backend: srt\nSHARED POLICY + FILES, separate process trees" as SessionB {
-  component "srt-wrapped process tree\n(tab 5)" as P5
-  component "(a second attached tab would get\nits own process tree here:\nsame settings file, same workdir)" as P6
+  component "srt-wrapped process tree\n(tab 5, the agent)" as P5
+  component "srt-wrapped shell\n(tab 6, attached with --shell)\nsame settings file, same workdir,\nits own process tree" as P6
 }
 
 T1 --> HostFs : unsandboxed
@@ -58,10 +59,11 @@ G4 --> GuestProcs
 GuestWork --> HostFs : the only host directory in the guest,\nread-write through virtiofs
 
 T5 --> P5 : attach = new process under\nthe same settings + workdir
+T6 --> P6 : attach ~--shell = the user's shell\nunder that same policy
 P5 --> SrtSettings : enforced by
-P6 ..> SrtSettings
+P6 --> SrtSettings : enforced by
 P5 --> SrtWork : reads / writes
-P6 ..> SrtWork
+P6 --> SrtWork : reads / writes
 SrtWork -[hidden]- HostFs
 
 Registry ..> SessionA : tracks
