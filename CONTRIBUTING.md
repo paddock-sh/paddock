@@ -14,7 +14,7 @@ Nothing is committed directly to either.
 Every major change is an EPIC with a `snake_case` slug. The first is
 `sandbox_core_launcher`.
 
-The epic branch is named exactly the slug — not `epic/<slug>` — and is cut from
+The epic branch is named exactly the slug, not `epic/<slug>`, and is cut from
 `develop`:
 
 ```sh
@@ -51,7 +51,7 @@ the slug in brackets:
 <slug>-<feature>  --PR-->  <slug>  --PR-->  develop  --PR-->  main
 ```
 
-`develop` is promoted to `main` by PR when it is stable — not on a schedule.
+`develop` is promoted to `main` by PR when it is stable, not on a schedule.
 
 ## Development process
 
@@ -60,8 +60,8 @@ the slug in brackets:
 Write the tests first, with `pytest`. A PR that adds implementation without
 tests will be sent back.
 
-**Sandbox backends are mocked.** CI runs on `ubuntu-latest` only — no macOS
-runners, a cost decision — so no test may need Seatbelt, bubblewrap, `srt`,
+**Sandbox backends are mocked.** CI runs on `ubuntu-latest` only (no macOS
+runners, a cost decision), so no test may need Seatbelt, bubblewrap, `srt`,
 `msb`, or a running herdr server. Assert on the generated settings JSON, shim dir
 contents and command strings instead.
 
@@ -78,12 +78,12 @@ that leaves tests stale.
 
 Three diagrams are seeded:
 
-- `architecture.puml` — components: keybinding popup, chooser TUI, sessions,
+- `architecture.puml` holds the components: keybinding popup, chooser TUI, sessions,
   profiles, agent registry, `Backend` interface, `srt` / `microsandbox`, herdr
   CLI.
-- `launch_sequence.puml` — a sandboxed launch end to end, from `prefix+c` to
+- `launch_sequence.puml` is a sandboxed launch end to end, from `prefix+c` to
   `herdr pane run`.
-- `scoping_model.puml` — sandbox sessions: one workspace with local tabs, a
+- `scoping_model.puml` covers sandbox sessions: one workspace with local tabs, a
   two-tab group on a microVM session, and a tab on an srt session.
 
 Name the real modules and commands, label the arrows with what crosses them, and
@@ -106,7 +106,7 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-All three must be clean before you push. `uv.lock` is committed — if your change
+All three must be clean before you push. `uv.lock` is committed: if your change
 moves dependencies, commit the updated lockfile with it.
 
 ### CI
@@ -143,8 +143,8 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
   sessions are in [docs/SPEC.md](docs/SPEC.md) and the diagrams. They are not
   stubbed, not `NotImplementedError`-ed, and not allowed for by spare
   parameters. A spec holds a future design; dead code does not. One carve-out: a
-  **data-schema field** the SPEC already fixes may ship early — the agent
-  registry's `image` ([§2.2](docs/SPEC.md#22-v11--microsandbox-design-record-not-stubbed-in-v1))
+  **data-schema field** the SPEC already fixes may ship early. The agent
+  registry's `image` ([§2.2](docs/SPEC.md#22-v11-microsandbox-design-record-not-stubbed-in-v1))
   means user files survive the second backend without a migration. Spare *code*
   paths stay banned.
 - **Small modules, plain functions.** Prefer a function to a class and a class to
@@ -157,6 +157,9 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
 **Documentation is concise and plain English.**
 
 - Short sentences. Everyday words over jargon. No filler.
+- **No em dashes anywhere in the repo**, docs, comments, diagrams and test names
+  alike. Rewrite the sentence around it: a full stop, a comma, a colon, or
+  brackets. A double hyphen is not a substitute.
 - The README says what paddock is and how to use it, in as few words as stay
   clear.
 - SPEC sections lead with the point, then give the detail.
@@ -170,7 +173,7 @@ adding a feature.
 
 Three headings, a few lines each:
 
-**What** — what changed. **Why** — why it needed changing. **Tests** — what
+**What**: what changed. **Why**: why it needed changing. **Tests**: what
 proves it works.
 
 Plain English, no jargon, readable at a glance. `.github/pull_request_template.md`

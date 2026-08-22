@@ -41,7 +41,7 @@ jobs:
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No .puml files under docs/diagrams/ — skipping."
+            echo "No .puml files under docs/diagrams/, skipping."
           fi
 
       - name: Install PlantUML

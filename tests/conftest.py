@@ -48,7 +48,7 @@ def fake_sessions(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 
 @pytest.fixture
 def real_subprocess() -> None:
-    """Ask for this to run a command for real — a stub script, never herdr or srt."""
+    """Ask for this to run a command for real: a stub script, never herdr or srt."""
 
 
 @pytest.fixture(autouse=True)

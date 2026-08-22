@@ -255,7 +255,7 @@ def test_a_redirected_agents_credentials_are_read_only(tmp_path: Path) -> None:
 
 
 def test_what_the_config_dir_copied_is_hidden_on_the_host(tmp_path: Path) -> None:
-    """The sandbox has its own copy, so it never needs — and never gets — the host's."""
+    """The sandbox has its own copy, so it never needs the host's, and never gets it."""
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path / "work", REDIRECTED)
 
     assert str(HOME / ".claude.json") in settings["filesystem"]["denyRead"]
@@ -461,7 +461,7 @@ def test_a_path_with_a_space_survives_both_layers_of_quoting(which: dict[str, st
 def test_the_composed_command_survives_a_real_shell(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """srt is handed the command by a shell, so run it past one — a stub srt, never the real one."""
+    """srt is handed the command by a shell, so run it past one: a stub srt, never the real one."""
     stub_dir = tmp_path / "stub bin"
     stub_dir.mkdir()
     stub = stub_dir / "srt"

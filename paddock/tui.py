@@ -1,7 +1,7 @@
 """The chooser: the questions the popup asks, and the plan it hands back.
 
-The questions are a thin shell. Everything that decides something — which
-sessions to offer, which tools the host has, the answers as a `Profile` — is a
+The questions are a thin shell. Everything that decides something (which
+sessions to offer, which tools the host has, the answers as a `Profile`) is a
 plain function here, so it is tested without a terminal. Nothing in this module
 launches anything: `choose()` returns a plan and `cli.py` carries it out, which
 is why backing out of a question costs nothing.
@@ -163,10 +163,10 @@ def first_choices(has_sessions: bool) -> list[tuple[str, str]]:
 
 
 def session_label(session: sessions.Session) -> str:
-    """A session by what it is — agent, permissions, size — not by its name alone (SPEC §3.1)."""
+    """A session by what it is (agent, permissions, size), not by its name alone (SPEC §3.1)."""
     panes = len(session.pane_ids)
     return (
-        f"{session.name} — {session.agent} / {session.profile_name}, "
+        f"{session.name}: {session.agent} / {session.profile_name}, "
         f"{panes} tab{'' if panes == 1 else 's'}"
     )
 
@@ -190,7 +190,7 @@ def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str]]:
 def tool_choices(base: Profile) -> list[tuple[str, str, bool]]:
     """Tools to offer, as title, name and whether it is ticked.
 
-    Candidates the host does not have are left out — nobody needs a checklist of tools
+    Candidates the host does not have are left out: nobody needs a checklist of tools
     they never installed. The base profile's own tools stay on the list either way,
     marked when they are missing, so editing a profile on another machine cannot
     quietly drop what that machine cannot see.
@@ -299,7 +299,7 @@ def remember_agent(key: str, command: str) -> Path | None:
     if known is not None:
         if known.command == command:
             return None
-        raise ValueError(f"agent {key!r} already runs {known.command!r} — choose another name")
+        raise ValueError(f"agent {key!r} already runs {known.command!r}, so choose another name")
     agent_dir().mkdir(parents=True, exist_ok=True)
     path = agent_dir() / f"{key}.json"
     path.write_text(json.dumps({"name": key, "command": command}, indent=2) + "\n")

@@ -82,7 +82,7 @@ def test_a_session_is_shown_by_what_it_is() -> None:
         name="review", agent="claude", profile_name="hardened", pane_ids=["wA:p1", "wA:p2"]
     )
 
-    assert tui.session_label(session) == "review — claude / hardened, 2 tabs"
+    assert tui.session_label(session) == "review: claude / hardened, 2 tabs"
 
 
 def test_one_tab_is_not_two() -> None:

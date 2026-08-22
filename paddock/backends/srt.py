@@ -1,6 +1,6 @@
 """The srt backend: a settings file, a PATH shim dir, and the pane command that runs the agent.
 
-srt is Anthropic's sandbox-runtime — Seatbelt on macOS, bubblewrap on Linux. It
+srt is Anthropic's sandbox-runtime: Seatbelt on macOS, bubblewrap on Linux. It
 enforces write paths, read denials and the domain allowlist. Tool selection is a
 PATH shim dir, which is a soft allowlist: an absolute path still reaches any
 binary on the host (SPEC §4.1).
@@ -28,7 +28,7 @@ from paddock.synth_config import SynthConfig
 
 INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
 
-# All the sandbox inherits from the popup. Anything else — API tokens above all — stays out.
+# All the sandbox inherits from the popup. Anything else, API tokens above all, stays out.
 KEEP_ENV = ("HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR")
 
 # srt sets these in the shell it spawns, per invocation: they point the sandbox at its own
@@ -150,7 +150,7 @@ def build_settings(
         allow_write += config_dirs
     else:
         # Layer 3: the agent writes in the synthesized dir instead, and its real config dir
-        # is denied both ways — so the skills and MCP servers nobody ticked are not there
+        # is denied both ways, so the skills and MCP servers nobody ticked are not there
         # to read (SPEC §4.3).
         allow_write.append(synth.dir)
         # What that dir copied, the sandbox has its own of, so the host's is hidden too.
@@ -206,7 +206,7 @@ def prepare(profile: Profile) -> Run:
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
     # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
-    # An agent named by absolute path — the shell, say — is found without one.
+    # An agent named by absolute path (the shell, say) is found without one.
     tools = list(profile.tools) + shlex.split(agent.command)[:1]
     shim, skipped = build_shim_dir(run_dir, tools)
     if skipped:

@@ -1,5 +1,5 @@
 @startuml profiles_and_agents
-title paddock — profiles and the agent registry
+title paddock: profiles and the agent registry
 
 allowmixing
 set separator none
