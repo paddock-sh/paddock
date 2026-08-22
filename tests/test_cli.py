@@ -203,6 +203,28 @@ def test_launch_starts_a_session_from_a_saved_profile(
     assert capsys.readouterr().out.strip() == "wA:p3"
 
 
+def test_launch_can_ask_for_the_other_backend(fake_sessions) -> None:
+    """Manual testing of msb until the chooser offers it."""
+    assert cli.main(["launch", "offline-shell", "--backend", "msb"]) == 0
+
+    assert fake_sessions.calls[0][3] == "msb"
+
+
+def test_launch_is_an_srt_session_unless_another_backend_is_named(fake_sessions) -> None:
+    assert cli.main(["launch", "offline-shell"]) == 0
+
+    assert fake_sessions.calls[0][3] == "srt"
+
+
+def test_a_dry_run_launch_names_a_backend_that_is_not_the_default(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["launch", "offline-shell", "--backend", "msb", "--dry-run"]) == 0
+
+    assert "msb" in capsys.readouterr().out
+    assert fake_sessions.calls == []
+
+
 def test_launch_can_share_the_directory_it_is_run_from(fake_sessions) -> None:
     assert cli.main(["launch", "claude-default", "--cwd", "/work/repo"]) == 0
 

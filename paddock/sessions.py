@@ -1,8 +1,9 @@
-"""Sandbox sessions: one settings file and workdir, with the tabs attached to it (SPEC §3).
+"""Sandbox sessions: one running sandbox with a name, and the tabs attached to it (SPEC §3).
 
 A session is registered in `<state>/sessions.json` and outlives the popup that made it,
-and herdr restarts. Attaching starts a new process under the same policy. With srt there
-is no guest for a second process to join, so tabs share files, never a process tree.
+and herdr restarts. What attaching means belongs to the backend: srt has no guest for a
+second process to join, so its tabs share files and never a process tree, while msb execs
+every tab into the same microVM.
 """
 
 from __future__ import annotations
@@ -21,15 +22,14 @@ from pathlib import Path
 from types import ModuleType
 
 from paddock import herdr_client, state_dir, synth_config
-from paddock.backends import srt
+from paddock.backends import SandboxGone, microsandbox, srt
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
 LOCK_FILE = "sessions.lock"
 
-# Which module runs a session, by the name its record carries. srt is the only one in v1;
-# microsandbox joins the dict when it is built (SPEC §2.2).
-BACKENDS: dict[str, ModuleType] = {"srt": srt}
+# Which module runs a session, by the name its record carries (SPEC §2.2).
+BACKENDS: dict[str, ModuleType] = {"srt": srt, "msb": microsandbox}
 
 DEFAULT_BACKEND = "srt"
 
@@ -46,6 +46,8 @@ class Session:
     pane_ids: list[str]
     # A record written before there was a second backend is an srt session (SPEC §3.4).
     backend: str = DEFAULT_BACKEND
+    # The sandbox msb runs this session in. Blank when the backend has no VM to name.
+    vm_handle: str = ""
 
     def __post_init__(self) -> None:
         # Keys from the record that this paddock has no field for. A newer one may have
@@ -100,7 +102,9 @@ def get_session(ref: str) -> Session | None:
     return None
 
 
-def create_session(profile: Profile, name: str | None = None) -> Session:
+def create_session(
+    profile: Profile, name: str | None = None, backend: str = DEFAULT_BACKEND
+) -> Session:
     """Register a session and get its run ready on disk. Opens no pane."""
     with _locked():
         live = list_sessions()
@@ -113,7 +117,6 @@ def create_session(profile: Profile, name: str | None = None) -> Session:
             raise ValueError(f"a live session already answers to {name!r}")
 
         # Prepared before the session is registered, so a failed setup leaves no dead entry.
-        backend = DEFAULT_BACKEND
         run = backend_for(backend).prepare(profile)
         session = Session(
             session_id=_generate_id(taken),
@@ -125,6 +128,8 @@ def create_session(profile: Profile, name: str | None = None) -> Session:
             keep_alive=False,
             pane_ids=[],
             backend=backend,
+            # Only a backend with a VM names one, so this is blank for the rest.
+            vm_handle=getattr(run, "vm_handle", ""),
         )
         _save(live + [session])
         return session
@@ -133,20 +138,35 @@ def create_session(profile: Profile, name: str | None = None) -> Session:
 def attach(session: Session, cwd: Path | None = None) -> str:
     """Open a tab on the session and start the agent in it. Returns the pane id.
 
-    The tab starts in the session's workdir unless another directory is named.
+    The tab starts in the session's workdir unless another directory is named, which
+    not every backend can honour: an msb tab always opens in the guest (SPEC §2.2).
     """
     backend = backend_for(session.backend)
     run = backend.load_run(Path(session.run_dir))
-    pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+    try:
+        pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+    except SandboxGone as error:
+        # There is nothing left to attach to, so the session ends here rather than
+        # sitting in the registry offering tabs that cannot open (SPEC §3.4).
+        _forget(session)
+        raise SandboxGone(f"session {session.name!r} is over: {error}") from error
     session.pane_ids.append(pane_id)
     _record(session)
     return pane_id
 
 
-def launch(profile: Profile, name: str | None = None) -> tuple[Session, str]:
+def launch(
+    profile: Profile, name: str | None = None, backend: str = DEFAULT_BACKEND
+) -> tuple[Session, str]:
     """A new session with its first tab: what the chooser does for "New sandbox session"."""
-    session = create_session(profile, name)
-    return session, attach(session)
+    session = create_session(profile, name, backend)
+    try:
+        return session, attach(session)
+    except Exception as error:
+        # create_session has already booted whatever the backend runs. A session that
+        # never got its first tab must not keep that running, or sit in the registry.
+        _forget(session)
+        raise RuntimeError(f"{_describe(session)} could not open its first tab: {error}") from error
 
 
 def remove_pane(pane_id: str) -> None:
@@ -165,14 +185,47 @@ def remove_pane(pane_id: str) -> None:
             kept.append(session)
         _save(kept)
         for session in collected:
-            # The run dir stays on disk, because deleting a workdir would lose work, but the
-            # token in it does not outlive the session (SPEC §8).
-            synth_config.discard_credentials(Path(session.run_dir))
+            _collect(session)
 
 
 def launch_local(cwd: Path | None = None) -> str:
     """The chooser's other branch: an ordinary tab. No session, no sandbox, no label."""
     return herdr_client.create_tab(cwd or Path.cwd())
+
+
+def _collect(session: Session) -> None:
+    """End a session nobody is attached to any more (SPEC §3.4).
+
+    The run dir stays on disk, because deleting a workdir would lose work, but the token
+    in it does not outlive the session (SPEC §8), and neither does its sandbox. A backend
+    this paddock does not have cannot be asked, and a pane closing is no place to raise:
+    say what was left running and carry on.
+    """
+    synth_config.discard_credentials(Path(session.run_dir))
+    try:
+        backend = backend_for(session.backend)
+    except ValueError as error:
+        print(f"paddock: {error}", file=sys.stderr)
+        return
+    backend.collect(Path(session.run_dir), session.vm_handle)
+
+
+def _forget(session: Session) -> None:
+    """Take a session out of the registry and end it. Doing it twice is not an error."""
+    with _locked():
+        live = list_sessions()
+        kept = [other for other in live if other.session_id != session.session_id]
+        if len(kept) == len(live):
+            return  # another path collected it already
+        _save(kept)
+    _collect(session)
+
+
+def _describe(session: Session) -> str:
+    """A session in an error message: its name, and the VM it runs in when it has one."""
+    if session.vm_handle:
+        return f"session {session.name!r} (microVM {session.vm_handle})"
+    return f"session {session.name!r}"
 
 
 @contextmanager
@@ -231,8 +284,9 @@ def _session(record: object) -> Session | None:
     # Field names and their types. asdict, not vars: a session carries more than its fields.
     shape = asdict(Session("", "", "", "", "", "", False, []))
     values = {key: value for key, value in record.items() if key in shape}
-    # The one field with a default: a record written before it existed is still a session.
-    values.setdefault("backend", DEFAULT_BACKEND)
+    # The fields with a default: a record written before they existed is still a session.
+    for key in ("backend", "vm_handle"):
+        values.setdefault(key, shape[key])
     if set(values) != set(shape):
         return None
     # A record of the wrong shape is dropped whole. Half of a session is worse than none.

@@ -1,0 +1,94 @@
+@startuml msb_flow
+title paddock: an msb session, from boot to collected (SPEC 2.2)
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+
+actor User
+participant "cli.py\n`paddock launch <profile>\n~--backend msb`" as CLI
+participant "sessions.py" as Sessions
+participant "backends/microsandbox.py" as Backend
+participant "herdr_client.py" as Client
+participant "Herdr" as Herdr
+participant "msb\n(one host process per VM)" as Msb
+participant "guest\n(alpine microVM)" as Guest
+
+== create the session ==
+
+User -> CLI : paddock launch msb-live ~--backend msb
+CLI -> Sessions : launch(profile, name, backend="msb")
+activate Sessions
+Sessions -> Sessions : create_session(profile, name, "msb")\nbackend_for("msb") -> the microsandbox module
+Sessions -> Backend : prepare(profile)
+activate Backend
+Backend -> Backend : profile.agent must be `shell`\n(any other agent is refused here, before a VM exists:\nprovisioning an agent in the guest is the next feature)
+Backend -> Backend : new_run_dir() -> <state>/runs/<timestamp>-<rand>/\nvm_handle -> paddock-<that directory's name>\nworkdir_for(profile) -> shared_dir, else run_dir/work,\nresolved, because msb mounts the source as written
+Backend -> Msb : msb create ~--name paddock-<run>\n~--mount-dir <resolved workdir>:/work ~--workdir /work\n~--net-default deny [~--net-rule allow@dns\n~--net-rule allow@<domain>:tcp:443 per allowed domain]\n<image from the agent entry, else alpine>
+activate Msb
+Msb -> Guest : boot (175ms to usable, measured in the spike)
+activate Guest
+Msb --> Backend : created
+Backend -> Backend : write run_dir/launch.sh:\n`msb exec ~--tty paddock-<run>`\nwrite run_dir/launch.json: vm_handle, workdir, command
+Backend --> Sessions : Run(run_dir, workdir, vm_handle, command)
+deactivate Backend
+Sessions -> Sessions : register in <state>/sessions.json\nwith backend="msb" and vm_handle
+
+== attach a tab (once now, again for every later tab) ==
+
+Sessions -> Backend : load_run(run_dir) then open_pane(run, label="sbx:<session>")
+activate Backend
+Backend -> Client : create_tab(workdir, label)
+note right
+  The tab's own cwd is the HOST side of the mount,
+  so the pane and the guest shell see the same files.
+  No env is passed: guest variables are set on
+  `msb create` with -e, not by the host tab.
+end note
+Client -> Herdr : herdr tab create ~--cwd <workdir> ~--label sbx:<session> ~--focus
+Herdr --> Client : {"result":{"root_pane":{"pane_id":"wA:pA"}}}
+Backend -> Client : run_in_pane("wA:pA", launch_line(run_dir))
+Client -> Herdr : herdr pane run wA:pA\n`exec /bin/sh <run_dir>/launch.sh`
+deactivate Backend
+Herdr -> Msb : the pane's shell runs `msb exec ~--tty paddock-<run>`
+Msb -> Guest : exec a PTY shell (20ms), in the same process namespace\nas every other tab on this session
+Guest --> User : a shell in the guest, at /work
+Sessions --> CLI : (session, "wA:pA")
+deactivate Sessions
+
+== collect the session ==
+
+User -> Herdr : closes the last tab on the session
+Herdr -> Sessions : remove_pane("wA:pA")
+note right
+  The hook that calls this on a pane closing
+  is not wired up yet. Everything below it is.
+end note
+activate Sessions
+Sessions -> Sessions : last pane, and keep_alive is not set,\nso drop the session from the registry
+Sessions -> Backend : collect(run_dir)
+activate Backend
+Backend -> Backend : load_run(run_dir).vm_handle
+Backend -> Msb : msb rm -f paddock-<run>
+Msb -> Guest : destroy
+deactivate Guest
+deactivate Msb
+note right
+  Always -f: `msb rm` on its own is a silent
+  no-op on a running sandbox. A VM that is
+  already gone is reported on stderr, not raised:
+  the session is over either way.
+end note
+deactivate Backend
+deactivate Sessions
+
+note over Sessions, Guest
+  What the run dir keeps: launch.json and launch.sh, and work/
+  when the profile shares no host directory. Collecting a session
+  leaves them, because deleting a workdir would lose work.
+
+  What the guest never had: the host filesystem. An unmounted path
+  is absent, not denied, so there is no PATH shim dir and no
+  deny list to get right (SPEC 4.1).
+end note
+
+@enduml

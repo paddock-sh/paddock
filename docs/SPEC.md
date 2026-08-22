@@ -19,6 +19,7 @@ see [CONTRIBUTING.md § Design principles](../CONTRIBUTING.md#design-principles)
 
 Diagrams: [`architecture.puml`](diagrams/architecture.puml),
 [`launch_sequence.puml`](diagrams/launch_sequence.puml),
+[`msb_flow.puml`](diagrams/msb_flow.puml),
 [`scoping_model.puml`](diagrams/scoping_model.puml),
 [`profiles_and_agents.puml`](diagrams/profiles_and_agents.puml),
 [`chooser_flow.puml`](diagrams/chooser_flow.puml),
@@ -136,26 +137,37 @@ sugar over it. No manifest is written in v1.
 
 ## 2. Backends
 
-One interface, in two halves:
+One interface, in four calls:
 
 ```
-Backend.prepare(profile) -> run          # settings file, shim dir, config dir, command
-Backend.load_run(run_dir) -> run         # a prepared run read back, for a later tab
-Backend.open_pane(run, label) -> pane id # a tab on a prepared run
+Backend.prepare(profile) -> run             # everything the run needs, written or booted
+Backend.load_run(run_dir) -> run            # a prepared run read back, for a later tab
+Backend.open_pane(run, label) -> pane id    # a tab on a prepared run
+Backend.collect(run_dir, vm_handle)         # nobody is attached: stop what is running
 ```
+
+`open_pane` raises `SandboxGone` when the sandbox the run names is not there any more,
+and sessions ends that session rather than leaving a tab that cannot open (§3.4).
+`collect` is given the registry's `vm_handle` as well as the run dir, so a run
+directory that lost its record does not leak a VM.
 
 They are separate because a session is prepared once and attached to many times
-(§3.2). A backend works the whole launch out as plain functions, then opens the
-tab and starts the command through `herdr_client` (§7). `herdr_client` is the seam
-every test mocks, so a backend is still testable with no herdr server and no
-sandbox. Sessions (§3) drive both calls; a backend knows nothing about the
-registry. Which module runs a session is the `backend` name in its record
-(§3.4), looked up in a dict of name to module in `sessions.py`.
+(§3.2), and because what a session leaves running outlives its last tab. A backend
+works the whole launch out as plain functions, then opens the tab and starts the
+command through `herdr_client` (§7). `herdr_client` is the seam every test mocks, so
+a backend is still testable with no herdr server and no sandbox. Sessions (§3) drive
+all four calls; a backend knows nothing about the registry. Which module runs a
+session is the `backend` name in its record (§3.4), looked up in a dict of name to
+module in `sessions.py`.
+
+Every backend uses the same run directory, `<state>/runs/<timestamp>-<random>/`. Two
+things in it are the same whichever backend wrote it: `launch.json`, holding what a
+later tab attaches with, and `launch.sh`, holding the command, because the pane is
+sent a line and not a file (§1.3). `backends/__init__.py` holds those two and nothing
+else. What else goes in the directory is the backend's own business.
 
 The interface exists because v1 needs it, to keep srt's settings and invocation
-out of the chooser, not in anticipation of a second backend.
-`backends/microsandbox.py` is described below and is not created until it is
-built.
+out of the chooser. `backends/microsandbox.py` (§2.2) is the second implementation.
 
 ### 2.1 v1: `srt` (Anthropic sandbox-runtime)
 
@@ -285,42 +297,116 @@ agent resolves no name at all. So each one is written into the command as
 `VAR="$VAR"`, unquoted, for srt's shell to expand. No value is ever read from the
 popup's own environment.
 
-### 2.2 v1.1: `microsandbox` (design record, not stubbed in v1)
+### 2.2 `microsandbox` (`msb`), registered as `"msb"`
 
-`msb` runs workloads in libkrun microVMs from OCI images, with volume mounts and
-a host/port network policy. A harder boundary than Seatbelt (its own kernel
-rather than a filtered view of the host's) at the cost of an image per agent and
-a heavier start.
+`msb` boots an OCI image in a libkrun microVM. A harder boundary than Seatbelt (its
+own kernel rather than a filtered view of the host's) at the cost of an image per
+agent. There is no server and no daemon: each running VM is one `msb` process, and
+the runtime installs in user space with no privileged step. The
+[microVM spike](spikes/microvm.md) measured 175ms from `msb create` to a usable VM.
+Nothing in this section is estimated: it was measured, in that spike or against
+`msb` 0.6.13 while the backend was built.
 
-There is no server and no daemon: each running sandbox is one `msb` process on
-the host, and the runtime installs in user space with no privileged step. The
-[microVM spike](spikes/microvm.md) measured 175ms from `msb create` to a usable
-VM. Every number in this section is from that spike.
+**A session is a persistent VM.** `prepare()` boots it, every tab execs into it, and
+`collect()` destroys it when the last tab is gone:
+
+| Session operation | `msb` |
+| --- | --- |
+| create | `msb create --name <handle> --mount-dir <workdir>:/work --workdir /work <net rules> <image>` |
+| attach a tab | `msb exec --tty <handle>`, in `launch.sh` like any other pane command |
+| collect | `msb rm -f <handle>`. Without `-f`, `msb rm` refuses a running sandbox: `sandbox still running`, exit 1 |
+
+The handle is `paddock-<run dir name>`. It has to be unique among live sandboxes on
+the host, not only among paddock sessions, because `msb create` fails on a name
+collision. The session record keeps it as `vm_handle` (§3.4), which is the fallback
+handle when a run directory has lost its `launch.json`. A VM that is already gone is
+reported and not raised: the session is over either way.
+
+**Attaching checks the VM first**, with `msb ls --format json`. `msb exec` into a VM
+that is gone fails after the pane exists, which leaves a dead tab and a pane id nothing
+can use. A session whose VM has gone is dropped from the registry there and then, the
+same ending its last tab closing would have given it. A stopped sandbox counts as gone:
+its record survives, but nothing can exec into it.
+
+**An msb tab always opens in the guest workdir.** `paddock attach <session> --cwd <dir>`
+is refused on an msb session: that flag sets the host tab's own directory, which the
+guest shell replaces, so honouring it silently would be a lie. On srt it still does what
+it says.
 
 The same profile maps across:
 
 | Profile field | `srt` | `microsandbox` |
 | --- | --- | --- |
-| `agent` | command on host `PATH` | agent's `image` (§5) |
+| `agent` | command on host `PATH` | the agent's `image` (§5), else `alpine` |
 | `tools` | PATH shim dir | baked into the image |
-| `shared_dir` | `filesystem.allowWrite` entry | volume mount |
-| isolated workdir | scratch dir under the run dir | VM filesystem |
-| `network_presets` | `network.allowedDomains` | host/port rules |
+| `shared_dir` | `filesystem.allowWrite` entry | `--mount-dir <resolved path>:/work`, read-write |
+| isolated workdir | scratch dir under the run dir | that same directory, mounted at `/work` |
+| `network_presets` | `network.allowedDomains` | `--net-default deny`, then one allow rule each |
+| `deny_read` | `filesystem.denyRead` | nothing to deny: an unmounted path is not in the guest |
 
-That is why the agent registry has an `image` field now (§5): profiles written
-for `srt` port over without a schema change. A dev server in a sandbox is
-reached by port forwarding, the `-p <host port>:<guest port>` flag on `msb
-create`, which binds loopback on the host. A per-sandbox `<name>.localhost` URL is a portless feature paddock would
-have to build (see [ROADMAP](ROADMAP.md)), not something `msb` provides.
+Four of those differ in kind, not in spelling:
 
-Two constraints the spike settled. **Memory, not boot time, caps how many VM
-sessions run at once**: an agent VM that has installed a toolchain holds 0.8GB to
-1.3GB resident and does not give it back, so the per-session budget and a session
-cap have to be decided before the backend is built. **Host and guest need an
-explicit channel**: a guest reaches no host service by default and there is no
-host alias, so anything in a sandbox that has to talk to the host, the `herdr`
-CLI behind §3's local orchestration above all, needs a mechanism chosen first.
-`vsock` is the candidate; it is not decided.
+- **Mount sources are resolved.** `msb` mounts the path as written, and `/tmp` is a
+  symlink to `/private/tmp` on macOS, which fails as a mount source. The backend
+  passes `Path.resolve()` for every mount.
+- **Network rules name a host, a protocol and a port, not a URL path.** srt allows a
+  domain through its proxy; an msb rule is `allow@<domain>:tcp:443`, so it is https to
+  that host and nothing else. A profile with no domains gets no network at all, DNS
+  included.
+- **DNS is all or nothing.** `allow@dns` goes in with the first allowed domain, and it
+  opens the gateway resolver for **every** name, not only the allowed ones. Lookups of
+  anything else succeed and the connection is then refused. srt's proxy sees the request
+  itself, so it has no equivalent hole. Names are a low-bandwidth channel out, and this
+  is the honest limit of the msb network policy.
+- **The PATH shim dir has no job here.** The guest holds what the image holds, so the
+  image is the tool selection, and the absolute-path bypass §4.1 documents is not
+  available: `/opt/homebrew/bin/docker` is not in the guest to be run.
+
+**This backend runs the `shell` agent only.** Any other agent on an msb profile is
+refused at create, before a VM is booted. Provisioning an agent inside the guest is
+the next feature, and the spike showed layer 3 needs no new mechanism for it: mount
+`run_dir/config` and point the config-dir variable at it with `-e`.
+
+#### What the guest actually is
+
+Three facts that "its own kernel, and only what is mounted" does not convey. All three
+were measured on `msb` 0.6.13.
+
+- **The guest runs as root.** `id` in a paddock guest is `uid=0(root)`, because that is
+  what the image's default user is and paddock passes no `--user`. It is root in the
+  guest only: a different kernel, and the only host state it reaches is what is mounted.
+  It does mean anything running in the session can write anywhere in the guest, so the
+  image is not a boundary within the session.
+- **`/.msb` is mounted, and paddock did not ask for it.** msb gives every guest a
+  read-write virtiofs mount at `/.msb` (`msb_runtime`), holding the rootfs layers, its
+  script directory and its TLS material. It is backed by
+  `~/.microsandbox/sandboxes/<handle>/runtime/` on the host, and the guest can create
+  files there. So "only what is mounted exists" is exact, but paddock's mount list is
+  not the whole list: msb adds its own, per sandbox, and it goes when the sandbox does.
+- **Guest writes into `shared_dir` come back changed.** A file the guest creates as
+  `-rw-r--r-- root root` arrives on the host owned by you, mode `600`, carrying a
+  `user.msb.override_stat` extended attribute, which is how msb keeps the guest's view
+  of ownership. Files the guest never touches are untouched. Under srt the agent writes
+  as you, with your umask, so this is a visible difference for anything that shares a
+  directory with tools on the host.
+
+Not built, and not stubbed:
+
+- **Agents in the guest**, so §4.2 and §4.3 do not apply to an msb session yet.
+- **Port forwarding.** `-p <host port>:<guest port>` on `msb create` works and binds
+  loopback, but no profile field asks for one. A per-sandbox `<name>.localhost` URL is
+  a portless feature paddock would have to build (see [ROADMAP](ROADMAP.md)), not
+  something `msb` provides.
+- **A memory budget and a session cap.** Memory, not boot time, caps how many VM
+  sessions run at once: an agent VM that has installed a toolchain holds 0.8GB to
+  1.3GB resident and does not give it back. An idle shell VM settles around 65MB.
+  Nothing enforces a cap.
+- **A host and guest channel.** A guest reaches no host service by default and there
+  is no host alias, so §3's local orchestration cannot reach the `herdr` CLI from
+  inside a guest. `vsock` is the candidate; it is not decided.
+
+The chooser does not offer msb yet. `paddock launch <profile> --backend msb` does,
+which is how it is tested by hand.
 
 ---
 
@@ -333,8 +419,8 @@ Tabs attach to a **session**: one running sandbox with a name.
 
 | Backend | A session is |
 | --- | --- |
-| `srt` (v1) | A policy context: one settings file plus one shared workdir |
-| `microsandbox` (v1.1) | A persistent microVM |
+| `srt` | A policy context: one settings file plus one shared workdir |
+| `msb` | A persistent microVM |
 
 Every tab attaches to one session or to none. That one rule covers every layout
 that would otherwise need its own mode:
@@ -373,18 +459,17 @@ Attach to:
 
 This is why the session list shows the backend:
 
-| | `srt` (v1) | `microsandbox` (v1.1) |
+| | `srt` | `msb` |
 | --- | --- | --- |
 | Attaching | New process under the same settings file and workdir | Execs a shell or agent into the same guest |
 | Filesystem | Shared: one workdir on the host | Shared: one guest filesystem |
 | Processes | **Separate trees**; tabs cannot see each other's | Shared namespace |
 | Long-running state | Only what is on disk | Lives in the VM, outlives any tab |
 
-So tab groups already work in v1 with `srt`: attached tabs share policy and
-files, which is most of why people want a group. Shared *runtime* arrives with
-`msb`. Seatbelt and bubblewrap wrap a process tree and have no guest for a second
-process to join, so srt can share policy and files, never a runtime. The UI must
-not imply otherwise.
+So tab groups work with `srt`: attached tabs share policy and files, which is most
+of why people want a group. Shared *runtime* is what `msb` adds. Seatbelt and
+bubblewrap wrap a process tree and have no guest for a second process to join, so
+srt can share policy and files, never a runtime. The UI must not imply otherwise.
 
 ### 3.3 Workspace default binding
 
@@ -410,7 +495,8 @@ Sessions are tracked in `<state>/sessions.json`, a list of records:
 | `run_dir` | Its directory under `runs/`: settings, shim dir, config dir, workdir |
 | `keep_alive` | Survives its last pane |
 | `pane_ids` | Pane ids currently attached |
-| `backend` | Which backend runs it: `srt` today. Absent in a record written before the field, which means `srt` |
+| `backend` | Which backend runs it: `srt` or `msb`. Absent in a record written before the field, which means `srt` |
+| `vm_handle` | The `msb` sandbox it runs in. Blank when the backend has no VM to name |
 
 An unnamed session is named after its profile plus a short suffix. A name may not
 be another session's id either, since both are references a caller can look up.
@@ -426,8 +512,9 @@ one added.
 
 `backend` is what `sessions.attach` dispatches on: a small dict maps the name to
 the module that runs it, and a name this paddock does not have is a message at
-attach rather than a registry it refuses to read. v1.1 adds `vm_handle` when
-there is a VM to name.
+attach rather than a registry it refuses to read. `vm_handle` is the name every
+`msb` subcommand takes, so a VM session needs no other handle, and the registry
+can be reconciled against `msb ls` after a crash.
 
 **Sessions survive Herdr detach and restart.** A microVM keeps running with no
 tab attached, and an srt session is just a settings file and a workdir.
@@ -435,12 +522,23 @@ Reattaching puts the user back where they were.
 
 **Lifecycle:** when the last tab closes, the session is neither destroyed nor
 leaked silently. A session with `keep_alive` set stays; every other one is
-dropped from the registry. Its run directory is left on disk, because deleting a workdir
-would lose work (§8), except for the credential file in its config dir, which
-may be an exported token (§4.3) and does not outlive the session. The prompt that
-offers keep-alive arrives with the TUI.
+dropped from the registry, and its backend is then asked to `collect` the run:
+srt has nothing to stop, msb destroys the VM. The run directory is left on disk,
+because deleting a workdir would lose work (§8), except for the credential file in
+its config dir, which may be an exported token (§4.3) and does not outlive the
+session. The prompt that offers keep-alive arrives with the TUI.
 Both failure modes cost something real: a discarded microVM loses running state, a
 leaked one holds memory.
+
+Two other endings get the same treatment, because `create_session` boots a sandbox
+before any tab exists:
+
+- **The first tab fails to open.** `launch` rolls the session back: out of the
+  registry, credentials discarded, backend asked to collect. The error names the
+  session and its VM. Without that, a failed `herdr tab create` would leave a running
+  microVM and a registered session with no tabs, which nothing would ever collect.
+- **The sandbox is gone before a tab attaches.** `attach` ends the session the same
+  way and says so, rather than opening a tab that cannot join anything (§2.2).
 
 ### 3.5 Pane labels
 
@@ -477,6 +575,11 @@ and coreutils work).
 > `denyRead`, which the kernel does enforce. Not in v1 because enumerating every
 > binary on a dev machine is expensive and brittle, and getting it wrong breaks
 > the shell silently.
+
+All of that is about `srt`. An **`msb` session has no shim dir**: the guest holds
+what the image holds, so tool selection is the image, and there is no host binary
+behind an absolute path for the bypass to reach. What an msb guest is instead, root
+inside it included, is in [§2.2](#what-the-guest-actually-is).
 
 ### 4.2 Layer 2: agent config (agent-enforced)
 
@@ -593,7 +696,7 @@ entry:
 | `api_domains` | Domains the agent needs; merged into the allowlist when selected |
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
-| `image` | *Future*: OCI image for the microsandbox backend |
+| `image` | OCI image the `msb` backend boots for this agent. Blank means `alpine` (§2.2) |
 
 ### Auth policy
 
@@ -652,9 +755,9 @@ Notes:
 
 ## 7. Module plan
 
-The first epic (`sandbox_core_launcher`) builds these as separate feature PRs,
-tests first. Each should be small, mostly plain functions over a `Profile`, and
-no v1.1 concern appears in any of them:
+The first epic (`sandbox_core_launcher`) built these as separate feature PRs, tests
+first, and `microvm_backend` adds the second backend to the same shape. Each module
+should be small, and mostly plain functions over a `Profile`:
 
 | Module | Responsibility | Status |
 | --- | --- | --- |
@@ -662,6 +765,7 @@ no v1.1 concern appears in any of them:
 | `paddock/profiles.py` | `Profile` dataclass, network presets, tool candidates, load/save | Done |
 | `paddock/agents.py` | Agent registry and per-agent layer-2 config | Registry done; the layer-2 `permissions` block is not generated yet |
 | `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |
+| `paddock/backends/microsandbox.py` | msb: boot the session's VM, exec a tab into it, destroy it (§2.2) | Shell sessions done; agents in the guest are next |
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
@@ -669,9 +773,9 @@ no v1.1 concern appears in any of them:
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
-`herdr`, and only the backend shells out to `srt`.** Everything else is pure
-functions, which is what makes the behaviour testable on a Linux CI runner with
-no sandbox present.
+`herdr`, and only a backend shells out to its own sandbox runtime**, `srt` or
+`msb`. Everything else is pure functions, which is what makes the behaviour
+testable on a Linux CI runner with no sandbox present.
 
 ---
 
