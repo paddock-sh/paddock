@@ -186,6 +186,10 @@ def build_settings(
             "allowWrite": _as_strings(allow_write),
             "denyWrite": _as_strings(deny_write),
         },
+        # A TUI agent puts its terminal in raw mode. Without this the sandbox is denied the
+        # ioctl on /dev/ttys*, so claude draws gibberish and codex exits at once. srt grants
+        # every terminal the user owns, not just this pane: the trade is in SPEC §2.1.
+        "allowPty": True,
     }
 
 
@@ -311,8 +315,17 @@ def prepare(profile: Profile) -> Run:
         "shim dir %s",
         log.context(dir=shim, shimmed=len(tools) - len(skipped), skipped=", ".join(skipped)),
     )
-    if skipped:
-        print(f"paddock: left off the sandbox PATH: {', '.join(skipped)}", file=sys.stderr)
+    # A name with a slash is the agent's own command. It runs without a shim, so it is
+    # reported as how it runs, not as a tool that went missing.
+    missing = [tool for tool in skipped if "/" not in tool]
+    if missing:
+        print(f"paddock: left off the sandbox PATH: {', '.join(missing)}", file=sys.stderr)
+    for tool in (tool for tool in skipped if "/" in tool):
+        print(
+            f"paddock: {tool} runs by its absolute path; "
+            "only bare tool names go on the sandbox PATH",
+            file=sys.stderr,
+        )
     synth = synth_config.build(profile, agent, run_dir)
     if synth.missing:
         left_out = ", ".join(synth.missing)
@@ -337,9 +350,10 @@ def prepare(profile: Profile) -> Run:
 def load_run(run_dir: Path) -> Run:
     """Read a prepared run back, so a later tab attaches to the same settings and workdir.
 
-    The script is rewritten when it is not the one this paddock would write. A session
-    outlives an upgrade, so a run prepared months ago gets today's launch behaviour on
-    its next tab rather than keeping the one it was born with.
+    The script is rewritten when it is not the one this paddock would write, which covers
+    a run dir prepared before paddock wrote scripts at all (it has none, and the pane runs
+    it) as well as one whose script an upgrade has moved on from. The record holds the
+    exact command either way, so a session gets today's launch behaviour on its next tab.
     """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())

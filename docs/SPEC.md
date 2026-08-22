@@ -178,7 +178,8 @@ milliseconds, which is what makes a per-window chooser workable.
     "allowRead":  ["/Users/me/.claude/.credentials.json"],
     "allowWrite": ["/path/to/workdir", "/tmp", "/private/tmp", "/dev/null"],
     "denyWrite":  ["/Users/me/.ssh", "/Users/me/.aws"]
-  }
+  },
+  "allowPty": true
 }
 ```
 
@@ -204,6 +205,17 @@ Three defaults shape everything else:
   mirrors `denyRead`, so a denied path is off limits both ways.
 - **Network is allowlist-only.** Anything not listed is refused. `deniedDomains`
   stays empty; it is written because the schema wants the key.
+
+**`allowPty` is on, and it is wider than its name suggests.** A TUI agent puts
+its terminal in raw mode. Without this key Seatbelt denies the file ioctl on the
+pane's `/dev/ttysNNN`, so `stty` fails with `EPERM`: claude draws gibberish and
+takes no typing, and codex exits the moment it starts. The cost is that the key
+compiles to srt's own hardcoded grant of read, write and ioctl on the regex
+`^/dev/ttys`. A sandboxed agent can therefore write to **any** terminal the user
+owns, not just its own pane, which is enough to fake output in another window.
+srt 0.0.73 has no narrower knob, so the choice is TUI agents with this grant or
+no TUI agents at all. paddock takes the grant, deliberately, and says so here
+rather than leaving it out.
 
 **srt checks the path an access resolves to**, not the path the agent typed. A
 symlink is therefore governed by its target: what the policy has to name is the
@@ -254,7 +266,11 @@ one line. The composed command is longer than that, so it is written to
 `exec /bin/sh <run_dir>/launch.sh`. The run dir is not writable from inside the
 sandbox, so the agent cannot rewrite its own launcher. `exec` replaces the pane's
 shell, so closing the agent closes the pane. Every tab on the session runs the
-same script.
+same script. A script that is not the one this paddock would write is replaced
+when a tab attaches, which covers a run directory with none (one prepared before
+paddock wrote them) and one an upgrade has moved on from: `launch.json` holds
+the exact command either way. What the script does around that command, and what
+a failed launch leaves behind, is §9.
 
 The inner command is the agent, wrapped so it starts from an empty environment:
 

@@ -87,9 +87,19 @@ def test_the_settings_hold_every_key_srt_requires() -> None:
     """srt validates the file against a schema: a missing key is a hard startup failure."""
     settings = srt.build_settings(Profile(), CLAUDE, Path("/work"), NO_REDIRECT)
 
-    assert set(settings) == {"network", "filesystem"}
+    assert set(settings) == {"network", "filesystem", "allowPty"}
     assert set(settings["network"]) == {"allowedDomains", "deniedDomains"}
     assert set(settings["filesystem"]) == {"denyRead", "allowRead", "allowWrite", "denyWrite"}
+
+
+def test_the_settings_allow_pty_operations() -> None:
+    """A TUI agent needs a raw-mode terminal, and Seatbelt denies the ioctl without this.
+
+    Without it claude draws gibberish and refuses typing, and codex exits at once (SPEC §2.1).
+    """
+    settings = srt.build_settings(Profile(), CLAUDE, Path("/work"), NO_REDIRECT)
+
+    assert settings["allowPty"] is True
 
 
 def test_writes_are_allowed_for_the_workdir_and_temp(tmp_path: Path) -> None:
@@ -601,15 +611,24 @@ def test_prepare_shims_the_agent_binary_too(which: dict[str, str], fake_home: Pa
 
 
 def test_an_agent_named_by_absolute_path_is_not_shimmed(
-    which: dict[str, str], fake_home: Path, monkeypatch: pytest.MonkeyPatch
+    which: dict[str, str],
+    fake_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A shim named `/bin/zsh` would resolve outside the shim dir; the path works as it is."""
+    """A shim named `/bin/zsh` would resolve outside the shim dir; the path works as it is.
+
+    It is by design, so it is reported as such, not as something left out.
+    """
     monkeypatch.setenv("SHELL", "/bin/zsh")
 
     run = srt.prepare(Profile(agent="shell", tools=["git"]))
 
     assert sorted(path.name for path in (run.run_dir / "bin").iterdir()) == ["git"]
     assert inner_command(run.command)[-1] == "/bin/zsh"
+    err = capsys.readouterr().err
+    assert "/bin/zsh runs by its absolute path" in err
+    assert "left off the sandbox PATH" not in err
 
 
 def test_a_multi_word_agent_command_is_shimmed_by_its_first_word(
@@ -921,9 +940,30 @@ def test_a_prepared_run_reads_back_the_same(which: dict[str, str], fake_home: Pa
     assert srt.load_run(run.run_dir) == run
 
 
-def test_a_run_dir_with_no_launch_record_is_a_clear_error(tmp_path: Path) -> None:
+def test_a_run_dir_without_a_launch_script_gets_one_back(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """Run dirs prepared before paddock wrote a launch script have none, and the pane needs it.
+
+    The launch record holds the exact command, so the script is written back on attach.
+    """
+    run = srt.prepare(Profile(tools=[]))
+    script = run.run_dir / "launch.sh"
+    written = script.read_text()
+    script.unlink()
+
+    loaded = srt.load_run(run.run_dir)
+
+    assert script.read_text() == written
+    assert loaded.command in written
+
+
+def test_a_run_dir_with_no_launch_record_still_raises(tmp_path: Path) -> None:
+    """Writing a missing script back must not paper over a run dir nothing can attach to."""
     with pytest.raises(srt.RunNotFound, match=str(tmp_path)):
         srt.load_run(tmp_path)
+
+    assert not (tmp_path / "launch.sh").exists()
 
 
 def test_open_pane_creates_the_tab_then_runs_the_command(
