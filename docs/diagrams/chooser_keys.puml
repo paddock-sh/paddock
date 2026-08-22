@@ -10,6 +10,7 @@ state Form : one field per decision, the hint for the\none the cursor is on, the
 state "List" as Pick : one row per choice, what it means beside it
 state "Checklist" as Tick : two columns, a count in the header
 state "Box" as Type : one line to type, and what is wrong with it
+state "Failed" as Failed : what went wrong, the log path,\nand the two ways on
 
 Form --> Pick : enter on Open, Profile, Backend, Agent or Files
 Form --> Tick : enter on Tools, Network or Skills
@@ -17,6 +18,9 @@ Form --> Type : enter on a name or a typed command
 Pick --> Form : enter takes the row\nesc, or the Back row, takes nothing:\nthe old value stands
 Tick --> Form : enter, esc or the Back row,\nand the ticks stand either way
 Type --> Form : enter when the check passes\nesc keeps what was typed
+Form --> Failed : the launch raised before any pane existed\n(cli.py draws this, not the form)
+Failed --> Form : enter on Back to the form, or esc:\nthe answers that made the plan, back
+Failed --> [*] : enter on Cancel
 Form --> [*] : L, or enter on Launch\nesc, or enter on Cancel: nothing at all
 
 note right of Tick
@@ -52,6 +56,11 @@ note right of Type
   about profiles, sessions or plans. It takes
   rows of text and hands back what was picked.
   tui.py drives it.
+
+  screen.progress is the one thing here that is
+  not an Application. It is printed in front of
+  the launch and left on the screen, because the
+  call it stands in front of blocks the process.
 end note
 
 @enduml
