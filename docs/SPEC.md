@@ -238,8 +238,10 @@ agent with neither gets the line as it was.
 **The proxy variables are the exception, and they are passed by name, not by
 value.** srt sets its own proxy environment in the shell it spawns, per
 invocation — `http_proxy`, `HTTP_PROXY`, `https_proxy`, `HTTPS_PROXY`,
-`all_proxy`, `ALL_PROXY`, `no_proxy`, `NO_PROXY`, `ftp_proxy`, `grpc_proxy`,
-`RSYNC_PROXY`, `SANDBOX_RUNTIME`, `GIT_CONFIG_PARAMETERS`, `GIT_SSH_COMMAND` —
+`all_proxy`, `ALL_PROXY`, `no_proxy`, `NO_PROXY`, `ftp_proxy`, `FTP_PROXY`,
+`grpc_proxy`, `GRPC_PROXY`, `RSYNC_PROXY`, `DOCKER_HTTP_PROXY`,
+`DOCKER_HTTPS_PROXY`, `npm_config_noproxy`, `SANDBOX_RUNTIME`,
+`GIT_CONFIG_PARAMETERS`, `GIT_SSH_COMMAND` —
 and that proxy is the sandbox's only way out. `env -i` wipes them, and then the
 agent resolves no name at all. So each one is written into the command as
 `VAR="$VAR"`, unquoted, for srt's shell to expand. No value is ever read from the
