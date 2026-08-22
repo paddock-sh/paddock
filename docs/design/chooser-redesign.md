@@ -58,9 +58,9 @@ choose the step. The summary knows every answer and cannot take you to one.
 | 14 | `Ready to launch: ...` | Launch / Edit a step / Cancel | Nothing | **Keep the content, promote it.** The summary becomes the home screen |
 | 15 | `Edit which step:` | The list of steps that were asked | That "step" means "question you already answered" | **Drop.** Every field is one arrow key away on the form |
 
-Two profile fields have never been asked at all: `mcp` and `extra_allow_write`.
-`deny_read` and `include_system_path` have never been asked either. They get a
-home under Advanced (section 6).
+Four profile fields have never been asked at all: `mcp`, `extra_allow_write`,
+`deny_read` and `include_system_path`. They get a home under Advanced
+(section 5.8).
 
 ## 3. The redesigned flow
 
@@ -173,7 +173,7 @@ already knows it.
 | `ctrl-c` | Cancel everything, at any depth |
 | `1`..`8` | Jump straight to that field on the form |
 | `space` | Toggle a tick, in a checklist only |
-| `/`, or just typing | Filter a long list |
+| `/` | Filter a long list. Typing on its own never filters, so the letter keys stay free |
 | `a` `n` | Tick all, tick none, in a checklist only |
 | `?` | The key list, over whatever is on screen |
 | `L` | Launch, from anywhere on the form |
@@ -184,8 +184,11 @@ what is open and leaves the value it was editing in place. **Ctrl-c always
 cancels the whole popup**, and cancelling costs nothing, because the chooser
 returns a plan and `cli.py` is the only thing that acts on one.
 
-Every screen ends with a footer line showing the keys that work there. That is
-lazygit's habit and it is the cheapest usability win in a terminal.
+Every screen ends with a footer line showing the keys that work there, with
+`esc` on all of them, which is lazygit's habit and the cheapest usability win in
+a terminal. Where 80 columns will not hold every key, the footer keeps `enter`
+and `esc` and `?` takes the rest. Ctrl-c is not always in the footer because it
+works everywhere in every terminal program, and the key list says so.
 
 ## 5. The screens
 
@@ -302,7 +305,7 @@ The detail panel is the point. You pick on what a profile *is*, not on its name.
 |                                                                              |
 |                                                                              |
 |                                                                              |
-| type to filter   enter choose   esc back   ctrl-c cancel                     |
+| / filter   enter choose   ^v move   esc back   ctrl-c cancel                 |
 +------------------------------------------------------------------------------+
 ```
 
