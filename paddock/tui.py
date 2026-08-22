@@ -13,6 +13,7 @@ out, which is why backing out at any depth costs nothing.
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -134,6 +135,16 @@ EDITOR_HINTS = {
 # The heading of the last screen, which is a question and not an announcement.
 CONFIRM_TITLE = "Launch this sandbox?"
 
+# What an in-guest install downloads from. msb runs the install inside the guest, where the
+# profile's domains are the only way out, so an npm install needs the npm preset (SPEC §2.2).
+INSTALL_TOOLS = ("npm", "npx")
+INSTALL_PRESET = "npm"
+INSTALL_WARNING = "the in-guest install needs npm; add the npm preset or the first start will fail"
+
+# How long an msb launch sits there before its first tab. Measured with the image already
+# pulled: a first pull is on top of it.
+FIRST_START_SECONDS = 40
+
 # The line under a field a local or attached tab greys out.
 NO_SANDBOX = "No sandbox, so there is nothing to permit."
 
@@ -196,15 +207,18 @@ class NewSession:
 Plan = Local | Attach | NewSession
 
 
-def choose(cwd: Path) -> Plan | None:
+def choose(cwd: Path, answers: dict | None = None) -> Plan | None:
     """Ask what to open. None means the popup was closed with nothing done.
 
     Ctrl-c raises KeyboardInterrupt from wherever it was pressed, which `cli.py` turns into
     the exit code 130 that fzf made the convention.
+
+    `answers` starts the form on answers already given, which is how a launch that failed
+    comes back to the form it was made on instead of to a blank one.
     """
     saved, registry = load_profiles(), load_agents()
     live = sessions.list_sessions()
-    answers: dict = {}
+    answers = dict(answers or {})
     cursor = 0
     while True:
         base = base_profile(saved, answers)
@@ -304,9 +318,11 @@ def _edit_backend(answers: dict) -> dict:
 
 def _edit_agent(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
     choices = agent_choices(registry)
-    rows = [(title, agent_hint(value, registry)) for title, value in choices]
-    where = _at(choices, str(answers.get("agent", base.agent)))
-    index = screen.pick(FIELD_TITLES["agent"], rows, cursor=where)
+    rows = [(title, agent_hint(value, registry)) for title, value, _ in choices]
+    refused = {index: why for index, (_, _, why) in enumerate(choices) if why}
+    listed = [(title, value) for title, value, _ in choices]
+    where = _at(listed, str(answers.get("agent", base.agent)))
+    index = screen.pick(FIELD_TITLES["agent"], rows, cursor=where, refused=refused)
     if index is None:
         return answers
     key = choices[index][1]
@@ -522,7 +538,7 @@ def confirm_lines(
     if plan.agent_command:  # the key is derived, so it can still be blank here
         running = f"running {plan.agent_command}"
         agent = f"{agent}, {running}" if agent else running
-    return [
+    lines = [
         ("session", plan.name or "generated at launch"),
         ("backend", BACKEND_LABELS.get(plan.backend, plan.backend)),
         ("agent", agent),
@@ -533,6 +549,53 @@ def confirm_lines(
         ("can run", _runnable(profile)),
         ("can see", _visible(profile, registry)),
     ]
+    warning = install_warning(plan, registry)
+    return lines + [("warning", warning)] if warning else lines
+
+
+def install_warning(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
+    """Why this msb launch is about to fail on its install, or nothing when it is not.
+
+    The install runs inside the guest, where the profile's domains are the whole of the
+    network, so an agent installed from npm needs the npm preset. Said before the wait
+    rather than after it, and the profile is never changed to suit: what a sandbox may
+    reach is an answer the user gives (SPEC §6).
+    """
+    if plan.backend != MSB:
+        return ""
+    spec = registry.get(plan.profile.agent)
+    words = shlex.split(spec.install) if spec and spec.install else []
+    if not words or words[0] not in INSTALL_TOOLS:
+        return ""
+    needed = set(NETWORK_PRESETS[INSTALL_PRESET])
+    return "" if needed <= set(plan.profile.allowed_domains()) else INSTALL_WARNING
+
+
+def starting_lines(plan: NewSession, registry: dict[str, AgentSpec]) -> list[str]:
+    """The steps a launch is about to take, for the screen drawn before it blocks on them.
+
+    Only the slow ones earn a line. An msb launch pulls an image and installs the agent in
+    the guest, which is the minute the popup used to sit through with nothing on it.
+    """
+    if plan.backend != MSB:
+        return ["preparing the sandbox"]
+    spec = registry.get(plan.profile.agent, AgentSpec())
+    steps = [f"pulling the {spec.image or 'guest'} image"]
+    if spec.install:
+        steps.append(f"installing {plan.profile.agent} in the guest")
+        steps.append(f"the first start takes about {FIRST_START_SECONDS} seconds")
+    warning = install_warning(plan, registry)
+    return steps + [warning] if warning else steps
+
+
+def starting(plan: NewSession) -> None:
+    """Say what the launch is doing, before the call that blocks until it is done."""
+    screen.progress(f"Starting {plan.name or 'a new sandbox'}", starting_lines(plan, load_agents()))
+
+
+def launch_failed(message: str, log_path: str = "") -> bool:
+    """Show a launch that never opened a pane. True means back to the form, answers and all."""
+    return screen.failed(message, log_path)
 
 
 def _field_values(
@@ -773,10 +836,32 @@ def agent_title(key: str, registry: dict[str, AgentSpec]) -> str:
     return f"{spec.name} ({spec.command})" if spec else key
 
 
-def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str]]:
-    """Registered agents, plus a command typed in by hand."""
-    entries = [(agent_title(key, registry), key) for key in sorted(registry)]
-    return entries + [("Something else...", CUSTOM)]
+def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str, str]]:
+    """Registered agents, plus a command typed in by hand, and why one cannot be chosen.
+
+    An agent this machine has no binary for stays on the list and says so, the way a backend
+    without its binary does: hiding it would leave the user wondering where it went, and
+    choosing it would open a tab that dies on `No such file or directory`.
+    """
+    entries = []
+    for key in sorted(registry):
+        why = agent_refusal(key, registry)
+        title = agent_title(key, registry)
+        entries.append((f"{title} (not installed)" if why else title, key, why))
+    return entries + [("Something else...", CUSTOM, "")]
+
+
+def agent_refusal(key: str, registry: dict[str, AgentSpec]) -> str:
+    """Why this agent cannot be chosen on this machine, or nothing when it can.
+
+    Only a bare command name is looked for. One written as a path is the user's own answer
+    to where it lives, which is what the shell agent's `$SHELL` is, so it is left alone.
+    """
+    spec = registry.get(key)
+    words = shlex.split(spec.command) if spec and spec.command else []
+    if not words or "/" in words[0] or shutil.which(words[0]):
+        return ""
+    return f"{words[0]} is not installed, so this machine cannot run it"
 
 
 def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple[str, str, bool]]:
@@ -876,6 +961,36 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         agent_command=str(answers.get("command", "")),
         backend=str(answers.get("backend", SRT)),
     )
+
+
+def answers_from(plan: Plan, saved: dict[str, Profile]) -> dict:
+    """A plan as the answers that made it, so a failed launch comes back to its own form.
+
+    A local or an attached tab permits nothing, so the one answer it has is all it gives
+    back. The profile a new session stood on is read back off its name, because answers
+    that changed it keep that name with `+custom` after it (see `build_profile`).
+    """
+    if isinstance(plan, Local):
+        return {"open": LOCAL}
+    if isinstance(plan, Attach):
+        return {"open": plan.ref}
+    profile = plan.profile
+    base = profile.name.removesuffix("+custom")
+    return {
+        "open": NEW,
+        "profile": base if base in saved else CUSTOM,
+        "backend": plan.backend,
+        "agent": profile.agent,
+        "command": plan.agent_command,
+        "tools": list(profile.tools),
+        "network": list(profile.network_presets),
+        "domains": " ".join(profile.extra_domains),
+        "skills": list(profile.skills),
+        "share": bool(profile.shared_dir),
+        "directory": profile.shared_dir,
+        "name": plan.name,
+        "save_as": plan.save_as,
+    }
 
 
 def _shared_dir(base: Profile, answers: dict) -> str:

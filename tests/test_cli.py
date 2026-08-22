@@ -26,7 +26,33 @@ def chooser(terminal, monkeypatch: pytest.MonkeyPatch):
     """Answer the popup with a fixed plan: the TUI itself is tested in test_tui.py."""
 
     def answer(plan: object | None):
-        monkeypatch.setattr(tui, "choose", lambda cwd: plan)
+        monkeypatch.setattr(tui, "choose", lambda cwd, answers=None: plan)
+
+    return answer
+
+
+@pytest.fixture
+def quiet_start(monkeypatch: pytest.MonkeyPatch) -> list[tui.NewSession]:
+    """Swallow the progress screen, and record the plans it was drawn for."""
+    drawn: list[tui.NewSession] = []
+    monkeypatch.setattr(tui, "starting", drawn.append)
+    return drawn
+
+
+@pytest.fixture
+def failure_screen(monkeypatch: pytest.MonkeyPatch):
+    """Stand in for the screen a failed launch ends on, and say which button it comes back on."""
+    shown: list[tuple[str, str]] = []
+
+    def answer(*back: bool):
+        replies = list(back)
+
+        def show(message: str, log_path: str = "") -> bool:
+            shown.append((message, log_path))
+            return replies.pop(0) if replies else False
+
+        monkeypatch.setattr(tui, "launch_failed", show)
+        return shown
 
     return answer
 
@@ -164,7 +190,7 @@ def test_the_chooser_opens_in_the_current_directory_by_default(
 ) -> None:
     seen: list[Path] = []
 
-    def record(cwd: Path) -> tui.Local:
+    def record(cwd: Path, answers: dict | None = None) -> tui.Local:
         seen.append(cwd)
         return tui.Local(cwd=str(cwd))
 
@@ -331,7 +357,7 @@ def test_a_command_the_registry_already_runs_is_not_written_again(
 def test_ctrl_c_leaves_no_traceback(
     fake_sessions, terminal, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def interrupt(cwd: Path) -> None:
+    def interrupt(cwd: Path, answers: dict | None = None) -> None:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(tui, "choose", interrupt)
@@ -355,13 +381,117 @@ def test_a_launch_that_fails_says_why_instead_of_tracing_back(
 ) -> None:
     """The popup closes with the process, so a traceback is never seen by anyone."""
 
-    def fail(cwd: Path) -> None:
+    def fail(cwd: Path, answers: dict | None = None) -> None:
         raise error
 
     monkeypatch.setattr(tui, "choose", fail)
 
     assert cli.main(["choose"]) == 1
     assert capsys.readouterr().err.strip() == f"paddock: {error}"
+
+
+# --- a launch that fails in front of the popup ------------------------------
+
+
+def raising(error: Exception):
+    """A sessions.launch that will not launch."""
+
+    def launch(*args: object, **kwargs: object) -> tuple:
+        raise error
+
+    return launch
+
+
+def test_a_launch_that_fails_before_the_pane_gets_a_screen(
+    fake_sessions, chooser, quiet_start, failure_screen, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The popup closes with the process, so stderr is a terminal nobody is looking at."""
+    chooser(tui.NewSession(profile=Profile(), backend="msb"))
+    monkeypatch.setattr(fake_sessions_module, "launch", raising(RuntimeError("no npm in there")))
+    shown = failure_screen(False)  # Cancel
+
+    assert cli.main(["choose"]) == 1
+    assert [message for message, _ in shown] == ["no npm in there"]
+    assert "no npm in there" not in capsys.readouterr().err
+
+
+def test_the_screen_after_a_failure_names_the_log(
+    fake_sessions, chooser, quiet_start, failure_screen, monkeypatch: pytest.MonkeyPatch,
+    state_dir: Path,
+) -> None:
+    chooser(tui.NewSession(profile=Profile()))
+    monkeypatch.setattr(fake_sessions_module, "launch", raising(RuntimeError("nope")))
+    shown = failure_screen(False)
+
+    cli.main(["choose"])
+
+    assert shown[0][1] == str(state_dir / "logs" / "paddock.log")
+
+
+def test_back_to_the_form_asks_again_with_every_answer_still_there(
+    fake_sessions, terminal, quiet_start, failure_screen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A minute of waiting must not cost the answers that were waited on."""
+    plan = tui.NewSession(profile=Profile(agent="codex", tools=["git"]), name="review")
+    asked: list[dict] = []
+
+    def ask(cwd: Path, answers: dict | None = None) -> object:
+        asked.append(dict(answers or {}))
+        return plan if len(asked) == 1 else None
+
+    monkeypatch.setattr(tui, "choose", ask)
+    monkeypatch.setattr(fake_sessions_module, "launch", raising(RuntimeError("nope")))
+    failure_screen(True)  # ← Back to the form
+
+    assert cli.main(["choose"]) == 0
+    assert asked[0] == {}
+    assert asked[1]["agent"] == "codex"
+    assert asked[1]["tools"] == ["git"]
+    assert asked[1]["name"] == "review"
+
+
+def test_a_failure_that_is_not_a_runtime_error_gets_the_screen_too(
+    fake_sessions, chooser, quiet_start, failure_screen, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A traceback into a popup that is closing is no more use than a message into it."""
+    chooser(tui.NewSession(profile=Profile()))
+    monkeypatch.setattr(fake_sessions_module, "launch", raising(KeyError("backend")))
+    shown = failure_screen(False)
+
+    assert cli.main(["choose"]) == 1
+    assert len(shown) == 1
+
+
+def test_the_no_terminal_paths_still_say_it_on_stderr(
+    fake_sessions, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`paddock launch` has no popup to draw in, so it keeps the message it always had."""
+    monkeypatch.setattr(fake_sessions_module, "launch", raising(RuntimeError("no npm in there")))
+
+    assert cli.main(["launch", "claude-default"]) == 1
+    assert capsys.readouterr().err.strip() == "paddock: no npm in there"
+
+
+def test_what_the_launch_is_doing_is_on_the_screen_before_it_blocks(
+    fake_sessions, chooser, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The minute an msb guest takes to install an agent used to be a blank popup."""
+    chooser(tui.NewSession(profile=Profile(agent="claude"), name="review", backend="msb"))
+
+    assert cli.main(["choose"]) == 0
+
+    drawn = capsys.readouterr().err
+    assert "Starting review" in drawn
+    assert "installing claude in the guest" in drawn
+
+
+def test_the_launch_command_draws_no_progress_screen(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It is a script's entry point, not a popup: its stdout is the pane id and nothing else."""
+    assert cli.main(["launch", "claude-default"]) == 0
+    assert "Starting" not in capsys.readouterr().err
 
 
 class Redirected:

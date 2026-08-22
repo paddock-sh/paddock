@@ -18,6 +18,9 @@ TOOL_CANDIDATES = [
 # Named domain groups for the network checklist.
 NETWORK_PRESETS: dict[str, list[str]] = {
     "anthropic": ["api.anthropic.com", "*.anthropic.com"],
+    # What Codex CLI signs in and talks to. The agent registry opens these for codex anyway;
+    # the preset is here so a profile for any other agent can grant them by ticking a box.
+    "openai": ["api.openai.com", "chatgpt.com", "auth.openai.com"],
     "github": ["github.com", "*.github.com", "*.githubusercontent.com"],
     "npm": ["registry.npmjs.org", "*.npmjs.org", "*.npmjs.com"],
     "pypi/uv": ["pypi.org", "files.pythonhosted.org", "*.pythonhosted.org", "astral.sh"],

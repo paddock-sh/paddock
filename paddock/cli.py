@@ -100,10 +100,8 @@ def run(command: Command) -> int:
     if command.name == "choose":
         if not has_terminal():
             return _fail("no terminal to ask in. Try: paddock launch <profile>")
-        plan = tui.choose(cwd)
-        if plan is None:  # backed out: nothing chosen, nothing done
-            return 0
-    elif command.name == "attach":
+        return choose(cwd, command.dry_run)
+    if command.name == "attach":
         # Only an asked-for cwd, so an attached tab otherwise keeps the session's workdir.
         plan = tui.Attach(ref=command.ref, cwd=command.cwd)
     else:  # launch
@@ -119,6 +117,40 @@ def run(command: Command) -> int:
         print(describe(plan))
         return 0
     return perform(plan)
+
+
+def choose(cwd: Path, dry_run: bool = False) -> int:
+    """Ask what to open and do it, staying open until something is done or nobody wants to.
+
+    Everything the popup was asked to do is done from here, so everything that can go wrong
+    doing it ends on a screen. The popup closes with the process (SPEC §1.1), so a message
+    printed instead is written to a terminal that is already gone, which is what made a
+    failed launch look like a launcher that did nothing.
+    """
+    answers: dict = {}
+    while True:
+        plan = tui.choose(cwd, answers)
+        if plan is None:  # backed out: nothing chosen, nothing done
+            return 0
+        if dry_run:
+            print(describe(plan))
+            return 0
+        if isinstance(plan, tui.NewSession):
+            # Before the call, not after it: prepare blocks for as long as a guest install
+            # takes, and a blank popup is what that minute used to look like.
+            tui.starting(plan)
+        try:
+            return perform(plan)
+        except Exception as error:
+            # Every one of them, not only the two main() knows: a traceback into a popup
+            # that is closing is no more use to anyone than a message into it.
+            message = log.scrub(str(error)) or type(error).__name__
+            logger.debug(
+                "launch failed %s", log.context(error=type(error).__name__, message=message)
+            )
+            if not tui.launch_failed(message, _log_path()):
+                return 1
+            answers = tui.answers_from(plan, load_profiles())
 
 
 def perform(plan: tui.Plan) -> int:
@@ -258,6 +290,12 @@ def has_terminal() -> bool:
     that says so goes to stderr either way, which is where every other one goes.
     """
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _log_path() -> str:
+    """Where paddock wrote what it did, for a screen to name. Blank when there is no file."""
+    path = log.log_path()
+    return str(path) if path.exists() else ""
 
 
 def _fail(message: str) -> int:
