@@ -67,6 +67,9 @@ Four profile fields have never been asked at all: `mcp`, `extra_allow_write`,
 ### 3.1 The common case
 
 The popup opens on the form, already filled in from the profile you used last.
+That last part is not a convenience, it is the whole saving: NN/g's wizard
+guidance ends on exactly this point, reuse the previous run's answers as this
+run's defaults, and it is the one thing an eleven-question walk cannot do.
 
 | You want | Interactions |
 | --- | --- |
@@ -134,19 +137,31 @@ None of this is invented. Each part is an idiom a terminal user already has, so
 paddock should not teach a new one:
 
 - **lazygit** opens a menu as a panel over the app, closes it with escape, and
-  keeps a key line at the bottom of every context with `?` for the full set.
-  That is the footer and the escape rule.
+  keeps a key line at the bottom of every context with `?` for the full set. Its
+  footer truncates with an ellipsis rather than wrapping, so the layout can
+  never be pushed around by the help text. That is our footer and our escape
+  rule. lazygit also deliberately dropped `y` and `n` on confirmations in favour
+  of enter and escape, which is why our confirm screen has buttons and no
+  hotkeys.
 - **`gh pr create`** ends on a small action menu, Submit or Continue in browser
-  or Cancel, rather than a yes or no. That is the confirm screen's three
-  buttons.
+  or Cancel, rather than a yes or no. Nothing on it is preselected, Cancel is
+  always last, and the menu is rebuilt from state each time so an option that
+  would now be a lie is removed rather than shown. That is the confirm screen.
 - **charm's `huh`** puts a whole form on one screen, moves between fields with
   the arrows, carries a description under the field you are on, and ends with a
-  confirm. That is the form, and it is the part questionary cannot do.
-- **fzf** narrows a list as you type instead of growing a second screen, which
-  is why the long lists here take `/`.
+  confirm. Its default group width is 80 columns, which is the budget we are
+  designing to. That is the form, and it is the part questionary cannot do.
+- **fzf** narrows a list as you type instead of growing a second screen, and
+  skips the prompt entirely when there is exactly one candidate. That is our
+  `/` key and section 4.3.
 - **Claude Code's own permission prompt** puts the consequence on the same line
-  as the option instead of in a paragraph above it. That is the rewriting rule
-  in section 4.1.
+  as the option instead of in a paragraph above it, teaches the key inside the
+  label (`No, and tell Claude what to do differently (esc)`), and shortens a
+  long label rather than dropping the option. Those are the rewriting rules in
+  section 4.1.
+- **`git add -i`** accepts a number, a single letter, or any unique prefix for
+  the same menu entry. Different users reach for different ones and it costs
+  nothing to take all three.
 
 ## 4. Words and keys
 
@@ -207,8 +222,62 @@ returns a plan and `cli.py` is the only thing that acts on one.
 Every screen ends with a footer line showing the keys that work there, with
 `esc` on all of them, which is lazygit's habit and the cheapest usability win in
 a terminal. Where 80 columns will not hold every key, the footer keeps `enter`
-and `esc` and `?` takes the rest. Ctrl-c is not always in the footer because it
-works everywhere in every terminal program, and the key list says so.
+and `esc` and `?` takes the rest, truncating rather than wrapping so the help
+can never move the layout. Ctrl-c is not always in the footer because it works
+everywhere in every terminal program, and the key list says so.
+
+That footer line does one more job, borrowed from huh: **when something is
+wrong, the error replaces it.** A typed domain that is not a domain, or a shared
+directory that does not exist, is reported on the footer line, and the keys come
+back when it is fixed. One row of chrome, two jobs, never both at once. At 24
+rows there is no second row to spend.
+
+### 4.3 One rule about lists
+
+Every tool worth copying agrees on this and none of them hedges: **a digit or
+letter hotkey and a type-to-filter box cannot live on the same list.** Charm
+made it structural by shipping `gum choose` and `gum filter` as two commands.
+gh made it a runtime switch. questionary's own validator refuses `j` and `k` as
+navigation keys when its search filter is on, for the same reason. The moment
+typing filters, every letter is filter text and no letter is a shortcut.
+
+The chooser resolves it the way lazygit and `git add -p` do: **filtering is a
+mode you enter with `/`, never something bare typing starts.** That one decision
+keeps every letter free as a shortcut on every screen, and it is why the tools
+checklist can offer `a` for all and `n` for none while still filtering.
+
+What changes with list size is only how loudly filtering is advertised:
+
+| Size | Model | Where |
+| --- | --- | --- |
+| 1 candidate | Do not ask at all | One saved profile, one live session |
+| 0 candidates | Say so on the field, do not open an empty box | No skills, no sessions |
+| Up to 5 | Arrows and Enter. `/` works, nobody needs it | `Open`, `Files` |
+| 6 to 12 | Arrows and Enter, `/` in the footer | `Network`, `Agent`, `Profile` |
+| Over 12 | `/` in the footer and a count in the header | `Tools`, `Skills` |
+
+Digits are the one shortcut that stays off the lists. They live on the form
+only, where `1` to `8` jump to a field, because the form is a fixed list of
+eight that never reorders. A digit against a list that filters or sorts is a
+lie the moment it does either.
+
+### 4.4 When there is nothing to ask
+
+Skipping a question nobody can answer is not politeness, it is fzf's
+`--select-1` and gum's `--select-if-one`, and the current chooser half does it
+already through `SKIP`. Made a rule:
+
+- One saved profile and no others: the `Profile` field shows it and opening it
+  is pointless, so Enter says so instead of drawing a one-row list.
+- No live sessions: no `Attach:` entries on `Open`, as today.
+- The agent has no skills directory: the `Skills` field reads "none for this
+  agent" and does not open.
+- No TTY: the chooser does not draw at all. `paddock` run without a terminal
+  should fail with a message naming `paddock launch <profile>`, which is the
+  flag that fixes it. That is the clig.dev rule, and paddock already has the
+  non-interactive path, it just does not point at it.
+
+Cancelling already exits 130, which is the convention fzf set. Keep it.
 
 ## 5. The screens
 
@@ -494,6 +563,11 @@ new question there meant a new screen for everyone.
   these answers as the default for this workspace. It is a default answer to the
   `Open` field, which is exactly what the SPEC says it is.
 - **MCP servers** get asked about for the first time.
+- **A plain numbered mode**, if anyone ever needs one. Both huh and gh ship one:
+  not a degraded TUI but a different UI, questions printed as numbered lists and
+  answered by typing a number, for screen readers and for terminals that cannot
+  redraw. It would double as the no-TTY path. Worth knowing it exists; not worth
+  building until someone asks.
 
 ## 7. How to build it
 
@@ -508,14 +582,22 @@ Enter on a row opens that field's editor, then returns to the hub. Launch and
 Cancel are rows.
 
 - **Gets:** two interactions for the common case, every field in one list,
-  editing one hop deep, no new dependency.
+  editing one hop deep, no new dependency. Questionary has more than the current
+  chooser uses, and option (a) should use it: `use_search_filter` gives the `/`
+  behaviour of section 4.3, `use_shortcuts` gives digit jumps,
+  `Choice(description=...)` gives a per-row hint line, `Choice(disabled="why")`
+  greys a row and says why, and `Separator` gives the rules in the mockups.
 - **Does not get:** a real screen. Questionary prints each answered question
   above the next one, so in a 24-row popup the hub scrolls away under its own
-  history. It has no escape binding at all, so "escape backs out" needs reaching
-  into `Question.application.key_bindings`, which is not public API. Per-field
-  hints render as a fixed `Description: ...` line it does not let you rename. No
-  two-column checklist, no footer, no digit jumps to a field except through
-  `use_shortcuts`, which relabels the whole list.
+  history. It has no escape binding at all, only ctrl-c and ctrl-q, so "escape
+  backs out" needs reaching into `Question.application.key_bindings`, which is
+  not public API. The per-row hint is a fixed `Description: ...` prefix it does
+  not let you rename. There is no footer, no error line, no two-column
+  checklist. And its own validator refuses `use_jk_keys` together with
+  `use_search_filter`, while *permitting* `use_shortcuts` with
+  `use_search_filter`, which is a collision it does not guard: the digits go to
+  the filter. So option (a) has to give up either `j` and `k` or `/` on every
+  long list, and cannot have digits and `/` on the same one at all.
 - **Cost:** about 180 lines replacing the 140-line questionary shell. One to two
   days.
 
