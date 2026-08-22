@@ -17,7 +17,8 @@ package "paddock" {
   [cli.py\nchoose | launch | attach | profiles | init\n~--cwd, ~--dry-run] as CLI
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
   [tui.py\nthe chooser: fields, words and rules\nanswers -> a plan] as TUI
-  [screen.py\nthe four screens: form, list,\nchecklist, box\none prompt_toolkit Application each] as Screen
+  [screen.py\nthe screens: form, list, checklist,\nbox and confirm\none prompt_toolkit Application each] as Screen
+  [recent.py\nthe profile each workspace\nlaunched last] as Recent
   [sessions.py\nsession registry\ncreate | attach | remove_pane] as Sessions
   [profiles.py\nProfile dataclass\nnetwork presets] as Profiles
   [agents.py\nagent registry\n+ layer-2 adapters] as Agents
@@ -46,11 +47,14 @@ User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
 TUI --> CLI : one plan:\nlocal | attach | new session
-TUI --> Screen : draws the form, then one editor\nper field over it
+TUI --> Screen : draws the form, one editor per field\nover it, and the confirm
+TUI --> Recent : which profile to open on
+CLI --> Recent : remembers the profile a launch used
 TUI --> Profiles : load / save profile
 TUI --> Agents : list agents, remember a typed command
 TUI --> Sessions : list live sessions
 Sessions ..> RunDir : registry survives\nHerdr restart
+Recent ..> RunDir : last-profile.json,\nper workspace
 Profiles ..> ConfigFiles : reads / writes
 Agents ..> ConfigFiles : reads user agents/*.json
 

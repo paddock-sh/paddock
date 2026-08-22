@@ -66,6 +66,11 @@ def launch(profile: Profile, name: str | None = None, backend: str = "srt") -> t
     return session, "wA:p3"
 
 
+def set_keep_alive(session: Session, keep_alive: bool) -> None:
+    calls.append(("set_keep_alive", session, keep_alive))
+    session.keep_alive = keep_alive
+
+
 def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
 
