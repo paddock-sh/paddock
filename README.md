@@ -17,7 +17,9 @@ You choose what each sandbox gets:
 - **Files**: writes denied by default, plus one optional shared directory
 
 Enforced by the OS: Seatbelt on macOS, bubblewrap on Linux. Saved profiles make
-it two keystrokes. Per-session VPNs, isolated IPs, and microVMs are on the
+it two keystrokes. A shell session can run in a microVM instead, with
+`paddock launch <profile> --backend msb`: its own kernel, and only the directory
+you shared. Agents in the microVM, per-session VPNs and isolated IPs are on the
 [roadmap](docs/ROADMAP.md). Targets **herdr 0.8.0**.
 
 > **Status:** the v1 launcher works end to end. It has had no outside security

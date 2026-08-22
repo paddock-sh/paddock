@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from paddock.backends import RunNotFound
+from paddock.backends import RunNotFound, SandboxGone
 from paddock.backends import microsandbox as msb
 from paddock.profiles import Profile
 from tests.conftest import FakeClient
@@ -19,11 +19,22 @@ SHELL = Profile(name="offline-shell", agent="shell", network_presets=[])
 
 @pytest.fixture
 def msb_calls(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Every msb command the backend runs, in order. Nothing reaches a real msb."""
+    """Every msb command the backend runs, in order. Nothing reaches a real msb.
+
+    It answers `msb ls` with the VMs it was asked to create and not asked to remove, so a
+    prepared session looks live and a collected one does not.
+    """
     calls: list[list[str]] = []
+    booted: list[str] = []
 
     def run(*args: str) -> str:
         calls.append(list(args))
+        if args[1] == "create":
+            booted.append(args[args.index("--name") + 1])
+        elif args[1] == "rm":
+            booted[:] = [name for name in booted if name != args[-1]]
+        elif args[1] == "ls":
+            return json.dumps([{"name": name, "status": "Running"} for name in booted])
         return ""
 
     monkeypatch.setattr(msb, "_run", run)
@@ -32,6 +43,22 @@ def msb_calls(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 def create_call(calls: list[list[str]]) -> list[str]:
     return next(call for call in calls if call[1] == "create")
+
+
+def commands(calls: list[list[str]]) -> list[str]:
+    return [call[1] for call in calls]
+
+
+def stub_msb(monkeypatch: pytest.MonkeyPatch, listed: list[dict]) -> list[list[str]]:
+    """Stand in for msb with a fixed `msb ls` answer. Returns the commands it is given."""
+    calls: list[list[str]] = []
+
+    def run(*args: str) -> str:
+        calls.append(list(args))
+        return json.dumps(listed) if args[1] == "ls" else ""
+
+    monkeypatch.setattr(msb, "_run", run)
+    return calls
 
 
 def flag(argv: list[str], name: str) -> list[str]:
@@ -119,8 +146,46 @@ def test_attaching_execs_a_terminal_shell_into_the_same_vm(which: dict[str, str]
 
 
 def test_stopping_a_vm_forces_it(which: dict[str, str]) -> None:
-    """`msb rm` without -f is a silent no-op on a running sandbox."""
+    """`msb rm` refuses a running sandbox without -f, so -f is never left off."""
     assert msb.stop_argv("paddock-demo") == ["msb", "rm", "-f", "paddock-demo"]
+
+
+def test_what_msb_is_running_comes_from_msb_ls(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`msb ls --format json` is msb's only machine-readable view of its sandboxes."""
+    calls = stub_msb(monkeypatch, [{"name": "paddock-demo", "status": "Running"}])
+
+    assert msb.vm_is_running("paddock-demo") is True
+    assert calls == [["msb", "ls", "--format", "json"]]
+
+
+def test_a_vm_msb_does_not_list_has_no_status(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stub_msb(monkeypatch, [])
+
+    assert msb.vm_status("paddock-demo") is None
+    assert msb.vm_is_running("paddock-demo") is False
+
+
+def test_a_stopped_vm_is_listed_but_cannot_be_attached_to(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stopped sandbox still has a record, and `msb exec` into it would fail."""
+    stub_msb(monkeypatch, [{"name": "paddock-demo", "status": "Stopped"}])
+
+    assert msb.vm_status("paddock-demo") == "stopped"
+    assert msb.vm_is_running("paddock-demo") is False
+
+
+def test_an_msb_ls_that_is_not_json_is_a_clear_error(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(msb, "_run", lambda *args: "not json")
+
+    with pytest.raises(msb.MsbError, match="JSON"):
+        msb.vm_is_running("paddock-demo")
 
 
 def test_no_msb_on_the_path_names_the_install_command(which: dict[str, str]) -> None:
@@ -138,7 +203,7 @@ def test_prepare_boots_one_vm_named_after_its_run_dir(
 ) -> None:
     run = msb.prepare(SHELL)
 
-    assert [call[1] for call in msb_calls] == ["create"]
+    assert commands(msb_calls) == ["create"]
     assert run.vm_handle == f"paddock-{run.run_dir.name}"
     assert flag(create_call(msb_calls), "--name") == [run.vm_handle]
 
@@ -290,18 +355,37 @@ def test_a_second_tab_execs_into_the_vm_the_first_one_booted(
     msb.open_pane(msb.load_run(run.run_dir))
     msb.open_pane(msb.load_run(run.run_dir))
 
-    assert [call[1] for call in msb_calls] == ["create"]  # one VM, two tabs
+    assert commands(msb_calls).count("create") == 1  # one VM, two tabs
     assert client.commands[0][1] == client.commands[1][1]
 
 
-def test_open_pane_can_start_the_tab_elsewhere(
+def test_a_tab_cannot_be_opened_somewhere_else_on_this_backend(
     which: dict[str, str], msb_calls: list[list[str]], client: FakeClient, tmp_path: Path
 ) -> None:
+    """A host directory would only set the tab's own cwd, which the guest shell replaces."""
     run = msb.prepare(SHELL)
 
-    msb.open_pane(run, cwd=tmp_path)
+    with pytest.raises(ValueError, match="guest workdir"):
+        msb.open_pane(run, cwd=tmp_path)
 
-    assert client.tabs[0][0] == tmp_path
+    assert client.tabs == []
+
+
+def test_a_vm_that_is_gone_opens_no_tab_and_says_so(
+    which: dict[str, str],
+    msb_calls: list[list[str]],
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the check the tab opens, `msb exec` fails, and the pane sits there dead."""
+    run = msb.prepare(SHELL)
+    stub_msb(monkeypatch, [])
+
+    with pytest.raises(SandboxGone, match=run.vm_handle):
+        msb.open_pane(run)
+
+    assert client.tabs == []
+    assert client.commands == []
 
 
 # --- collecting the session ------------------------------------------------
@@ -317,13 +401,38 @@ def test_collecting_a_session_removes_its_vm(
     assert msb_calls[-1] == ["msb", "rm", "-f", run.vm_handle]
 
 
-def test_a_vm_that_is_already_gone_is_not_an_error(
+def test_a_vm_msb_has_never_heard_of_is_not_removed_again(
+    which: dict[str, str], msb_calls: list[list[str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A crash can outlive the VM. Collecting the session finishes, and says nothing."""
+    run = msb.prepare(SHELL)
+    msb.collect(run.run_dir)
+    before = len(msb_calls)
+
+    msb.collect(run.run_dir)
+
+    assert commands(msb_calls[before:]) == ["ls"]  # asked, and nothing to remove
+    assert capsys.readouterr().err == ""
+
+
+def test_a_stopped_vm_is_still_removed(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stopped sandbox keeps its record and its disk, so collecting one has work to do."""
+    calls = stub_msb(monkeypatch, [{"name": "paddock-demo", "status": "Stopped"}])
+
+    msb.stop_vm("paddock-demo")
+
+    assert calls[-1] == ["msb", "rm", "-f", "paddock-demo"]
+
+
+def test_a_vm_that_goes_away_mid_collection_is_not_an_error(
     which: dict[str, str],
     msb_calls: list[list[str]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A crash can outlive the VM. Collecting the session must still finish."""
+    """Between the list and the remove, or an msb that will not answer at all."""
     run = msb.prepare(SHELL)
 
     def gone(*args: str) -> str:
@@ -335,9 +444,31 @@ def test_a_vm_that_is_already_gone_is_not_an_error(
     assert "sandbox not found" in capsys.readouterr().err
 
 
-def test_collecting_a_run_dir_with_no_launch_record_stops_nothing(
+def test_collecting_a_run_dir_with_no_launch_record_uses_the_handle_it_was_given(
+    which: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The registry keeps the handle too, so a lost run dir does not leak the VM."""
+    calls = stub_msb(monkeypatch, [{"name": "paddock-from-the-registry", "status": "Running"}])
+
+    msb.collect(tmp_path, "paddock-from-the-registry")
+
+    assert calls[-1] == ["msb", "rm", "-f", "paddock-from-the-registry"]
+
+
+def test_collecting_with_no_record_and_no_handle_stops_nothing(
     msb_calls: list[list[str]], tmp_path: Path
 ) -> None:
     msb.collect(tmp_path)
 
     assert msb_calls == []
+
+
+def test_the_record_wins_over_a_handle_that_disagrees(
+    which: dict[str, str], msb_calls: list[list[str]], tmp_path: Path
+) -> None:
+    """The run dir is what the VM was actually booted as."""
+    run = msb.prepare(SHELL)
+
+    msb.collect(run.run_dir, "paddock-stale")
+
+    assert msb_calls[-1] == ["msb", "rm", "-f", run.vm_handle]

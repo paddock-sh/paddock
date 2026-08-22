@@ -22,7 +22,7 @@ from pathlib import Path
 from types import ModuleType
 
 from paddock import herdr_client, state_dir, synth_config
-from paddock.backends import microsandbox, srt
+from paddock.backends import SandboxGone, microsandbox, srt
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
@@ -138,11 +138,18 @@ def create_session(
 def attach(session: Session, cwd: Path | None = None) -> str:
     """Open a tab on the session and start the agent in it. Returns the pane id.
 
-    The tab starts in the session's workdir unless another directory is named.
+    The tab starts in the session's workdir unless another directory is named, which
+    not every backend can honour: an msb tab always opens in the guest (SPEC §2.2).
     """
     backend = backend_for(session.backend)
     run = backend.load_run(Path(session.run_dir))
-    pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+    try:
+        pane_id = backend.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
+    except SandboxGone as error:
+        # There is nothing left to attach to, so the session ends here rather than
+        # sitting in the registry offering tabs that cannot open (SPEC §3.4).
+        _forget(session)
+        raise SandboxGone(f"session {session.name!r} is over: {error}") from error
     session.pane_ids.append(pane_id)
     _record(session)
     return pane_id
@@ -153,7 +160,13 @@ def launch(
 ) -> tuple[Session, str]:
     """A new session with its first tab: what the chooser does for "New sandbox session"."""
     session = create_session(profile, name, backend)
-    return session, attach(session)
+    try:
+        return session, attach(session)
+    except Exception as error:
+        # create_session has already booted whatever the backend runs. A session that
+        # never got its first tab must not keep that running, or sit in the registry.
+        _forget(session)
+        raise RuntimeError(f"{_describe(session)} could not open its first tab: {error}") from error
 
 
 def remove_pane(pane_id: str) -> None:
@@ -172,10 +185,7 @@ def remove_pane(pane_id: str) -> None:
             kept.append(session)
         _save(kept)
         for session in collected:
-            # The run dir stays on disk, because deleting a workdir would lose work, but the
-            # token in it does not outlive the session (SPEC §8).
-            synth_config.discard_credentials(Path(session.run_dir))
-            _tear_down(session)
+            _collect(session)
 
 
 def launch_local(cwd: Path | None = None) -> str:
@@ -183,18 +193,39 @@ def launch_local(cwd: Path | None = None) -> str:
     return herdr_client.create_tab(cwd or Path.cwd())
 
 
-def _tear_down(session: Session) -> None:
-    """Let the backend end what it has running, a microVM above all (SPEC §3.4).
+def _collect(session: Session) -> None:
+    """End a session nobody is attached to any more (SPEC §3.4).
 
-    A backend this paddock does not have cannot be asked, and a pane closing is no place
-    to raise: say what was left running and carry on.
+    The run dir stays on disk, because deleting a workdir would lose work, but the token
+    in it does not outlive the session (SPEC §8), and neither does its sandbox. A backend
+    this paddock does not have cannot be asked, and a pane closing is no place to raise:
+    say what was left running and carry on.
     """
+    synth_config.discard_credentials(Path(session.run_dir))
     try:
         backend = backend_for(session.backend)
     except ValueError as error:
         print(f"paddock: {error}", file=sys.stderr)
         return
-    backend.collect(Path(session.run_dir))
+    backend.collect(Path(session.run_dir), session.vm_handle)
+
+
+def _forget(session: Session) -> None:
+    """Take a session out of the registry and end it. Doing it twice is not an error."""
+    with _locked():
+        live = list_sessions()
+        kept = [other for other in live if other.session_id != session.session_id]
+        if len(kept) == len(live):
+            return  # another path collected it already
+        _save(kept)
+    _collect(session)
+
+
+def _describe(session: Session) -> str:
+    """A session in an error message: its name, and the VM it runs in when it has one."""
+    if session.vm_handle:
+        return f"session {session.name!r} (microVM {session.vm_handle})"
+    return f"session {session.name!r}"
 
 
 @contextmanager

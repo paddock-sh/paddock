@@ -446,8 +446,9 @@ sessions, since `msb create` fails on a name collision. Prefix it, for example
 and returns the handle, `open_pane` runs one `msb exec`. Both are one short
 command, which §1.3 requires because the command is typed into a pane's shell.
 
-`msb rm` without `-f` is a silent no-op on a running sandbox, so collection must
-always pass `-f`.
+`msb rm` without `-f` refuses a running sandbox, so collection must always pass
+`-f`. (This spike first recorded that as a silent no-op. It is not: it is
+`error: sandbox still running`, exit 1. Corrected from the probe in the appendix.)
 
 `msb ls --format json` gives the live sandbox list machine-readably, so
 `sessions.json` can be reconciled against what is actually running rather than
@@ -541,6 +542,77 @@ possible, but somebody still has to build and maintain those images.
 Build the backend against a pinned `msb` 0.6.13 behind the existing `Backend`
 interface, starting with `create_session` and attach, and settle the host and
 guest question (risk 2) in design before any code.
+
+---
+
+## Appendix: probes from the backend build
+
+Run against the same `msb` 0.6.13 when `backends/microsandbox.py` was built, to
+settle what the spike had not measured. Sandbox `probevm`: alpine,
+`--mount-dir /private/tmp/msbprobe/shared:/work --workdir /work`.
+
+**`--workdir` on create, and a bare `exec`.** Both argv forms the backend uses:
+
+```
+$ msb exec probevm -- /bin/sh -c 'pwd; id'
+/work
+uid=0(root) gid=0(root)
+```
+
+`msb exec --tty <name>` with no command attaches to the default shell, at that
+same workdir. That is what a paddock pane runs, and its prompt comes up as
+`/work #`.
+
+**The guest is root, and `/.msb` is mounted without asking.**
+
+```
+$ msb exec probevm -- mount
+overlay on / type overlay (rw,relatime,lowerdir=/.msb/rootfs/lower,...)
+msb_runtime on /.msb type virtiofs (rw,relatime)
+...
+work_0c9a453f on /work type virtiofs (rw,relatime)
+
+$ msb exec probevm -- /bin/sh -c 'echo probe > /.msb/written_by_guest.txt'
+$ find ~/.microsandbox/sandboxes -name written_by_guest.txt
+/Users/desquaredp/.microsandbox/sandboxes/probevm/runtime/written_by_guest.txt
+```
+
+So the guest has a host-backed writable mount paddock did not put there. It is
+per sandbox and goes when the sandbox does.
+
+**A guest write into the shared dir changes mode and gains an xattr.**
+
+```
+[guest] $ echo guest > /work/g.txt; chmod 644 /work/g.txt; ls -l /work
+-rw-r--r--    1 root     root             6 Aug 22 04:50 g.txt
+
+[host]  $ ls -l@ /tmp/msbprobe/shared/
+-rw-------@ 1 desquaredp  wheel  6 Aug 21 21:50 g.txt
+	user.msb.override_stat	20
+-rw-r--r--  1 desquaredp  wheel  5 Aug 21 21:50 h.txt      # host file, untouched
+```
+
+**`msb rm` without `-f` is an error, not a no-op.** The spike said no-op; it is not:
+
+```
+$ msb rm probevm
+error: sandbox still running: cannot remove sandbox 'probevm': still running
+exit=1
+```
+
+**`msb ls --format json` is the liveness check**, and it is empty rather than
+absent when nothing runs:
+
+```
+$ msb ls --format json
+[{"created_at":"...","image":"alpine","name":"probevm","status":"Running"}]
+$ msb rm -f probevm && msb ls --format json
+[]
+$ msb inspect nosuchvm
+error: sandbox not found: nosuchvm      # exit 1
+```
+
+`probevm` and `/tmp/msbprobe` were removed afterwards.
 
 ---
 

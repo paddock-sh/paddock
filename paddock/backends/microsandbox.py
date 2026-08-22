@@ -27,6 +27,7 @@ from paddock.agents import load_agents
 from paddock.backends import (
     LAUNCH_FILE,
     RunNotFound,
+    SandboxGone,
     launch_line,
     new_run_dir,
     write_launch_script,
@@ -130,15 +131,51 @@ def attach_command(handle: str) -> str:
 
 
 def stop_argv(handle: str) -> list[str]:
-    """`msb rm` without -f is a silent no-op on a running sandbox, so it is never left off."""
+    """`msb rm` refuses a running sandbox without -f (`still running`, exit 1), so -f stays."""
     return [find_msb(), "rm", "-f", handle]
 
 
-def stop_vm(handle: str) -> None:
-    """Destroy the VM. One that is already gone is reported, not raised: the session ends anyway."""
+def list_argv() -> list[str]:
+    """msb's only machine-readable view of what it is running."""
+    return [find_msb(), "ls", "--format", "json"]
+
+
+def vm_status(handle: str) -> str | None:
+    """What msb says about this sandbox: its status, or None when msb has no such name."""
+    output = _run(*list_argv())
     try:
+        listed = json.loads(output or "[]")
+    except ValueError as error:
+        raise MsbError(f"msb ls did not answer with JSON: {output!r}") from error
+    if not isinstance(listed, list):
+        raise MsbError(f"msb ls did not answer with a list of sandboxes: {output!r}")
+    for entry in listed:
+        if isinstance(entry, dict) and entry.get("name") == handle:
+            return str(entry.get("status", "")).lower()
+    return None
+
+
+def vm_is_running(handle: str) -> bool:
+    """Can a tab exec into this VM? A stopped sandbox still has a record, and cannot.
+
+    Asked before a tab is opened, because `msb exec` into a VM that is gone fails after
+    the pane exists, which leaves a dead tab and a pane id nothing can use.
+    """
+    return vm_status(handle) == "running"
+
+
+def stop_vm(handle: str) -> None:
+    """Destroy the VM, running or stopped. One msb has never heard of is not an error.
+
+    A sandbox that is only stopped still holds its disk, so it is removed like any other.
+    """
+    try:
+        if vm_status(handle) is None:
+            return
         _run(*stop_argv(handle))
     except (MsbError, MsbNotFound) as error:
+        # It went away between the two calls, or msb will not answer. Either way the
+        # session is over, and a pane closing is no place to raise.
         print(f"paddock: {error}", file=sys.stderr)
 
 
@@ -184,18 +221,26 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     The tab's own directory is the host side of the mount, so the pane and the guest
     shell are looking at the same files.
     """
-    pane_id = herdr_client.create_tab(cwd or run.workdir, label=label)
+    if cwd is not None:
+        raise ValueError(
+            f"an msb session always opens in the guest workdir {GUEST_WORKDIR}: "
+            f"{cwd} would only set the host tab's own directory, which the guest shell replaces"
+        )
+    if not vm_is_running(run.vm_handle):
+        raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
+    pane_id = herdr_client.create_tab(run.workdir, label=label)
     herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
     return pane_id
 
 
-def collect(run_dir: Path) -> None:
-    """Destroy the session's VM. A run dir with no record names no VM, so there is none to stop."""
+def collect(run_dir: Path, vm_handle: str = "") -> None:
+    """Destroy the session's VM. The run dir names it, and the registry's handle is the fallback."""
     try:
-        run = load_run(run_dir)
+        vm_handle = load_run(run_dir).vm_handle
     except RunNotFound:
-        return
-    stop_vm(run.vm_handle)
+        pass  # the run dir lost its record, so the caller's handle is all there is
+    if vm_handle:
+        stop_vm(vm_handle)
 
 
 def _run(*args: str) -> str:

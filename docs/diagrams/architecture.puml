@@ -71,7 +71,7 @@ MsbBackend ..> SynthConfig : planned: mount run_dir/config into the guest\n(skil
 Agents --> SynthConfig : credentials + whitelisted skills
 
 SrtBackend --> HerdrClient : pane command + env
-MsbBackend --> HerdrClient : pane command (no env: the guest\ngets its own with `msb create -e`)
+MsbBackend --> HerdrClient : pane command, and no env: a host tab\nvariable would not reach the guest
 HerdrClient --> HerdrCLI : herdr tab create [~--workspace] ~--cwd ~--label\n[~--env KEY=VALUE ...] ~--focus\nherdr pane run <pane_id> `exec /bin/sh <run_dir>/launch.sh`\nherdr config check | herdr server reload-config
 HerdrCLI --> HerdrUI : creates tab, returns\nresult.root_pane.pane_id
 HerdrUI --> Srt : sandboxed pane process

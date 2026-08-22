@@ -140,11 +140,16 @@ sugar over it. No manifest is written in v1.
 One interface, in four calls:
 
 ```
-Backend.prepare(profile) -> run          # everything the run needs, written or booted
-Backend.load_run(run_dir) -> run         # a prepared run read back, for a later tab
-Backend.open_pane(run, label) -> pane id # a tab on a prepared run
-Backend.collect(run_dir)                 # nobody is attached any more: stop what is running
+Backend.prepare(profile) -> run             # everything the run needs, written or booted
+Backend.load_run(run_dir) -> run            # a prepared run read back, for a later tab
+Backend.open_pane(run, label) -> pane id    # a tab on a prepared run
+Backend.collect(run_dir, vm_handle)         # nobody is attached: stop what is running
 ```
+
+`open_pane` raises `SandboxGone` when the sandbox the run names is not there any more,
+and sessions ends that session rather than leaving a tab that cannot open (§3.4).
+`collect` is given the registry's `vm_handle` as well as the run dir, so a run
+directory that lost its record does not leak a VM.
 
 They are separate because a session is prepared once and attached to many times
 (§3.2), and because what a session leaves running outlives its last tab. A backend
@@ -299,7 +304,8 @@ own kernel rather than a filtered view of the host's) at the cost of an image pe
 agent. There is no server and no daemon: each running VM is one `msb` process, and
 the runtime installs in user space with no privileged step. The
 [microVM spike](spikes/microvm.md) measured 175ms from `msb create` to a usable VM.
-Every number in this section is from that spike.
+Nothing in this section is estimated: it was measured, in that spike or against
+`msb` 0.6.13 while the backend was built.
 
 **A session is a persistent VM.** `prepare()` boots it, every tab execs into it, and
 `collect()` destroys it when the last tab is gone:
@@ -308,12 +314,24 @@ Every number in this section is from that spike.
 | --- | --- |
 | create | `msb create --name <handle> --mount-dir <workdir>:/work --workdir /work <net rules> <image>` |
 | attach a tab | `msb exec --tty <handle>`, in `launch.sh` like any other pane command |
-| collect | `msb rm -f <handle>`. Without `-f`, `msb rm` is a silent no-op on a running sandbox |
+| collect | `msb rm -f <handle>`. Without `-f`, `msb rm` refuses a running sandbox: `sandbox still running`, exit 1 |
 
 The handle is `paddock-<run dir name>`. It has to be unique among live sandboxes on
 the host, not only among paddock sessions, because `msb create` fails on a name
-collision. The session record keeps it as `vm_handle` (§3.4). A VM that is already
-gone is reported and not raised: the session is over either way.
+collision. The session record keeps it as `vm_handle` (§3.4), which is the fallback
+handle when a run directory has lost its `launch.json`. A VM that is already gone is
+reported and not raised: the session is over either way.
+
+**Attaching checks the VM first**, with `msb ls --format json`. `msb exec` into a VM
+that is gone fails after the pane exists, which leaves a dead tab and a pane id nothing
+can use. A session whose VM has gone is dropped from the registry there and then, the
+same ending its last tab closing would have given it. A stopped sandbox counts as gone:
+its record survives, but nothing can exec into it.
+
+**An msb tab always opens in the guest workdir.** `paddock attach <session> --cwd <dir>`
+is refused on an msb session: that flag sets the host tab's own directory, which the
+guest shell replaces, so honouring it silently would be a lie. On srt it still does what
+it says.
 
 The same profile maps across:
 
@@ -326,15 +344,20 @@ The same profile maps across:
 | `network_presets` | `network.allowedDomains` | `--net-default deny`, then one allow rule each |
 | `deny_read` | `filesystem.denyRead` | nothing to deny: an unmounted path is not in the guest |
 
-Three of those differ in kind, not in spelling:
+Four of those differ in kind, not in spelling:
 
 - **Mount sources are resolved.** `msb` mounts the path as written, and `/tmp` is a
   symlink to `/private/tmp` on macOS, which fails as a mount source. The backend
   passes `Path.resolve()` for every mount.
 - **Network rules name a host, a protocol and a port, not a URL path.** srt allows a
   domain through its proxy; an msb rule is `allow@<domain>:tcp:443`, so it is https to
-  that host and nothing else. `allow@dns` is added with the first domain. A profile
-  with no domains gets no network at all, DNS included.
+  that host and nothing else. A profile with no domains gets no network at all, DNS
+  included.
+- **DNS is all or nothing.** `allow@dns` goes in with the first allowed domain, and it
+  opens the gateway resolver for **every** name, not only the allowed ones. Lookups of
+  anything else succeed and the connection is then refused. srt's proxy sees the request
+  itself, so it has no equivalent hole. Names are a low-bandwidth channel out, and this
+  is the honest limit of the msb network policy.
 - **The PATH shim dir has no job here.** The guest holds what the image holds, so the
   image is the tool selection, and the absolute-path bypass §4.1 documents is not
   available: `/opt/homebrew/bin/docker` is not in the guest to be run.
@@ -343,6 +366,29 @@ Three of those differ in kind, not in spelling:
 refused at create, before a VM is booted. Provisioning an agent inside the guest is
 the next feature, and the spike showed layer 3 needs no new mechanism for it: mount
 `run_dir/config` and point the config-dir variable at it with `-e`.
+
+#### What the guest actually is
+
+Three facts that "its own kernel, and only what is mounted" does not convey. All three
+were measured on `msb` 0.6.13.
+
+- **The guest runs as root.** `id` in a paddock guest is `uid=0(root)`, because that is
+  what the image's default user is and paddock passes no `--user`. It is root in the
+  guest only: a different kernel, and the only host state it reaches is what is mounted.
+  It does mean anything running in the session can write anywhere in the guest, so the
+  image is not a boundary within the session.
+- **`/.msb` is mounted, and paddock did not ask for it.** msb gives every guest a
+  read-write virtiofs mount at `/.msb` (`msb_runtime`), holding the rootfs layers, its
+  script directory and its TLS material. It is backed by
+  `~/.microsandbox/sandboxes/<handle>/runtime/` on the host, and the guest can create
+  files there. So "only what is mounted exists" is exact, but paddock's mount list is
+  not the whole list: msb adds its own, per sandbox, and it goes when the sandbox does.
+- **Guest writes into `shared_dir` come back changed.** A file the guest creates as
+  `-rw-r--r-- root root` arrives on the host owned by you, mode `600`, carrying a
+  `user.msb.override_stat` extended attribute, which is how msb keeps the guest's view
+  of ownership. Files the guest never touches are untouched. Under srt the agent writes
+  as you, with your umask, so this is a visible difference for anything that shares a
+  directory with tools on the host.
 
 Not built, and not stubbed:
 
@@ -484,6 +530,16 @@ session. The prompt that offers keep-alive arrives with the TUI.
 Both failure modes cost something real: a discarded microVM loses running state, a
 leaked one holds memory.
 
+Two other endings get the same treatment, because `create_session` boots a sandbox
+before any tab exists:
+
+- **The first tab fails to open.** `launch` rolls the session back: out of the
+  registry, credentials discarded, backend asked to collect. The error names the
+  session and its VM. Without that, a failed `herdr tab create` would leave a running
+  microVM and a registered session with no tabs, which nothing would ever collect.
+- **The sandbox is gone before a tab attaches.** `attach` ends the session the same
+  way and says so, rather than opening a tab that cannot join anything (§2.2).
+
 ### 3.5 Pane labels
 
 Panes are labelled `sbx:<session>`, so groupings are visible in the tab bar. An
@@ -522,7 +578,8 @@ and coreutils work).
 
 All of that is about `srt`. An **`msb` session has no shim dir**: the guest holds
 what the image holds, so tool selection is the image, and there is no host binary
-behind an absolute path for the bypass to reach (§2.2).
+behind an absolute path for the bypass to reach. What an msb guest is instead, root
+inside it included, is in [§2.2](#what-the-guest-actually-is).
 
 ### 4.2 Layer 2: agent config (agent-enforced)
 

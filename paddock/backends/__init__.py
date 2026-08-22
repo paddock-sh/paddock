@@ -26,6 +26,14 @@ class RunNotFound(RuntimeError):
     """The run dir holds no usable launch record, so nothing can attach to it."""
 
 
+class SandboxGone(RuntimeError):
+    """The sandbox this run named is not there any more, so no tab can join it.
+
+    Raised before a tab is opened, so a session that lost its VM says so instead of
+    leaving a dead pane. Sessions treats it as the end of that session (SPEC §3.4).
+    """
+
+
 def new_run_dir() -> Path:
     """A fresh directory for this launch, named for when it was made."""
     runs = state_dir() / "runs"

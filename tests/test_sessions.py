@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from paddock import sessions
-from paddock.backends import microsandbox, srt
+from paddock import herdr_client, sessions
+from paddock.backends import SandboxGone, microsandbox, srt
 from paddock.profiles import Profile
 from tests.conftest import FakeClient
 
@@ -23,14 +23,23 @@ class FakeRun:
 
 
 class FakeBackend:
-    """A backend that is not srt, so dispatch is tested on the name and not on one module."""
+    """A backend that is not srt, so dispatch is tested on the name and not on one module.
 
-    def __init__(self, run_dir: str = "/state/runs/fake", vm_handle: str = "") -> None:
+    `fails_with` is what its `open_pane` raises instead of opening a tab.
+    """
+
+    def __init__(
+        self,
+        run_dir: str = "/state/runs/fake",
+        vm_handle: str = "",
+        fails_with: Exception | None = None,
+    ) -> None:
         self.run = FakeRun(Path(run_dir), vm_handle)
+        self.fails_with = fails_with
         self.prepared: list[Profile] = []
         self.loaded: list[Path] = []
         self.opened: list[tuple[object, str, Path | None]] = []
-        self.collected: list[Path] = []
+        self.collected: list[tuple[Path, str]] = []
 
     def prepare(self, profile: Profile) -> FakeRun:
         self.prepared.append(profile)
@@ -41,11 +50,13 @@ class FakeBackend:
         return self.run
 
     def open_pane(self, run: FakeRun, label: str = "", cwd: Path | None = None) -> str:
+        if self.fails_with is not None:
+            raise self.fails_with
         self.opened.append((run, label, cwd))
         return "wA:p7"
 
-    def collect(self, run_dir: Path) -> None:
-        self.collected.append(run_dir)
+    def collect(self, run_dir: Path, vm_handle: str = "") -> None:
+        self.collected.append((run_dir, vm_handle))
 
 
 @pytest.fixture(autouse=True)
@@ -261,6 +272,22 @@ def test_two_tabs_from_separate_loads_both_stay_attached(
     assert sessions.get_session("demo").pane_ids == [first, second]
 
 
+def test_attaching_to_a_sandbox_that_is_gone_drops_the_session(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch, state_dir: Path
+) -> None:
+    """A VM removed behind paddock's back leaves a session nothing can attach to."""
+    gone = SandboxGone("the microVM paddock-1 is gone")
+    fake = FakeBackend(vm_handle="paddock-1", fails_with=gone)
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+
+    with pytest.raises(SandboxGone, match="demo"):
+        sessions.attach(session)
+
+    assert sessions.list_sessions() == []
+    assert json.loads((state_dir / "sessions.json").read_text()) == []
+
+
 def test_attach_can_open_the_tab_somewhere_else(
     which: dict[str, str], client: FakeClient, tmp_path: Path
 ) -> None:
@@ -279,6 +306,37 @@ def test_launch_creates_a_session_and_attaches_to_it(
     assert sessions.get_session("demo").pane_ids == [pane_id]
     assert client.tabs[0][1] == "sbx:demo"
     assert session.name == "demo"
+
+
+def test_a_session_whose_first_tab_fails_is_not_left_behind(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise the VM keeps running and the registry keeps a session with no tabs."""
+    fake = FakeBackend(vm_handle="paddock-1", fails_with=RuntimeError("herdr said no"))
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    with pytest.raises(RuntimeError, match="paddock-1") as raised:
+        sessions.launch(Profile(tools=[]), name="demo", backend="fake")
+
+    assert "demo" in str(raised.value)
+    assert "herdr said no" in str(raised.value)
+    assert sessions.list_sessions() == []
+    assert fake.collected == [(Path("/state/runs/fake"), "paddock-1")]
+
+
+def test_a_first_tab_that_fails_on_a_backend_with_no_vm_is_rolled_back_too(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch, state_dir: Path
+) -> None:
+    def refuse(pane_id: str, command: str) -> None:
+        raise RuntimeError("herdr pane run failed")
+
+    monkeypatch.setattr(herdr_client, "run_in_pane", refuse)
+
+    with pytest.raises(RuntimeError, match="demo"):
+        sessions.launch(Profile(tools=[]), name="demo")
+
+    assert sessions.list_sessions() == []
+    assert json.loads((state_dir / "sessions.json").read_text()) == []
 
 
 # --- backends --------------------------------------------------------------
@@ -539,7 +597,20 @@ def test_collecting_a_session_lets_its_backend_tear_the_run_down(
 
     sessions.remove_pane(sessions.attach(session))
 
-    assert fake.collected == [Path(session.run_dir)]
+    assert fake.collected == [(Path(session.run_dir), "")]
+
+
+def test_the_backend_is_handed_the_handle_the_registry_kept(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run dir that lost its launch record still names its VM, in the registry."""
+    fake = FakeBackend(vm_handle="paddock-1")
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(tools=[]), name="demo", backend="fake")
+
+    sessions.remove_pane(sessions.attach(session))
+
+    assert fake.collected == [(Path(session.run_dir), "paddock-1")]
 
 
 def test_a_session_that_survives_its_last_pane_is_not_torn_down(
