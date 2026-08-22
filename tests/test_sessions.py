@@ -27,6 +27,11 @@ def settings_path(command: str) -> Path:
     return Path(shlex.split(command)[2])
 
 
+def launch_script(session: sessions.Session) -> str:
+    """The composed command back out of the script the pane runs."""
+    return (Path(session.run_dir) / "launch.sh").read_text().split("\n", 1)[1]
+
+
 def write_registry(state_dir: Path, records: list[dict]) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True)
     path = state_dir / "sessions.json"
@@ -179,8 +184,9 @@ def test_attach_runs_the_sandboxed_command_of_that_session(
     sessions.attach(session)
 
     _, command = client.commands[0]
-    assert shlex.split(command)[0] == "srt"
-    assert settings_path(command) == Path(session.run_dir) / "srt-settings.json"
+    assert command == f"exec /bin/sh {session.run_dir}/launch.sh"
+    assert shlex.split(launch_script(session))[0] == "srt"
+    assert settings_path(launch_script(session)) == Path(session.run_dir) / "srt-settings.json"
 
 
 def test_attach_records_the_pane_on_the_session(which: dict[str, str], client: FakeClient) -> None:
