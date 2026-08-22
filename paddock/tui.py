@@ -163,10 +163,13 @@ def first_choices(has_sessions: bool) -> list[tuple[str, str]]:
 
 
 def session_label(session: sessions.Session) -> str:
-    """A session by what it is (agent, permissions, size), not by its name alone (SPEC §3.1)."""
+    """A session by what it is (backend, agent, permissions, size), not by its name (SPEC §3.1).
+
+    The backend is there because attaching means a different thing on each one (SPEC §3.2).
+    """
     panes = len(session.pane_ids)
     return (
-        f"{session.name}: {session.agent} / {session.profile_name}, "
+        f"{session.name} [{session.backend}]: {session.agent} / {session.profile_name}, "
         f"{panes} tab{'' if panes == 1 else 's'}"
     )
 

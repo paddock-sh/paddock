@@ -39,6 +39,7 @@ alt Local namespace chosen
 else Attach to an existing session chosen
   TUI -> Sessions : get_session(name or id)
   TUI -> Sessions : attach(session)
+  Sessions -> Sessions : backend_for(session.backend)\nthe module sessions.BACKENDS maps that name to.\nA name this paddock does not have raises ValueError\nhere, before any pane is opened
   Sessions -> Backend : load_run(run_dir)\nreads run_dir/launch.json; the pane runs\nthe run_dir/launch.sh prepare() wrote
   Sessions -> Backend : open_pane(run, label="sbx:<session>")
   note right

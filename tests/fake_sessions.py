@@ -24,6 +24,7 @@ class Session:
     run_dir: str = "/state/runs/s1"
     keep_alive: bool = False
     pane_ids: list[str] = field(default_factory=list)
+    backend: str = "srt"
 
 
 # What the fake was asked to do, in order, as ("name", *arguments).

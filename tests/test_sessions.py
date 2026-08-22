@@ -3,7 +3,7 @@
 import json
 import os
 import shlex
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,35 @@ import pytest
 from paddock import sessions
 from paddock.profiles import Profile
 from tests.conftest import FakeClient
+
+
+@dataclass
+class FakeRun:
+    """What a backend hands back: sessions only ever reads the run dir off it."""
+
+    run_dir: Path
+
+
+class FakeBackend:
+    """A backend that is not srt, so dispatch is tested on the name and not on one module."""
+
+    def __init__(self, run_dir: str = "/state/runs/fake") -> None:
+        self.run = FakeRun(Path(run_dir))
+        self.prepared: list[Profile] = []
+        self.loaded: list[Path] = []
+        self.opened: list[tuple[object, str, Path | None]] = []
+
+    def prepare(self, profile: Profile) -> FakeRun:
+        self.prepared.append(profile)
+        return self.run
+
+    def load_run(self, run_dir: Path) -> FakeRun:
+        self.loaded.append(run_dir)
+        return self.run
+
+    def open_pane(self, run: FakeRun, label: str = "", cwd: Path | None = None) -> str:
+        self.opened.append((run, label, cwd))
+        return "wA:p7"
 
 
 @pytest.fixture(autouse=True)
@@ -244,6 +273,115 @@ def test_launch_creates_a_session_and_attaches_to_it(
     assert sessions.get_session("demo").pane_ids == [pane_id]
     assert client.tabs[0][1] == "sbx:demo"
     assert session.name == "demo"
+
+
+# --- backends --------------------------------------------------------------
+
+
+def test_a_new_session_says_which_backend_it_runs_on(
+    which: dict[str, str], client: FakeClient, state_dir: Path
+) -> None:
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+
+    assert session.backend == "srt"
+    assert sessions.get_session("demo").backend == "srt"
+    records = json.loads((state_dir / "sessions.json").read_text())
+    assert records[0]["backend"] == "srt"
+
+
+def test_a_record_written_before_the_backend_field_is_an_srt_session(state_dir: Path) -> None:
+    """v1 wrote no backend, and every session it wrote was an srt one (SPEC §3.4)."""
+    legacy = record()
+    legacy.pop("backend")
+    write_registry(state_dir, [legacy])
+
+    assert [session.backend for session in sessions.list_sessions()] == ["srt"]
+
+
+def test_a_session_on_a_backend_this_paddock_lacks_still_loads(state_dir: Path) -> None:
+    """A registry written by a newer paddock is readable; only attaching to it is not."""
+    write_registry(state_dir, [record(backend="microsandbox")])
+
+    assert [session.name for session in sessions.list_sessions()] == ["demo"]
+
+
+def test_attaching_on_an_unknown_backend_says_which_one(
+    state_dir: Path, client: FakeClient
+) -> None:
+    write_registry(state_dir, [record(backend="microsandbox")])
+
+    with pytest.raises(ValueError, match="microsandbox"):
+        sessions.attach(sessions.get_session("demo"))
+
+    assert client.tabs == []
+
+
+def test_attach_goes_through_the_backend_the_session_names(
+    state_dir: Path, client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    write_registry(state_dir, [record(backend="fake")])
+    session = sessions.get_session("demo")
+
+    pane_id = sessions.attach(session)
+
+    assert fake.loaded == [Path(session.run_dir)]
+    assert fake.opened == [(fake.run, "sbx:demo", None)]
+    assert pane_id == "wA:p7"
+    assert sessions.get_session("demo").pane_ids == ["wA:p7"]
+
+
+def test_a_field_a_newer_paddock_wrote_survives_a_rewrite(
+    which: dict[str, str], client: FakeClient, state_dir: Path
+) -> None:
+    """One registry, two paddocks: writing it back must not strip what the newer one added."""
+    write_registry(
+        state_dir,
+        [record(session_id="newer", name="newer", backend="microsandbox", vm_handle="paddock-1")],
+    )
+
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    sessions.remove_pane(sessions.attach(session))
+
+    records = json.loads((state_dir / "sessions.json").read_text())
+    assert [entry.get("vm_handle") for entry in records] == ["paddock-1"]
+
+
+def test_a_field_written_while_a_tab_was_opening_is_kept(
+    which: dict[str, str], client: FakeClient, state_dir: Path
+) -> None:
+    """The other writer's key is merged back the way its panes are, not written over."""
+    session = sessions.create_session(Profile(tools=[]), name="demo")
+    write_registry(
+        state_dir,
+        [
+            record(
+                session_id=session.session_id,
+                name="demo",
+                run_dir=session.run_dir,
+                vm_handle="paddock-1",
+            )
+        ],
+    )
+
+    sessions.attach(session)
+
+    records = json.loads((state_dir / "sessions.json").read_text())
+    assert [entry.get("vm_handle") for entry in records] == ["paddock-1"]
+
+
+def test_a_new_session_is_prepared_by_the_registered_backend(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "srt", fake)
+    profile = Profile(tools=[])
+
+    session = sessions.create_session(profile, name="demo")
+
+    assert fake.prepared == [profile]
+    assert session.run_dir == "/state/runs/fake"
 
 
 # --- lifecycle -------------------------------------------------------------
