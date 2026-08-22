@@ -1,6 +1,6 @@
 [project]
 name = "paddock"
-version = "0.1.0"
+version = "0.2.0"
 description = "Sandboxed agent sessions for herdr: per-pane tool, network, and filesystem permissions"
 # 3.11 for tomllib: `paddock init` parses the config it is about to write, and a check
 # that a 3.10 could skip is no check at all (SPEC §1.1).
@@ -9,6 +9,26 @@ dependencies = [
     # The screens are prompt_toolkit Applications of our own, and it is the only one.
     "prompt-toolkit>=3.0",
 ]
+readme = "README.md"
+authors = [{ name = "Deep Mistry", email = "deepmistry45@gmail.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+
+[project.urls]
+Repository = "https://github.com/desquaredp/paddock"
+Issues = "https://github.com/desquaredp/paddock/issues"
 
 [project.scripts]
 paddock = "paddock.cli:main"
