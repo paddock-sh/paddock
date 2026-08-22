@@ -61,6 +61,8 @@ def run(command: Command) -> int:
 
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
+        if not has_terminal():
+            return _fail("no terminal to ask in. Try: paddock launch <profile>")
         plan = tui.choose(cwd)
         if plan is None:  # backed out: nothing chosen, nothing done
             return 0
@@ -105,7 +107,7 @@ def perform(plan: tui.Plan) -> int:
     if plan.save_as:
         profile, message = tui.save_answers(profile, plan.save_as)
         print(message, file=sys.stderr)
-    _, pane_id = sessions.launch(profile, plan.name or None)
+    _, pane_id = sessions.launch(profile, plan.name or None, backend=plan.backend)
     print(pane_id)
     return 0
 
@@ -121,6 +123,7 @@ def describe(plan: tui.Plan) -> str:
         f"would launch session {plan.name or '(generated name)'}",
         f"profile {plan.profile.name}",
         f"agent {plan.profile.agent}",
+        f"backend {plan.backend}",
         plan.profile.shared_dir or "isolated workdir",
     ]
     if plan.agent_command:
@@ -175,6 +178,11 @@ def _parser() -> argparse.ArgumentParser:
         "--undo", action="store_true", help="put the newest backed-up herdr config back"
     )
     return parser
+
+
+def has_terminal() -> bool:
+    """The chooser draws a screen, so it needs one. Without it, say which flag does the job."""
+    return sys.stdin.isatty()
 
 
 def _fail(message: str) -> int:

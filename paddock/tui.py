@@ -1,30 +1,23 @@
 """The chooser: what the popup asks, and the plan it hands back.
 
-The screen is a thin shell. Everything that decides something (which sessions to
-offer, which tools the host has, what a value means, the answers as a `Profile`)
-is a plain function here, so it is tested without a terminal. One answers dict
-holds the lot, `settle()` keeps it consistent when a field changes, and
-`form_rows()` and `confirm_lines()` say what those answers mean. Nothing in this
-module launches anything: `choose()` returns a plan and `cli.py` carries it out,
-which is why backing out costs nothing.
+One screen. `screen.py` draws the form and every editor over it; everything that decides
+something (which sessions to offer, which tools the host has, what a value means, the answers
+as a `Profile`) is a plain function here, so it is tested without a terminal. One answers dict
+holds the lot, `settle()` keeps it consistent when a field changes, and `form_rows()` and
+`confirm_lines()` say what those answers mean.
 
-The redesign in `docs/design/chooser-redesign.md` is landing in steps: the
-fields, words and rules are here, while the shell still asks them one question
-at a time.
+Nothing in this module launches anything: `choose()` returns a plan and `cli.py` carries it
+out, which is why backing out at any depth costs nothing.
 """
 
 from __future__ import annotations
 
 import json
 import shutil
-import sys
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import questionary
-
-from paddock import sessions
+from paddock import screen, sessions
 from paddock.agents import AgentSpec, agent_dir, load_agents
 from paddock.profiles import (
     NETWORK_PRESETS,
@@ -37,68 +30,52 @@ from paddock.profiles import (
 # The "none of the saved ones" entry in the profile and agent lists. It is not a
 # name anyone would give a file, so it cannot collide with a real key.
 CUSTOM = "+custom"
-# The "back" entry on every list question, and what a step answers when it is picked.
-BACK = "+back"
-# What a step answers when it has nothing to ask about, such as skills for an agent with none.
-SKIP = "+skip"
-
-# The new-session questions, in the order they are asked. One answer each, in one dict.
-STEPS = (
-    "profile",
-    "agent",
-    "command",
-    "remember_as",
-    "tools",
-    "network",
-    "domains",
-    "skills",
-    "share",
-    "directory",
-    "name",
-    "save_as",
-)
-
-# What the summary screen and the edit list call each step.
-STEP_LABELS = {
-    "profile": "Start from",
-    "agent": "Agent",
-    "command": "Command",
-    "remember_as": "Remember the command as",
-    "tools": "Tools",
-    "network": "Network presets",
-    "domains": "Extra domains",
-    "skills": "Skills",
-    "share": "Share a host directory",
-    "directory": "Shared directory",
-    "name": "Session name",
-    "save_as": "Save as profile",
-}
-
-# The two screens after the questions, the three answers the summary takes, and what a
-# newly chosen base profile seeds the answers under it with.
-SUMMARY, EDIT, SEED = "summary", "edit", "seed"
-LAUNCH, CANCEL = "launch", "cancel"
-
-# The steps whose answer settles others. Editing one from the summary asks these again; a new
-# base profile hands its own values over instead, so it asks nothing. Tools are under neither,
-# because they come off the host PATH, not out of the agent.
-DEPENDENTS = {
-    "profile": (),
-    "agent": ("command", "remember_as", "skills"),
-    "share": ("directory",),
-}
-
 # The two answers to the Open field that are not a session to attach to.
 NEW, LOCAL = "new", "local"
 
-# The fields of the form, in the order they are shown. Fixed, because the digits 1 to 8 jump
-# to them and a list that reorders would make a digit a lie.
-FIELDS = ("open", "profile", "agent", "tools", "network", "files", "skills", "advanced")
+# The sandbox a session runs under (SPEC 3.2). srt is v1 and always here; the microVM backend
+# needs a binary of its own, and the field says so when this machine has not got one.
+SRT, MSB = "srt", "msb"
+BACKEND_LABELS = {SRT: "srt (instant, a policy sandbox)", MSB: "msb (a microVM, full isolation)"}
+BACKEND_HINTS = {
+    SRT: "Instant. A policy sandbox around the process itself: Seatbelt on macOS, bubblewrap "
+    "on Linux. It shares this machine's kernel and filesystem, minus what the policy refuses.",
+    MSB: "A microVM: about 20 seconds to its first start, and full isolation, with a kernel "
+    "and a filesystem of its own.",
+}
+
+# The two rows of the Files field, which were two questions before this design.
+FILES_CHOICES = (
+    (
+        "An isolated scratch directory",
+        "Nothing of yours is writable. What is done here lives under the run dir and "
+        "outlives the tab.",
+    ),
+    (
+        "Share a directory",
+        "That one directory is the only thing on this machine the sandbox can change.",
+    ),
+)
+
+# The fields of the form, in the order they are shown. Fixed, because a digit jumps to each of
+# them and a list that reorders would make a digit a lie.
+FIELDS = (
+    "open",
+    "profile",
+    "backend",
+    "agent",
+    "tools",
+    "network",
+    "files",
+    "skills",
+    "advanced",
+)
 
 # What each field is called on the form.
 FIELD_LABELS = {
     "open": "Open",
     "profile": "Profile",
+    "backend": "Backend",
     "agent": "Agent",
     "tools": "Tools",
     "network": "Network",
@@ -111,6 +88,7 @@ FIELD_LABELS = {
 FIELD_TITLES = {
     "open": "Open",
     "profile": "Profile",
+    "backend": "Backend",
     "agent": "Agent",
     "tools": "Tools it can run",
     "network": "Network access",
@@ -126,6 +104,8 @@ FIELD_HINTS = {
     "with full access to this machine.",
     "profile": "Fills in everything below. Change anything and the title says \"+ changes\", "
     "because the session will then not be what the profile says.",
+    "backend": "What runs the sandbox. srt wraps the process in the OS policy and starts at "
+    "once. msb boots a microVM, which is slower to start and shares less with this machine.",
     "agent": "The command that runs inside the sandbox. It gets its own login and no other "
     "agent's.",
     "tools": "Ticked binaries are on the sandbox PATH. Unticked ones are not reachable by "
@@ -144,6 +124,8 @@ FIELD_HINTS = {
 # not their explanation.
 EDITOR_HINTS = {
     "command": "Runs inside the sandbox, so it has to be a tool the sandbox can reach.",
+    "directory": "Read and write, and the only path of yours the sandbox can change. A "
+    "relative one is next to the directory the popup was opened in.",
     "also_allow": "Space separated, for example example.com *.internal.dev",
     "name": "Shown in the tab bar as sbx:<name> and used to attach later. Blank generates one.",
     "save_as": "Save these answers so they are one pick next time.",
@@ -180,12 +162,6 @@ PROFILE_CARRIES = (
     "directory",
 )
 
-# Answers one step: a value, BACK, or SKIP when that step has nothing to ask about.
-Asker = Callable[[str, dict], object]
-# Tells the user something between two questions.
-Notify = Callable[[str], None]
-
-
 @dataclass
 class Local:
     """Open an ordinary tab. No session, no sandbox."""
@@ -213,230 +189,217 @@ class NewSession:
     save_as: str = ""
     # A command the user typed instead of picking an agent, remembered as `profile.agent`.
     agent_command: str = ""
+    # Which sandbox runs it (SPEC 3.2). srt wraps the process; msb boots a microVM.
+    backend: str = SRT
 
 
 Plan = Local | Attach | NewSession
 
 
-class _Cancelled(Exception):
-    """Ctrl-C or escape: questionary answers None, and the chooser stops there."""
-
-
 def choose(cwd: Path) -> Plan | None:
-    """Ask what to open. None means the user backed out, and nothing has happened."""
-    try:
-        return _choose(cwd)
-    except _Cancelled:
-        return None
+    """Ask what to open. None means the popup was closed with nothing done.
 
-
-# --- the questions ---------------------------------------------------------
-
-
-def _choose(cwd: Path) -> Plan | None:
-    live = sessions.list_sessions()
-    while True:
-        what = _ask(questionary.select("Open:", choices=_options(open_choices(live))))
-        if what == LOCAL:
-            return Local(cwd=str(cwd))
-        if what != NEW:  # anything else on that list is a session to attach to
-            return Attach(ref=str(what))
-        plan = _new_session(cwd)
-        if plan is not BACK:  # back out of the first question of the questionnaire: ask again
-            return plan
-
-
-def _new_session(cwd: Path) -> NewSession | str | None:
-    """A plan, BACK to go back to the first question, or None if the summary was cancelled."""
+    Ctrl-c raises KeyboardInterrupt from wherever it was pressed, which `cli.py` turns into
+    the exit code 130 that fzf made the convention.
+    """
     saved, registry = load_profiles(), load_agents()
-    answers = collect(_asker(cwd, saved, registry), _notice)
-    if not isinstance(answers, dict):
-        return answers
-    return build_session(base_profile(saved, answers), answers)
-
-
-def _asker(cwd: Path, saved: dict[str, Profile], registry: dict[str, AgentSpec]) -> Asker:
-    """One step to one question. The only part of the questionnaire that needs a terminal.
-
-    An answer already given is what a question offers back, so going back and coming
-    forward again changes nothing the user did not change.
-    """
-
-    def ask(step: str, answers: dict) -> object:
-        base = base_profile(saved, answers)
-        if step == "profile":
-            return _pick("Start from:", profile_choices(saved), answers.get("profile"))
-        if step == "agent":
-            known = base.agent if base.agent in registry else None
-            return _pick("Agent:", agent_choices(registry), answers.get("agent", known))
-        if step == "command":
-            if answers.get("agent") != CUSTOM:
-                return SKIP
-            return _type("Command to run in the sandbox:", str(answers.get("command", "")))
-        if step == "remember_as":
-            if answers.get("agent") != CUSTOM:
-                return SKIP
-            typed = str(answers.get("command", ""))
-            suggestion = answers.get("remember_as") or suggested_key(typed, registry)
-            return _type("Remember it as:", str(suggestion))
-        if step == "tools":
-            rows = tool_choices(base, answers.get("tools"))
-            return _tick("Tools on the sandbox PATH:", rows) if rows else SKIP
-        if step == "network":
-            return _tick("Network:", network_choices(base, answers.get("network")))
-        if step == "domains":
-            typed = answers.get("domains", " ".join(base.extra_domains))
-            return _type("Extra domains (space separated):", str(typed))
-        if step == "skills":
-            # Skills come out of the agent's own config dir, so another agent's do not carry over.
-            agent = chosen_agent(answers, base)
-            carried = base.skills if agent == base.agent else []
-            rows = skill_choices(registry.get(agent, AgentSpec()), answers.get("skills", carried))
-            return _tick("Skills:", rows) if rows else SKIP
-        if step == "share":
-            shares = shares_a_directory(answers, base)
-            return _ask(questionary.confirm("Share a host directory?", default=shares))
-        if step == "directory":
-            if not answers.get("share"):
-                return SKIP
-            typed = answers.get("directory") or base.shared_dir or str(cwd)
-            return resolve_shared_dir(_type("Directory:", str(typed)), cwd)
-        if step == "name":
-            return _type("Session name (blank to generate one):", str(answers.get("name", "")))
-        if step == "save_as":
-            typed = str(answers.get("save_as", ""))
-            return _type("Save these answers as a profile (blank to skip):", typed)
-        if step == SUMMARY:
-            lines = confirm_lines(answers, base, registry)
-            rows = [f"{label:<10}{text}" for label, text in lines]
-            message = f"{CONFIRM_TITLE}\n  " + "\n  ".join(rows) + "\n"
-            entries = [("Launch", LAUNCH), ("Edit a step", EDIT), ("Cancel", CANCEL)]
-            return _ask(questionary.select(message, choices=_options(entries)))
-        if step == EDIT:
-            return _pick("Edit which step:", edit_choices(answers, base))
-        if step == SEED:
-            # Only what a forgotten answer cannot say for itself: with no directory answer,
-            # nothing is shared, however the profile that now stands has it.
-            seeded: dict = {"share": bool(base.shared_dir)}
-            if base.shared_dir:
-                seeded["directory"] = base.shared_dir
-            return seeded
-        raise ValueError(f"the chooser has no question for {step!r}")
-
-    return ask
-
-
-def _ask(question: questionary.Question) -> object:
-    answer = question.ask()
-    if answer is None:
-        raise _Cancelled
-    return answer
-
-
-def _pick(message: str, pairs: list[tuple[str, str]], default: object = None) -> object:
-    """A list question, with the way back on the end of the list."""
-    choices = _options([*pairs, ("← Back", BACK)])
-    return _ask(questionary.select(message, choices=choices, default=default))
-
-
-def _tick(message: str, rows: list[tuple[str, str, bool]]) -> object:
-    """A checklist. There is no key for back, so back is a tick, and it wins over the others."""
-    answer = _ask(questionary.checkbox(message, choices=_ticks([*rows, ("← Back", BACK, False)])))
-    return BACK if BACK in answer else answer
-
-
-def _type(message: str, default: str = "") -> str:
-    """A typed answer. Nothing to put a back entry on: the summary is how these are changed."""
-    return str(_ask(questionary.text(message, default=default))).strip()
-
-
-def _notice(message: str) -> None:
-    """A line the user needs between two questions. stderr, because stdout carries the pane id."""
-    print(f"paddock: {message}", file=sys.stderr)
-
-
-def _options(pairs: list[tuple[str, str]]) -> list[questionary.Choice]:
-    return [questionary.Choice(title, value=value) for title, value in pairs]
-
-
-def _ticks(rows: list[tuple[str, str, bool]]) -> list[questionary.Choice]:
-    return [questionary.Choice(title, value=value, checked=on) for title, value, on in rows]
-
-
-# --- the questionnaire as a state machine ----------------------------------
-
-
-def collect(ask: Asker, notify: Notify) -> dict | str | None:
-    """The new-session questions over one answers dict, so any of them can be asked again.
-
-    `ask` answers one step, or BACK to go back to the step before it, or SKIP when that step
-    has nothing to ask about. Returns the answers to launch, BACK if the user backed out of
-    the first step, or None if they cancelled at the summary.
-    """
+    live = sessions.list_sessions()
     answers: dict = {}
-    if not _walk(ask, answers):
-        return BACK
+    cursor = 0
     while True:
-        choice = ask(SUMMARY, answers)
-        if choice == CANCEL:
+        base = base_profile(saved, answers)
+        rows = form_rows(answers, base, registry, live, str(cwd))
+        chosen = screen.form(form_title(answers, base), f"in {cwd}", rows, cursor)
+        if chosen is None:  # escape or Cancel: nothing chosen and nothing done
             return None
-        if choice == LAUNCH:
-            return answers
-        step = ask(EDIT, answers)
-        if step != BACK:
-            _edit(ask, notify, answers, str(step))
+        what, cursor = chosen
+        if what == screen.LAUNCH:
+            return plan_from(answers, base, cwd)
+        if what == screen.SAVE:
+            answers = _edit_save_as(answers)
+        elif editable(answers, FIELDS[cursor]):
+            answers = _edit(FIELDS[cursor], answers, base, saved, registry, live, cwd)
 
 
-def _walk(ask: Asker, answers: dict) -> bool:
-    """Ask every step in turn. False means the user backed out of the first one."""
-    index, going_back = 0, False
-    while 0 <= index < len(STEPS):
-        step = STEPS[index]
-        value = ask(step, answers)
-        if value == SKIP:  # nothing to ask about, so carry on the way we were going
-            answers.pop(step, None)
-            index += -1 if going_back else 1
-        elif value == BACK:
-            going_back = True
-            index -= 1
-        else:
-            _answer(answers, step, value)
-            going_back = False
-            index += 1
-    return index >= 0
+def plan_from(answers: dict, base: Profile, cwd: Path) -> Plan:
+    """The answers as the one thing the popup hands back."""
+    opened = str(answers.get("open", NEW))
+    if opened == LOCAL:
+        return Local(cwd=str(cwd))
+    if opened != NEW:  # anything else on the Open list is a session to attach to
+        return Attach(ref=opened)
+    return build_session(base, answers)
 
 
-def _edit(ask: Asker, notify: Notify, answers: dict, step: str) -> None:
-    """Ask one step again from the summary, and settle whatever its new answer decides."""
-    value = ask(step, answers)
-    if value in (BACK, SKIP) or not _answer(answers, step, value):
-        return
-    if step == "profile":
-        # Another base profile means starting over from it, not keeping the old ticks against
-        # it. Its own values are what stand, so none of them is asked for again.
-        answers.update(ask(SEED, answers))
-        notify(f"the answers now start from {profile_label(str(value))}, so its values stand")
-        return
-    if step == "agent":
-        notify("the agent changed, so its own skills are asked for again")
-    for dependent in DEPENDENTS[step]:
-        answer = ask(dependent, answers)
-        if answer == SKIP:
-            answers.pop(dependent, None)
-        elif answer != BACK:
-            _answer(answers, dependent, answer)
+def editable(answers: dict, field: str) -> bool:
+    """A local or an attached tab permits nothing, so only the Open field opens on one."""
+    return field == "open" or str(answers.get("open", NEW)) == NEW
 
 
-def _answer(answers: dict, step: str, value: object) -> bool:
-    """Keep one answer, settled. True when it changed a step that others depend on."""
-    changed = step in DEPENDENTS and answers.get(step, value) != value
-    answers[step] = value
-    if changed:
-        # The walk's `share` step is the form's Files field.
-        kept = settle(answers, "files" if step == "share" else step)
-        answers.clear()
-        answers.update(kept)
-    return changed
+# --- one editor per field ---------------------------------------------------
+
+
+def _edit(
+    field: str,
+    answers: dict,
+    base: Profile,
+    saved: dict[str, Profile],
+    registry: dict[str, AgentSpec],
+    live: list[sessions.Session],
+    cwd: Path,
+) -> dict:
+    """Open the editor for one field, and give back the answers it leaves behind.
+
+    Escape closes an editor keeping what was done, so every one of these can come back with
+    the answers it was given and nothing lost.
+    """
+    if field == "open":
+        return _edit_open(answers, live)
+    if field == "profile":
+        return _edit_profile(answers, saved, registry)
+    if field == "backend":
+        return _edit_backend(answers)
+    if field == "agent":
+        return _edit_agent(answers, registry)
+    if field == "tools":
+        return _edit_tools(answers, base)
+    if field == "network":
+        return _edit_network(answers, base)
+    if field == "files":
+        return _edit_files(answers, base, cwd)
+    if field == "skills":
+        return _edit_skills(answers, base, registry)
+    return _edit_advanced(answers)
+
+
+def _edit_open(answers: dict, live: list[sessions.Session]) -> dict:
+    choices = open_choices(live)
+    rows = [(title, open_hint(value)) for title, value in choices]
+    index = screen.pick(FIELD_TITLES["open"], rows, rule_after=1)
+    return answers if index is None else dict(answers, open=choices[index][1])
+
+
+def _edit_profile(answers: dict, saved: dict[str, Profile], registry: dict[str, AgentSpec]) -> dict:
+    choices = profile_choices(saved)
+    rows = [(title, profile_hint(value, saved, registry)) for title, value in choices]
+    note = f"{len(saved)} saved"
+    index = screen.pick(FIELD_TITLES["profile"], rows, note, rule_after=len(choices) - 2)
+    if index is None:
+        return answers
+    return settle(dict(answers, profile=choices[index][1]), "profile")
+
+
+def _edit_backend(answers: dict) -> dict:
+    rows = backend_choices()
+    refused = {index: why for index, (_, _, why) in enumerate(rows) if why}
+    choices = [(key, hint) for key, hint, _ in rows]
+    index = screen.pick(FIELD_TITLES["backend"], choices, refused=refused)
+    return answers if index is None else dict(answers, backend=rows[index][0])
+
+
+def _edit_agent(answers: dict, registry: dict[str, AgentSpec]) -> dict:
+    choices = agent_choices(registry)
+    rows = [(title, agent_hint(value, registry)) for title, value in choices]
+    index = screen.pick(FIELD_TITLES["agent"], rows)
+    if index is None:
+        return answers
+    key = choices[index][1]
+    if key != CUSTOM:
+        return settle(dict(answers, agent=key), "agent")
+    # The command and the key it is saved under are on this field too, not two more questions.
+    command = screen.type_in("Command", str(answers.get("command", "")), EDITOR_HINTS["command"])
+    if not command:
+        return answers
+    settled = settle(dict(answers, agent=CUSTOM, command=command), "agent")
+    return dict(settled, remember_as=remembered_key(command, registry))
+
+
+def _edit_tools(answers: dict, base: Profile) -> dict:
+    rows = tool_choices(base, answers.get("tools"))
+    if not rows:  # nothing on this host to offer, so there is nothing to ask
+        return answers
+    ticked = screen.tick(FIELD_TITLES["tools"], _boxes(rows), FIELD_HINTS["tools"])
+    return dict(answers, tools=[rows[index][1] for index in ticked])
+
+
+def _edit_network(answers: dict, base: Profile) -> dict:
+    rows = network_choices(base, answers.get("network"))
+    typed = str(answers.get("domains", " ".join(base.extra_domains)))
+    ticked, extra = screen.tick(
+        FIELD_TITLES["network"],
+        _boxes(rows),
+        FIELD_HINTS["network"],
+        box=("Also allow", typed, EDITOR_HINTS["also_allow"]),
+    )
+    return dict(answers, network=[rows[index][1] for index in ticked], domains=extra)
+
+
+def _edit_files(answers: dict, base: Profile, cwd: Path) -> dict:
+    shares = shares_a_directory(answers, base)
+    index = screen.pick(FIELD_TITLES["files"], list(FILES_CHOICES), cursor=int(shares))
+    if index is None:
+        return answers
+    if index == 0:
+        return settle(dict(answers, share=False), "files")
+    typed = screen.type_in(
+        "Directory",
+        str(answers.get("directory") or base.shared_dir or cwd),
+        EDITOR_HINTS["directory"],
+        check=lambda text: missing_directory(text, cwd),
+    )
+    shared = resolve_shared_dir(typed, cwd)
+    return settle(dict(answers, share=bool(shared), directory=shared), "files")
+
+
+def _edit_skills(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
+    agent = chosen_agent(answers, base)
+    carried = base.skills if agent == base.agent else []
+    rows = skill_choices(registry.get(agent, AgentSpec()), list(answers.get("skills", carried)))
+    if not rows:  # this agent has no skills directory, so there is nothing to ask
+        return answers
+    ticked = screen.tick(FIELD_TITLES["skills"], _boxes(rows), FIELD_HINTS["skills"])
+    return dict(answers, skills=[rows[index][1] for index in ticked])
+
+
+def _edit_advanced(answers: dict) -> dict:
+    rows = advanced_choices(answers)
+    index = screen.pick(FIELD_TITLES["advanced"], [(label, hint) for label, hint, _ in rows])
+    if index is None:
+        return answers
+    label, _, step = rows[index]
+    typed = screen.type_in(label, str(answers.get(step, "")), EDITOR_HINTS[step])
+    return dict(answers, **{step: typed})
+
+
+def _edit_save_as(answers: dict) -> dict:
+    """The `s` key: the same box the Advanced screen opens, one press from the form."""
+    saved = str(answers.get("save_as", ""))
+    return dict(answers, save_as=screen.type_in("Save as profile", saved, EDITOR_HINTS["save_as"]))
+
+
+def _boxes(rows: list[tuple[str, str, bool]]) -> list[tuple[str, bool]]:
+    """A checklist takes what to show and whether it is ticked. The values stay here."""
+    return [(title, on) for title, _, on in rows]
+
+
+def remembered_key(command: str, registry: dict[str, AgentSpec]) -> str:
+    """The key a typed command is saved under, asked for only when it would take another's."""
+    key = suggested_key(command, registry)
+    known = registry.get(key)
+    if known is not None and known.command != command:
+        key = screen.type_in(key_clash(key), key).strip()
+    return key
+
+
+def missing_directory(typed: str, cwd: Path) -> str:
+    """What is wrong with a shared directory, for the line the key list gives up (section 4.2)."""
+    if not typed.strip():
+        return ""
+    where = resolve_shared_dir(typed, cwd)
+    return "" if Path(where).is_dir() else f"no directory there: {where}"
+
+
+# --- the rules -------------------------------------------------------------
 
 
 def settle(answers: dict, field: str, base: Profile | None = None) -> dict:
@@ -476,22 +439,6 @@ def shares_a_directory(answers: dict, base: Profile) -> bool:
     return bool(answers.get("directory") or base.shared_dir)
 
 
-def edit_choices(answers: dict, base: Profile) -> list[tuple[str, str]]:
-    """Every step there is something to change, in the order the questions come.
-
-    Not only the steps with an answer: a step a new base profile answered for you is still
-    one you can change, and what stands in it is that profile's value. The two steps that
-    can be missing are the ones that describe something that is not there: a command nobody
-    typed, and a directory nothing shares.
-    """
-    skipped = set()
-    if answers.get("agent") != CUSTOM:
-        skipped |= {"command", "remember_as"}
-    if not shares_a_directory(answers, base):
-        skipped.add("directory")
-    return [(STEP_LABELS[step], step) for step in STEPS if step not in skipped]
-
-
 def profile_label(key: str) -> str:
     """What a profile answer is called on screen. The blank start is Custom, not a key."""
     return "Custom" if key == CUSTOM else key
@@ -517,8 +464,8 @@ def form_rows(
     registry: dict[str, AgentSpec],
     live: list[sessions.Session],
     cwd: str = "",
-) -> list[tuple[str, str, str]]:
-    """The form: a label, the value showing and the hint for it, one row per field.
+) -> list[tuple[str, str, str, str]]:
+    """The form: a label, the value showing, the hint for it, and a count kept at the edge.
 
     A local or an attached tab greys out everything the sandbox fields decide, because none
     of it applies. Nothing is hidden and nothing moves, so the screen never rearranges.
@@ -528,12 +475,13 @@ def form_rows(
     """
     opened = str(answers.get("open", NEW))
     values = _field_values(answers, base, registry, live, cwd)
+    notes = _field_notes(answers, base)
     rows = []
     for field in FIELDS:
         if opened != NEW and field not in ("open", "files"):
-            rows.append((FIELD_LABELS[field], "-", NO_SANDBOX))
+            rows.append((FIELD_LABELS[field], "-", NO_SANDBOX, ""))
         else:
-            rows.append((FIELD_LABELS[field], values[field], FIELD_HINTS[field]))
+            rows.append((FIELD_LABELS[field], values[field], FIELD_HINTS[field], notes[field]))
     return rows
 
 
@@ -553,6 +501,7 @@ def confirm_lines(
         agent = f"{agent}, {running}" if agent else running
     return [
         ("session", plan.name or "generated at launch"),
+        ("backend", BACKEND_LABELS.get(plan.backend, plan.backend)),
         ("agent", agent),
         ("profile", _profile_line(answers, base)),
         ("can write", _writable(profile)),
@@ -578,13 +527,32 @@ def _field_values(
     return {
         "open": _open_value(opened, live),
         "profile": profile_label(str(answers.get("profile", CUSTOM))),
+        "backend": _backend_value(answers),
         "agent": agent_title(profile.agent, registry),
-        "tools": f"{tools} ({len(profile.tools)})" if tools else "none",
-        "network": _network_value(profile),
+        "tools": tools or "none",
+        "network": ", ".join(profile.network_presets) or "none",
         "files": _files_value(opened, profile, cwd),
         "skills": " ".join(profile.skills) or "none",
         "advanced": _advanced_value(plan),
     }
+
+
+def _field_notes(answers: dict, base: Profile) -> dict[str, str]:
+    """What a field keeps at the right edge: how much of a thing its value names."""
+    profile = build_session(base, answers).profile
+    domains = profile.allowed_domains()
+    counted = _counted(domains) if domains else "offline"
+    return {
+        field: "" for field in FIELDS
+    } | {
+        "tools": f"({len(profile.tools)})" if profile.tools else "",
+        "network": f"({counted})",
+    }
+
+
+def _backend_value(answers: dict) -> str:
+    backend = str(answers.get("backend", SRT))
+    return BACKEND_LABELS.get(backend, backend)
 
 
 def _open_value(opened: str, live: list[sessions.Session]) -> str:
@@ -597,14 +565,6 @@ def _open_value(opened: str, live: list[sessions.Session]) -> str:
         if session.session_id == opened:
             return f"Attach: {session.name}"
     return f"session is gone: {opened}"
-
-
-def _network_value(profile: Profile) -> str:
-    """The groups ticked, and how many domains they open once the agent's own are folded in."""
-    domains = profile.allowed_domains()
-    if not domains:
-        return "none, an offline sandbox"
-    return f"{', '.join(profile.network_presets) or 'none'} ({_counted(domains)})"
 
 
 def _counted(domains: list[str]) -> str:
@@ -669,12 +629,39 @@ def _visible(profile: Profile, registry: dict[str, AgentSpec]) -> str:
     return ". ".join(parts) + "."
 
 
-# --- what each question offers ---------------------------------------------
+# --- what each field offers ------------------------------------------------
 
 
 def open_choices(live: list[sessions.Session]) -> list[tuple[str, str]]:
     """The Open field: a new sandbox, a plain local tab, and every live session on one list."""
     return [("New sandbox", NEW), ("Local tab", LOCAL), *session_choices(live)]
+
+
+def backend_choices() -> list[tuple[str, str, str]]:
+    """Each backend, what it costs and gives, and why it cannot be chosen when it cannot.
+
+    A backend this machine has no binary for stays on the list and says so, the way a tool
+    the host lacks does: hiding it would leave the user wondering where the microVM went.
+    """
+    absent = "msb is not installed, so this machine cannot run a microVM session"
+    return [
+        (SRT, BACKEND_HINTS[SRT], ""),
+        (MSB, BACKEND_HINTS[MSB], "" if shutil.which(MSB) else absent),
+    ]
+
+
+def advanced_choices(answers: dict) -> list[tuple[str, str, str]]:
+    """What Advanced holds: a label, what it says now, and the answer it edits.
+
+    Section 5.8 has five more rows. They are what nobody has asked about yet, and they come
+    with the screen of their own.
+    """
+    name = str(answers.get("name", "")) or "generated at launch"
+    save_as = str(answers.get("save_as", "")) or "not saved"
+    return [
+        ("Name", f"{name}. {EDITOR_HINTS['name']}", "name"),
+        ("Save as profile", f"{save_as}. {EDITOR_HINTS['save_as']}", "save_as"),
+    ]
 
 
 def open_hint(value: str) -> str:
@@ -842,6 +829,7 @@ def build_session(base: Profile, answers: dict) -> NewSession:
         name=str(answers.get("name", "")),
         save_as=str(answers.get("save_as", "")),
         agent_command=str(answers.get("command", "")),
+        backend=str(answers.get("backend", SRT)),
     )
 
 

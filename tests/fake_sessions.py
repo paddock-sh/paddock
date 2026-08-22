@@ -60,8 +60,8 @@ def attach(session: Session, cwd: Path | None = None) -> str:
     return "wA:p9"
 
 
-def launch(profile: Profile, name: str | None = None) -> tuple[Session, str]:
-    calls.append(("launch", profile, name))
+def launch(profile: Profile, name: str | None = None, backend: str = "srt") -> tuple[Session, str]:
+    calls.append(("launch", profile, name, backend))
     session = Session(name=name or "generated", profile_name=profile.name, agent=profile.agent)
     return session, "wA:p3"
 

@@ -17,12 +17,12 @@ elseif (attach <session>) then
   :plan = Attach(session ref, cwd only if --cwd was given);
 else (choose)
   :sessions.list_sessions();
-  partition "the form: one screen, eight fields" {
+  partition "the form: one screen, one field per decision" {
     repeat
-      :the eight fields, filled in from the profile:\n1 Open: a new sandbox, a local tab, or a live session\n2 Profile: fills in everything below\n3 Agent: the command, and the key it is saved under\n4 Tools: ticked binaries on the sandbox PATH\n5 Network: groups, and any extra domains\n6 Files: an isolated scratch dir, or one shared directory\n7 Skills: from the agent's own config dir\n8 Advanced: name, save as profile, MCP, writes, reads, PATH;
+      :the fields, filled in from the profile:\n1 Open: a new sandbox, a local tab, or a live session\n2 Profile: fills in everything below\n3 Backend: srt now, or msb when this machine has one\n4 Agent: the command, and the key it is saved under\n5 Tools: ticked binaries on the sandbox PATH\n6 Network: groups, and any extra domains\n7 Files: an isolated scratch dir, or one shared directory\n8 Skills: from the agent's own config dir\n9 Advanced: the name, and saving these answers;
       :enter opens an editor for that field,\nesc closes it and keeps what it holds;
       :settle(answers, field) after a change:\nanother profile hands over every value it carries,\nanother agent drops its skills and typed command,\nsharing nothing drops the directory;
-    repeat while (another field?) is (yes: the arrows or 1-8,\nevery answer kept) not (no: Launch)
+    repeat while (another field?) is (yes: the arrows or a digit,\nevery answer kept) not (no: Launch)
   }
   if (what the Open field says) then (Local tab)
     :plan = Local(cwd);
@@ -69,11 +69,11 @@ note right
   session that ended between the list and the form
   says so, rather than reading as a new sandbox.
 
-  Landing in steps (docs/design/chooser-redesign.md).
-  The fields, words and rules are in tui.py and the
-  screens are in screen.py (chooser_keys.puml). The
-  questionary shell still asks the questions one at
-  a time until the chooser drives the form.
+  tui.py holds the fields, the words and the rules;
+  screen.py draws them (chooser_keys.puml). Still to
+  come from docs/design/chooser-redesign.md: the
+  confirm screen, and the five Advanced rows nobody
+  has been asked about yet.
 end note
 
 @enduml

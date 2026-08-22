@@ -46,7 +46,7 @@ User --> Keybinding : presses prefix+c
 Keybinding --> CLI : popup runs `paddock`\n(HERDR_SOCKET_PATH,\nHERDR_ACTIVE_WORKSPACE_ID,\nHERDR_ACTIVE_PANE_ID)
 CLI --> TUI : choose (default)
 TUI --> CLI : one plan:\nlocal | attach | new session
-TUI ..> Screen : draws the form and its editors\n(the questionary shell still asks\nthe questions until this is wired)
+TUI --> Screen : draws the form, then one editor\nper field over it
 TUI --> Profiles : load / save profile
 TUI --> Agents : list agents, remember a typed command
 TUI --> Sessions : list live sessions

@@ -405,6 +405,20 @@ def test_a_filter_that_matches_nothing_takes_nothing() -> None:
     assert drive(f"/zzz\r\r{ESC}{ESC}", lambda: screen.pick("Profile", PROFILES)) is None
 
 
+def test_a_row_that_cannot_be_chosen_is_not_chosen() -> None:
+    why = {1: "msb is not installed"}
+
+    assert drive(f"{DOWN}\r{UP}\r", lambda: screen.pick("Backend", MENU, refused=why)) == 0
+    assert drive(f"{DOWN}\r{ESC}{ESC}", lambda: screen.pick("Backend", MENU, refused=why)) is None
+
+
+def test_a_refused_row_says_why_on_the_key_line() -> None:
+    """Greying a row without saying why is the questionnaire's habit, not this one's."""
+    assert screen.list_footer("msb is not installed", False, 3) == "msb is not installed"
+    assert screen.list_footer("", False, 3) == screen.pick_footer(3)
+    assert screen.list_footer("", True, 9) == screen.footer_line(screen.FILTER_KEYS)
+
+
 def test_the_filter_key_is_advertised_only_on_a_list_worth_filtering() -> None:
     assert screen.FILTER_KEY not in screen.pick_footer(3)
     assert screen.FILTER_KEY in screen.pick_footer(9)
@@ -440,6 +454,46 @@ def test_letters_inside_the_filter_stay_text() -> None:
 
 def test_a_filtered_checklist_ticks_the_row_it_shows() -> None:
     assert drive("/fd\r \r", lambda: screen.tick("Tools", TOOLS)) == [0, 1, 2, 4]
+
+
+def test_a_checklist_can_carry_a_box_under_it() -> None:
+    """Section 5.5 puts the groups and the extra domains on one screen, which kills a question."""
+    box = ("Also allow", "", "space separated")
+
+    ticked, typed = drive(
+        "\texample.com\r", lambda: screen.tick("Network", TOOLS, box=box)
+    )
+
+    assert ticked == [0, 1, 4]
+    assert typed == "example.com"
+
+
+def test_tab_goes_to_the_box_and_back_to_the_list() -> None:
+    ticked, typed = drive(
+        "\texample.com\t \r", lambda: screen.tick("Network", TOOLS, box=("Also allow", "", ""))
+    )
+
+    assert ticked == [1, 4]  # the space came back to the list and unticked the first row
+    assert typed == "example.com"
+
+
+def test_letters_inside_the_box_stay_text() -> None:
+    """`a` and `n` are keys on the list and text in the box, the same as inside the filter."""
+    ticked, typed = drive(
+        "\tan\r", lambda: screen.tick("Network", TOOLS, box=("Also allow", "", ""))
+    )
+
+    assert ticked == [0, 1, 4]
+    assert typed == "an"
+
+
+def test_the_box_and_its_line_are_drawn_under_the_list() -> None:
+    lines = screen.tick_lines(
+        "Network", "hint", TOOLS, [0, 1, 2, 3, 4], 0, box=("Also allow", "a.com", "space separated")
+    )
+
+    assert any("Also allow" in line and "a.com" in line for line in lines)
+    assert any("space separated" in line for line in lines)
 
 
 # --- the text box -----------------------------------------------------------

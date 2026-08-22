@@ -46,8 +46,8 @@ height = "70%"
 new_tab = "prefix+shift+c"
 ```
 
-`type = "popup"` runs the command in an overlay, which is where the questionary
-TUI draws. Plain new-tab moves to `prefix+shift+c`.
+`type = "popup"` runs the command in an overlay, which is where the chooser
+draws its form. Plain new-tab moves to `prefix+shift+c`.
 
 The popup is transient: it asks, it creates the pane, it exits.
 
@@ -346,22 +346,31 @@ that would otherwise need its own mode:
 
 ### 3.1 The chooser
 
-The first question is about sessions:
+One screen, drawn by `paddock/screen.py`, over an answers dict that
+`paddock/tui.py` keeps consistent. The fields are `Open`, `Profile`, `Backend`,
+`Agent`, `Tools`, `Network`, `Files`, `Skills` and `Advanced`, each showing the
+value it currently holds and, for the field the cursor is on, one line saying
+what that value means.
 
-```
-New window:
-  > Local namespace (no sandbox)
-    New sandbox session
-    Attach to an existing session
-```
+**Open** is the session decision: a new sandbox, an ordinary local tab, or any
+live session to attach a second tab to. Live sessions are on that same list with
+their name, agent, profile and tab count, so the choice is made on what a session
+is, not on remembering its name. That also answers §8's open question about
+offering the last session as a zeroth option: every session is one field away.
 
-**New sandbox session** runs the permissions questionnaire (§6) and asks for a
-name. **Attach** lists live sessions with name, backend, profile and attached tab
-count, so the choice is made on what a session is, not on remembering its name.
+**Backend** is which sandbox runs it (§3.2). A backend this machine has no binary
+for stays on the list and says why it cannot be chosen, rather than vanishing.
 
-The questionnaire is not one way: every list question carries a **← Back** entry
-that returns to the question before it with the answers kept, and the last screen
-is a summary of every answer, with Launch, Edit a step and Cancel.
+The keys match herdr's navigate mode: arrows with `hjkl` beside them, enter to
+take, escape to back out one level, and a digit to jump to a field. Two promises
+hold everywhere. **Escape never loses an answer**: it closes what is open and
+leaves the value it was editing in place. **Ctrl-c cancels the whole popup**, at
+any depth, and costs nothing, because the chooser returns a plan and `cli.py` is
+the only thing that acts on one. Filtering a long list is a mode `/` opens, so
+every letter stays a shortcut everywhere else.
+
+The design and the reasoning behind it are in
+[docs/design/chooser-redesign.md](design/chooser-redesign.md).
 
 ### 3.2 Attach means different things per backend
 
@@ -650,7 +659,8 @@ no v1.1 concern appears in any of them:
 | `paddock/backends/srt.py` | srt settings JSON, PATH shim dir, `prepare()` / `open_pane()` | Done |
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
-| `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
+| `paddock/tui.py` | The chooser's fields, words and rules: answers in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
+| `paddock/screen.py` | The screens: the form, a list, a checklist and a box, over prompt_toolkit | Done; the confirm and the rest of Advanced are next |
 | `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 
@@ -663,8 +673,9 @@ no sandbox present.
 
 ## 8. Open questions
 
-- Should the popup offer "attach to the session you used last" as a zeroth
-  option? Most launches are probably repeats.
+- Should the form open on the profile used last, rather than on paddock's own
+  defaults? The design says yes (§3.1 of the redesign) and nothing remembers the
+  last launch yet.
 - Should `deny_read` be enforced by the backend rather than the profile, so a
   malformed profile cannot widen it?
 - How should a pane show what permissions it actually got? A written manifest in
