@@ -174,6 +174,10 @@ def build_settings(
             "allowWrite": _as_strings(allow_write),
             "denyWrite": _as_strings(deny_write),
         },
+        # A TUI agent puts its terminal in raw mode. Without this the sandbox is denied the
+        # ioctl on /dev/ttys*, so claude draws gibberish and codex exits at once. srt grants
+        # every terminal the user owns, not just this pane: the trade is in SPEC §2.1.
+        "allowPty": True,
     }
 
 
@@ -234,8 +238,17 @@ def prepare(profile: Profile) -> Run:
     # An agent named by absolute path (the shell, say) is found without one.
     tools = list(profile.tools) + shlex.split(agent.command)[:1]
     shim, skipped = build_shim_dir(run_dir, tools)
-    if skipped:
-        print(f"paddock: left off the sandbox PATH: {', '.join(skipped)}", file=sys.stderr)
+    # A name with a slash is the agent's own command. It runs without a shim, so it is
+    # reported as how it runs, not as a tool that went missing.
+    missing = [tool for tool in skipped if "/" not in tool]
+    if missing:
+        print(f"paddock: left off the sandbox PATH: {', '.join(missing)}", file=sys.stderr)
+    for tool in (tool for tool in skipped if "/" in tool):
+        print(
+            f"paddock: {tool} runs by its absolute path; "
+            "only bare tool names go on the sandbox PATH",
+            file=sys.stderr,
+        )
     synth = synth_config.build(profile, agent, run_dir)
     if synth.missing:
         left_out = ", ".join(synth.missing)
@@ -257,9 +270,14 @@ def load_run(run_dir: Path) -> Run:
     """Read a prepared run back, so a later tab attaches to the same settings and workdir."""
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
-        return Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
+        run = Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
+    if not (run_dir / LAUNCH_SCRIPT).exists():
+        # A run dir prepared before paddock wrote a script has none, and the pane runs it.
+        # The record holds the exact command, so it can be written back.
+        write_launch_script(run_dir, run.command)
+    return run
 
 
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
