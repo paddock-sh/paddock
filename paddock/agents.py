@@ -39,9 +39,11 @@ def builtin_agents() -> dict[str, AgentSpec]:
             auth_read_paths=["~/.claude/.credentials.json", "~/.claude.json"],
             config_write_paths=["~/.claude"],
             # Claude Code is an npm package, so a stock node image plus one install is
-            # the whole provisioning story. Measured in the spike: 21s, 431MB.
+            # the whole provisioning story. Measured in the spike: 21s, 431MB. The version
+            # is pinned here: a session must not pick up a new agent release on its own,
+            # and bumping it is a one-line registry edit (SPEC §2.2).
             image="node:22-slim",
-            install="npm install -g @anthropic-ai/claude-code",
+            install="npm install -g @anthropic-ai/claude-code@2.1.239",
         ),
         "codex": AgentSpec(
             name="Codex CLI",

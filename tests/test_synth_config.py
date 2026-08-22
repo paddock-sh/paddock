@@ -420,6 +420,49 @@ def test_a_copied_token_is_discarded_with_the_session(home: Path, run_dir: Path)
     assert not (synth.dir / ".credentials.json").exists()
 
 
+def test_a_deferred_build_writes_no_token_at_all(home: Path, run_dir: Path) -> None:
+    """The guest is provisioned first, so a run that never gets there has no token on disk."""
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", defer_credentials=True)
+
+    assert not (synth.dir / ".credentials.json").exists()
+    assert (synth.dir / ".claude.json").is_file()  # everything else is built as usual
+    assert (synth.dir / ".mcp.json").is_file()
+
+
+def test_placing_credentials_copies_the_hosts_file_in(home: Path, run_dir: Path) -> None:
+    (home / ".claude" / ".credentials.json").write_text('{"claudeAiOauth": {"accessToken": "t"}}')
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", defer_credentials=True)
+
+    synth_config.place_credentials(Profile(), CLAUDE, run_dir)
+
+    placed = synth.dir / ".credentials.json"
+    assert not placed.is_symlink()  # a link would dangle in the guest, the same as any other
+    assert json.loads(placed.read_text()) == {"claudeAiOauth": {"accessToken": "t"}}
+
+
+def test_placing_credentials_falls_back_to_the_keychain(
+    home: Path, run_dir: Path, keychain: dict[str, str]
+) -> None:
+    """The deferred path keeps the export, and keeps it 0600."""
+    (home / ".claude" / ".credentials.json").unlink()
+    keychain["Claude Code-credentials"] = TOKEN
+    synth = synth_config.build(Profile(), CLAUDE, run_dir, guest_dir="/cfg", defer_credentials=True)
+
+    synth_config.place_credentials(Profile(), CLAUDE, run_dir)
+
+    placed = synth.dir / ".credentials.json"
+    assert list(json.loads(placed.read_text())) == ["claudeAiOauth"]
+    assert stat.S_IMODE(placed.stat().st_mode) == 0o600
+
+
+def test_placing_credentials_for_an_agent_with_no_redirection_does_nothing(
+    home: Path, run_dir: Path
+) -> None:
+    synth_config.place_credentials(Profile(agent="codex"), CODEX, run_dir)
+
+    assert not (run_dir / "config").exists()
+
+
 def test_a_skill_the_host_does_not_have_is_reported_in_copy_mode_too(
     home: Path, run_dir: Path
 ) -> None:

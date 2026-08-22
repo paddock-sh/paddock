@@ -78,8 +78,8 @@ note bottom of SessionA
   field a caller sets.
 
   An agent session boots the agent's image, installs
-  the agent when the image lacks it, and mounts the
-  synthesized config dir at /paddock-config. A shell
+  the agent when the image lacks it, and gives the guest
+  its own copy of the synthesized config dir. A shell
   session gets alpine and none of that.
 end note
 

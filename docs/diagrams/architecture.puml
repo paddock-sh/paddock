@@ -25,7 +25,7 @@ package "paddock" {
   [sessions.BACKENDS\nbackend name -> the module\nthat runs it] as BackendRegistry
   [backends/srt.py\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
   [backends/__init__.py\nthe run dir both share:\nlaunch.json + launch.sh] as RunContract
-  [backends/microsandbox.py\nmsb create / exec --tty / rm -f\nprepare / open_pane / collect\nboot script: install the agent\nwhen the image lacks it] as MsbBackend
+  [backends/microsandbox.py\nmsb create / exec --tty / rm -f\nprepare / open_pane / collect\nboot script: install the agent, place\nthe token, copy the config in] as MsbBackend
   [herdr_client.py\ncreate_tab / run_in_pane\ncheck_config / reload_config\n(mockable seam)] as HerdrClient
 }
 
@@ -67,7 +67,7 @@ BackendRegistry --> SrtBackend : "srt"
 BackendRegistry --> MsbBackend : "msb"
 Sessions --> HerdrClient : launch_local: a plain tab,\nno session, no sandbox
 SrtBackend ..> SynthConfig : build config dir
-MsbBackend ..> SynthConfig : build(guest_dir="/paddock-config"), then mount\nrun_dir/config there (copies, not links: a host\npath is outside the mount)
+MsbBackend ..> SynthConfig : build(defer_credentials) + place_credentials,\nmounted read-only at /paddock-config-src and copied\nto /paddock-config in the guest (copies, not links)
 Agents --> SynthConfig : credentials + whitelisted skills
 
 SrtBackend --> HerdrClient : pane command + env

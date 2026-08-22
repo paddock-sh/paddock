@@ -314,13 +314,15 @@ Nothing in this section is estimated: it was measured, in that spike or against
 | --- | --- |
 | create | `msb create --name <handle> --mount-dir <workdir>:/work --workdir /work [--mount-dir <config>:/paddock-config -e <config var>] <net rules> <image>`, then the boot script for an agent |
 | attach a tab | `msb exec --tty <handle> [-- <agent> <flags>]`, in `launch.sh` like any other pane command |
-| collect | `msb rm -f <handle>`. Without `-f`, `msb rm` refuses a running sandbox: `sandbox still running`, exit 1 |
+| collect | `msb rm -f <handle>`, best effort. Without `-f`, `msb rm` refuses a running sandbox: `sandbox still running`, exit 1 |
 
 The handle is `paddock-<run dir name>`. It has to be unique among live sandboxes on
 the host, not only among paddock sessions, because `msb create` fails on a name
 collision. The session record keeps it as `vm_handle` (§3.4), which is the fallback
 handle when a run directory has lost its `launch.json`. A VM that is already gone is
-reported and not raised: the session is over either way.
+reported and not raised: the session is over either way. Removal is best effort. A pane
+closing is no place to raise, so an `msb` that refuses or cannot be reached leaves the VM
+up, and the message names the handle and the `msb rm -f` that finishes the job.
 
 **Attaching checks the VM first**, with `msb ls --format json`. `msb exec` into a VM
 that is gone fails after the pane exists, which leaves a dead tab and a pane id nothing
@@ -366,18 +368,42 @@ Four of those differ in kind, not in spelling:
 #### Provisioning an agent in the guest
 
 **An agent needs an image, and usually an install.** Both come from the registry (§5).
-`prepare` boots the image, runs one boot script, and writes a launch script that execs the
-agent itself rather than a shell:
+`prepare` runs a fixed order, and the order is the point:
+
+1. build `run_dir/config` (§4.3) **without the token**,
+2. `msb create`, with that directory mounted **read-only** at `/paddock-config-src` and
+   `-e CLAUDE_CONFIG_DIR=/paddock-config`,
+3. the boot script, which installs the agent when the image lacks it,
+4. **only then** write the token into `run_dir/config`,
+5. one exec copying the mount onto the guest's own filesystem:
+   `mkdir -p /paddock-config && cp -a /paddock-config-src/. /paddock-config/`.
 
 ```sh
 msb exec --timeout 110s <handle> -- /bin/sh -c \
-  'command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code'
+  'command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code@2.1.239'
 msb exec --tty <handle> -- claude --mcp-config /paddock-config/.mcp.json --strict-mcp-config
 ```
 
+Anything that fails from step 2 on deletes the token and removes the VM before raising, so
+a launch that never finished leaves neither behind. Deferring the token means a failed
+install never had one on disk to begin with. This is not theoretical: one live install hung
+and the launch ended with no VM, no token and no session record.
+
+**Two timeouts, and the outer one matters.** The boot execs pass `--timeout 110s`, inside
+paddock's own 120s limit on any `msb` command. msb's timer covers the command once it is
+running in the guest, so an exec that never gets that far is not on it: the hang above ran
+past 110s and was caught by the outer limit. Both are needed. The spike saw the same hang
+once and could not reproduce it.
+
+**The install is pinned.** `install` names a version (`@2.1.239` today), so a session
+cannot pick up a new agent release on its own and two sessions a week apart run the same
+binary. Bumping it is a one-line registry edit.
+
 An agent with no image is refused at create, before a VM is booted: the guest holds what
 the image holds, so there would be nothing to run. `shell` is the exception that needs
-neither, and attaches to whatever shell the image ships.
+neither, and attaches to whatever shell the image ships. An agent that has an image but no
+config-dir redirection (§4.3) boots and says on stderr that it starts unauthenticated:
+nothing carries its credentials in.
 
 **The install runs once per session, not once per image.** Measured on `msb` 0.6.13 on
 the spike's machine, with `claude` (`node:22-slim`, msb's default 1 CPU and 512 MiB, which
@@ -390,6 +416,9 @@ it runs in):
 | `npm install -g @anthropic-ai/claude-code` | 20.9s | 20.9s |
 | to a usable `claude` | about 41s | about 21s |
 
+The first two rows are one command: `msb create` pulls the image when the layer cache does
+not have it, so the cold column is a decomposition of that step, not two waits in a row.
+
 `paddock launch <profile> --backend msb` measured 22.1s warm, from the command to a tab
 with Claude Code running in the guest.
 
@@ -400,20 +429,20 @@ already ships the agent pays neither, which is what the `command -v` guard is fo
 building one is not paddock's job today. That 21s is the honest price of an msb agent
 session.
 
-**The profile has to allow what the install downloads.** The boot script runs under the
-same deny-by-default network as everything else in the guest, so a `claude` session needs
-the `npm` preset as well as `anthropic`. Nothing is added to the allowlist behind the
-user's back, and a failed install says which command could not reach its registry. It also
-takes the VM down with it: the session is not registered yet, so nothing else would ever
-collect that VM.
+**The profile has to allow what the install downloads, for the whole session.** The boot
+script runs under the same deny-by-default network as everything else in the guest, so a
+`claude` session needs the `npm` preset as well as `anthropic`. Nothing is added to the
+allowlist behind the user's back. What cannot be done is take it away again after the
+install: network rules are fixed at `msb create` and `msb modify` has no network option, so
+the registry the agent needed for one minute stays reachable for as long as the session
+lives. A prebuilt image would close that, and is the strongest argument for building one.
 
-**Layer 3 arrives as a mount and one variable.** `run_dir/config` (§4.3) is mounted
-read-write at `/paddock-config`, and `msb create -e CLAUDE_CONFIG_DIR=/paddock-config`
-points the agent at it. Verified on 0.6.13: a variable set on `create` reaches every later
-`exec`, the interactive shell `msb exec --tty` attaches to included, so the host tab passes
-no environment at all. The directory holds copies rather than symlinks, because a link to a
-host path leads outside the mount (§4.3). The host's own config dir needs no deny rule,
-unlike srt: it is simply not in the guest.
+**Layer 3 arrives as a mount and one variable.** `msb create -e CLAUDE_CONFIG_DIR` points
+the agent at `/paddock-config`. Verified on 0.6.13: a variable set on `create` reaches every
+later `exec`, the interactive shell `msb exec --tty` attaches to included, so the host tab
+passes no environment at all. The directory holds copies rather than symlinks, because a
+link to a host path leads outside the mount (§4.3). The host's own config dir needs no deny
+rule, unlike srt: it is simply not in the guest.
 
 #### What the guest actually is
 
@@ -431,6 +460,15 @@ were measured on `msb` 0.6.13.
   `~/.microsandbox/sandboxes/<handle>/runtime/` on the host, and the guest can create
   files there. So "only what is mounted exists" is exact, but paddock's mount list is
   not the whole list: msb adds its own, per sandbox, and it goes when the sandbox does.
+- **The agent's config dir in the guest is a copy, and only the copy.** paddock mounts
+  `run_dir/config` read-only at `/paddock-config-src` and the guest copies it to
+  `/paddock-config`, which is what `CLAUDE_CONFIG_DIR` names. So the guest reads the
+  credentials and skills the run dir holds, and everything it writes back, the rewritten
+  `.claude.json`, its session state, and the MCP whitelist it loads, lives on the guest's
+  own filesystem and dies with the VM. Two consequences worth stating: an agent's config
+  changes do not survive the session, and an agent talked into rewriting its own
+  `.mcp.json` rewrites a file in the guest that no later session reads. Under srt the same
+  directory is writable and shared, because there is no guest to copy it into.
 - **Guest writes into `shared_dir` come back changed.** A file the guest creates as
   `-rw-r--r-- root root` arrives on the host owned by you, mode `600`, carrying a
   `user.msb.override_stat` extended attribute, which is how msb keeps the guest's view
@@ -450,6 +488,10 @@ Not built, and not stubbed:
   sessions run at once: an agent VM that has installed a toolchain holds 0.8GB to
   1.3GB resident and does not give it back. An idle shell VM settles around 65MB.
   Nothing enforces a cap.
+- **A memory setting for the guest.** Every VM gets msb's default 512 MiB, which Claude
+  Code runs in, and no profile field changes it. A process the guest kernel kills for
+  running out of memory dies inside the guest, so paddock has nothing to report about it:
+  the pane shows whatever the agent showed.
 - **A host and guest channel.** A guest reaches no host service by default and there
   is no host alias, so §3's local orchestration cannot reach the `herdr` CLI from
   inside a guest. `vsock` is the candidate; it is not decided.
@@ -674,19 +716,33 @@ its real config dir is denied for reading and writing. The symlinks stay
 readable because the settings allow their targets by name (§2.1); denying the
 directory and allowing those few paths is what leaves nothing else in it.
 
-**On msb the same directory is built out of copies.** srt reads it where it was
-built, so a symlink is fine and the settings re-open its target by name. msb
-mounts it into the guest at `/paddock-config`, where a link to a host path
-resolves to nothing, so the credentials and the skills are copied in and the
+**On msb the same directory is built out of copies, and mounted read-only.** srt
+reads it where it was built, so a symlink is fine and the settings re-open its
+target by name. msb mounts it at `/paddock-config-src`, where a link to a host
+path resolves to nothing, so the credentials and the skills are copied in and the
 directory stands on its own. A relative link whose target is inside the mount
-would work; a host skill directory is never inside it. The variable is set with
-`msb create -e`, naming the mount point rather than the run dir, and there is no
-real config dir to deny: it is not in the guest to begin with (§2.2).
+would work; a host skill directory is never inside it. The guest then copies the
+mount to `/paddock-config` and works there, so the run dir is a source it reads
+and never a file it writes. The variable is set with `msb create -e`, naming that
+copy, and there is no real config dir to deny: it is not in the guest to begin
+with (§2.2).
 
-This is why it is worth doing: **unselected skills and MCP servers do not exist
-inside the sandbox.** Nothing to enumerate, nothing to load, nothing for a
-prompt-injected agent to reach. Layer 2 tells the agent not to; layer 3 means
-there is nothing there.
+**The token is written last.** On msb the directory is built without it, the
+guest is created and provisioned, and only then is the token placed and the copy
+taken. An install that fails, or a create that times out, leaves no token on disk
+at all, and the VM is removed before the failure is raised.
+
+This is why it is worth doing: **the session starts with no unselected skill or
+MCP server anywhere in reach.** Nothing to enumerate, nothing to load, nothing
+for a prompt-injected agent to find. Layer 2 tells the agent not to; layer 3
+means there is nothing there.
+
+Be exact about how long that holds. On srt the synthesized directory is
+writable, because the agent has to write it, so what stops an agent adding a
+server to its own `.mcp.json` mid-session is layer 2 and the domain allowlist,
+not layer 3. The guarantee layer 3 makes on srt is about what the session
+starts with. On msb the guest writes to its own copy, so a rewrite there reaches
+no host file and no later session (§2.2).
 
 Everything else comes from the agent registry (§5): credentials from
 `auth_read_paths`, skills from `skills/` under any of the agent's
@@ -755,7 +811,7 @@ entry:
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
 | `image` | OCI image the `msb` backend boots for this agent. Blank means srt-only, except `shell`, which gets `alpine` (§2.2) |
-| `install` | Shell command that puts `command` in an msb guest that lacks it. Blank means the image ships it |
+| `install` | Shell command that puts `command` in an msb guest that lacks it, version pinned. Blank means the image ships it |
 
 ### Auth policy
 

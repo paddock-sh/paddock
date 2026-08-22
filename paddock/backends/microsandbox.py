@@ -46,17 +46,20 @@ DEFAULT_IMAGE = "alpine"
 # Where the session's workdir is mounted, and where a tab starts.
 GUEST_WORKDIR = "/work"
 
-# Where the synthesized config dir is mounted, read-write, and what the agent's config-dir
-# variable is set to. The host side is the run dir, exactly as it is for srt (SPEC §4.3).
+# The synthesized config dir arrives read-only at GUEST_CONFIG_SRC and is copied to
+# GUEST_CONFIG on the guest's own overlay, which is what the agent's variable names. So the
+# guest reads what the run dir holds and writes only to a copy that dies with the VM (§4.3).
+GUEST_CONFIG_SRC = "/paddock-config-src"
 GUEST_CONFIG = "/paddock-config"
 
 # The agent that means "the guest's own shell": there is nothing to install and nothing to
 # point at a config dir, and the image's default shell is what a tab attaches to.
 SHELL_AGENT = "shell"
 
-# The boot script gets its own limit because it is the one slow step: an npm install
-# measured at 21s in the spike, on top of a first image pull. Shorter than COMMAND_TIMEOUT,
-# so a hung install is msb's error, with msb's message, rather than a Python timeout.
+# What msb allows the boot-time execs, the install and the config copy. The install is the
+# one slow step: 21s for claude, on top of a first image pull. Shorter than COMMAND_TIMEOUT
+# so msb usually reports a slow command itself, but not always: an exec that never starts
+# in the guest is not on msb's clock, and one such hang was caught by COMMAND_TIMEOUT here.
 BOOT_TIMEOUT = "110s"
 
 # Sandbox names have to be unique on the host, not just in this registry.
@@ -124,13 +127,14 @@ def net_rules(domains: list[str]) -> list[str]:
 
 
 def create_argv(
-    handle: str, image: str, workdir: Path, domains: list[str], synth: SynthConfig | None = None
+    handle: str, image: str, workdir: Path, domains: list[str], synth: SynthConfig
 ) -> list[str]:
     """The command that boots the session's VM. The image is positional, so it comes last.
 
-    A synthesized config dir is mounted read-write, because the agent rewrites files in it,
-    and named by the agent's own variable. `-e` here reaches every later exec, including the
-    shell a tab attaches to, which is why the guest needs nothing from the host tab.
+    A synthesized config dir is mounted read-only: the guest gets its own copy of it
+    (`copy_config_argv`), so nothing it writes there reaches the host. `-e` names that copy,
+    and reaches every later exec, including the shell a tab attaches to, which is why the
+    guest needs nothing from the host tab.
     """
     argv = [
         find_msb(),
@@ -142,12 +146,32 @@ def create_argv(
         "--workdir",
         GUEST_WORKDIR,
     ]
-    if synth is not None and synth.dir is not None:
+    if synth.dir is not None:
         # Resolved for the same reason the workdir is: msb mounts the source as written.
-        argv += ["--mount-dir", f"{synth.dir.resolve()}:{GUEST_CONFIG}"]
+        argv += ["--mount-dir", f"{synth.dir.resolve()}:{GUEST_CONFIG_SRC}:ro"]
         for name, value in synth.env.items():
             argv += ["-e", f"{name}={value}"]
     return argv + [*net_rules(domains), image]
+
+
+def copy_config_argv(handle: str) -> list[str]:
+    """Copy the mounted config dir onto the guest's own filesystem, once, before the first tab.
+
+    Run after the credentials are placed, so the copy has them. What the agent then writes
+    to its config, the generated MCP whitelist included, stays in the guest and goes when
+    the VM does (SPEC §4.3).
+    """
+    return [
+        find_msb(),
+        "exec",
+        "--timeout",
+        BOOT_TIMEOUT,
+        handle,
+        "--",
+        "/bin/sh",
+        "-c",
+        f"mkdir -p {GUEST_CONFIG} && cp -a {GUEST_CONFIG_SRC}/. {GUEST_CONFIG}/",
+    ]
 
 
 def boot_script(agent: AgentSpec) -> str:
@@ -222,18 +246,22 @@ def vm_is_running(handle: str) -> bool:
 
 
 def stop_vm(handle: str) -> None:
-    """Destroy the VM, running or stopped. One msb has never heard of is not an error.
+    """Try to destroy the VM, running or stopped. Best effort: a pane closing cannot raise.
 
     A sandbox that is only stopped still holds its disk, so it is removed like any other.
+    One msb has never heard of is not an error. Anything else leaves the VM up, so the
+    message has to say which one, and how to finish the job by hand.
     """
     try:
         if vm_status(handle) is None:
             return
         _run(*stop_argv(handle))
     except (MsbError, MsbNotFound) as error:
-        # It went away between the two calls, or msb will not answer. Either way the
-        # session is over, and a pane closing is no place to raise.
-        print(f"paddock: {error}", file=sys.stderr)
+        print(
+            f"paddock: could not remove the microVM {handle}: {error}. "
+            f"It may still be running. Remove it with: msb rm -f {handle}",
+            file=sys.stderr,
+        )
 
 
 def prepare(profile: Profile) -> Run:
@@ -256,21 +284,43 @@ def prepare(profile: Profile) -> Run:
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
     handle = vm_handle(run_dir)
-    synth = synth_config.build(profile, agent, run_dir, guest_dir=GUEST_CONFIG)
+    # Without the token: nothing can use it until the agent is installed, and everything
+    # between here and there can fail (SPEC §4.3).
+    synth = synth_config.build(
+        profile, agent, run_dir, guest_dir=GUEST_CONFIG, defer_credentials=True
+    )
     if synth.missing:
         left_out = ", ".join(synth.missing)
         print(f"paddock: not in the guest config dir: {left_out}", file=sys.stderr)
+    if synth.dir is None and profile.agent != SHELL_AGENT:
+        print(
+            f"paddock: no config dir redirection for {profile.agent!r}, so it starts "
+            "unauthenticated in the guest: nothing carries its credentials in",
+            file=sys.stderr,
+        )
     image = agent.image or DEFAULT_IMAGE
-    _run(*create_argv(handle, image, workdir, profile.allowed_domains(), synth))
-    if agent.install:
-        _provision(handle, agent, image)
-
-    command = attach_command(handle, _agent_argv(profile, agent, synth))
-    write_launch_script(run_dir, command)
-    (run_dir / LAUNCH_FILE).write_text(
-        json.dumps({"vm_handle": handle, "workdir": str(workdir), "command": command}, indent=2)
-        + "\n"
-    )
+    try:
+        _run(*create_argv(handle, image, workdir, profile.allowed_domains(), synth))
+        if agent.install:
+            _provision(handle, agent, image)
+        if synth.dir is not None:
+            # Only now: a launch that got no further never wrote a token to disk.
+            synth_config.place_credentials(profile, agent, run_dir)
+            _run(*copy_config_argv(handle))
+        command = attach_command(handle, _agent_argv(profile, agent, synth))
+        write_launch_script(run_dir, command)
+        (run_dir / LAUNCH_FILE).write_text(
+            json.dumps(
+                {"vm_handle": handle, "workdir": str(workdir), "command": command}, indent=2
+            )
+            + "\n"
+        )
+    except Exception:
+        # Nothing has registered this session, so a VM or a token left here is one that
+        # nobody would ever collect. Both go, and the failure is reported as it was.
+        synth_config.discard_credentials(run_dir)
+        stop_vm(handle)
+        raise
     return Run(run_dir=run_dir, workdir=workdir, vm_handle=handle, command=command)
 
 
@@ -315,7 +365,9 @@ def _agent_argv(profile: Profile, agent: AgentSpec, synth: SynthConfig) -> list[
     """What a tab runs in the guest: the agent and its config flags, or the guest's own shell.
 
     The shell agent's command is a host path (`$SHELL`), which the image need not have, so
-    a shell session attaches to whatever shell the image ships instead.
+    a shell session attaches to whatever shell the image ships instead. An empty list is
+    the only thing that means "the image's shell": a registry entry with no command is
+    rejected when it is loaded, so no other agent can produce one.
     """
     if profile.agent == SHELL_AGENT:
         return []
@@ -323,16 +375,14 @@ def _agent_argv(profile: Profile, agent: AgentSpec, synth: SynthConfig) -> list[
 
 
 def _provision(handle: str, agent: AgentSpec, image: str) -> None:
-    """Run the boot script, and take the VM down with it when it fails.
+    """Run the boot script, saying what failed. prepare's rollback takes the VM down.
 
-    Nothing has registered this session yet, so a VM left behind here is one nobody
-    would ever collect. The usual failure is a profile whose network does not reach the
-    install's registry, which the message has to say plainly.
+    The usual failure is a profile whose network does not reach the install's registry,
+    which the message has to say plainly.
     """
     try:
         _run(*boot_argv(handle, agent))
     except MsbError as error:
-        stop_vm(handle)
         raise MsbError(
             f"could not install {agent.command!r} in the {image} guest. The profile's "
             f"network has to allow whatever `{agent.install}` downloads: {error}"

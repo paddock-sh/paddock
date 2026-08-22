@@ -34,7 +34,8 @@ def test_claude_names_the_image_and_the_install_that_puts_it_in_a_guest() -> Non
     claude = builtin_agents()["claude"]
 
     assert claude.image == "node:22-slim"
-    assert claude.install == "npm install -g @anthropic-ai/claude-code"
+    # Pinned: a session must not pick up a new agent release on its own (SPEC §2.2).
+    assert claude.install == "npm install -g @anthropic-ai/claude-code@2.1.239"
 
 
 def test_an_agent_with_no_image_is_srt_only() -> None:

@@ -72,7 +72,11 @@ class SynthConfig:
 
 
 def build(
-    profile: Profile, agent: AgentSpec, run_dir: Path, guest_dir: str = ""
+    profile: Profile,
+    agent: AgentSpec,
+    run_dir: Path,
+    guest_dir: str = "",
+    defer_credentials: bool = False,
 ) -> SynthConfig:
     """Build `run_dir/config` for the agent, or nothing when the agent cannot be redirected.
 
@@ -80,6 +84,9 @@ def build(
     changes two things (SPEC §4.3): everything is copied, because a symlink to a host path
     is outside the mount and dangles in the guest, and the agent is pointed at the mount
     point rather than at the run dir, which the guest cannot see.
+
+    `defer_credentials` leaves the token out, for a caller that has more that can fail
+    before the agent could use one. `place_credentials` puts it in afterwards.
     """
     redirect = REDIRECTIONS.get(profile.agent)
     if redirect is None or not agent.config_write_paths:
@@ -92,10 +99,12 @@ def build(
     linked, copied = [], []
     for path in agent.auth_read_paths:
         source = Path(path).expanduser()
+        if defer_credentials and source.name == CREDENTIALS_FILE:
+            continue
         by_copy = in_guest or source.name in redirect.copied
         if _take(source, config / source.name, copy=by_copy):
             (copied if by_copy else linked).append(source)
-    if redirect.keychain and not (config / CREDENTIALS_FILE).exists():
+    if redirect.keychain and not defer_credentials and not (config / CREDENTIALS_FILE).exists():
         # The host keeps no credential file, so the redirected agent has nothing to read.
         _export_token(redirect.keychain, config / CREDENTIALS_FILE)
     sources, missing = _take_skills(
@@ -119,6 +128,25 @@ def build(
         copied=copied + sources if in_guest else copied,
         missing=missing + [f"MCP server {name!r}" for name in unknown],
     )
+
+
+def place_credentials(profile: Profile, agent: AgentSpec, run_dir: Path) -> None:
+    """Put the agent's token in a config dir that was built without one.
+
+    The copy, not the symlink: deferring is the msb path, where a link out of the mount
+    leads nowhere. The point of the split is that a launch which fails before this runs
+    never wrote a token to disk at all (SPEC §2.2).
+    """
+    redirect = REDIRECTIONS.get(profile.agent)
+    if redirect is None:
+        return
+    dest = run_dir / "config" / CREDENTIALS_FILE
+    for path in agent.auth_read_paths:
+        source = Path(path).expanduser()
+        if source.name == CREDENTIALS_FILE:
+            _take(source, dest, copy=True)
+    if redirect.keychain and not dest.exists():
+        _export_token(redirect.keychain, dest)
 
 
 def skill_dirs(agent: AgentSpec) -> list[Path]:

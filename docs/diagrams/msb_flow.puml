@@ -24,25 +24,40 @@ Sessions -> Backend : prepare(profile)
 activate Backend
 Backend -> Backend : the agent needs an `image` in the registry\n(an agent without one is refused here, before a VM exists:\nthe guest holds what the image holds. `shell` gets alpine)
 Backend -> Backend : new_run_dir() -> <state>/runs/<timestamp>-<rand>/\nvm_handle -> paddock-<that directory's name>\nworkdir_for(profile) -> shared_dir, else run_dir/work,\nresolved, because msb mounts the source as written
-Backend -> Synth : build(profile, agent, run_dir,\nguest_dir="/paddock-config")
+Backend -> Synth : build(profile, agent, run_dir,\nguest_dir="/paddock-config", defer_credentials=True)
 activate Synth
-Synth -> Synth : run_dir/config: the agent's credentials, the ticked\nskills, the generated MCP whitelist. COPIED, not linked:\na link to a host path is outside the mount (SPEC 4.3)
+Synth -> Synth : run_dir/config: the ticked skills, the generated MCP\nwhitelist, the config the agent rewrites. COPIED, not linked:\na link to a host path is outside the mount (SPEC 4.3).\nNO TOKEN YET: everything below can still fail.
 Synth --> Backend : dir (host side), env {CLAUDE_CONFIG_DIR=/paddock-config},\nargs ~--mcp-config /paddock-config/.mcp.json ~--strict-mcp-config
 deactivate Synth
-Backend -> Msb : msb create ~--name paddock-<run>\n~--mount-dir <resolved workdir>:/work ~--workdir /work\n[~--mount-dir <run_dir>/config:/paddock-config\n-e CLAUDE_CONFIG_DIR=/paddock-config]\n~--net-default deny [~--net-rule allow@dns\n~--net-rule allow@<domain>:tcp:443 per allowed domain]\n<image from the agent entry, else alpine>
+Backend -> Msb : msb create ~--name paddock-<run>\n~--mount-dir <resolved workdir>:/work ~--workdir /work\n[~--mount-dir <run_dir>/config:/paddock-config-src:ro\n-e CLAUDE_CONFIG_DIR=/paddock-config]\n~--net-default deny [~--net-rule allow@dns\n~--net-rule allow@<domain>:tcp:443 per allowed domain]\n<image from the agent entry, else alpine>
 activate Msb
 Msb -> Guest : boot (175ms to usable, measured in the spike)
 activate Guest
 Msb --> Backend : created
-Backend -> Msb : msb exec ~--timeout 110s paddock-<run> ~-- /bin/sh -c\n`command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code`\n(skipped when the agent has no `install`)
+Backend -> Msb : msb exec ~--timeout 110s paddock-<run> ~-- /bin/sh -c\n`command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code@<pinned>`\n(skipped when the agent has no `install`)
 Msb -> Guest : install the agent (about 21s, measured)
 note right
   Once per SESSION, not once per image: a new sandbox is
   a fresh clone, so msb's layer cache saves the 20s pull
   and not the install. The install downloads over the same
   deny-by-default network, so the profile has to allow the
-  registry. A failed install removes the VM and raises:
-  the session is not registered yet, so nothing else would.
+  registry, and msb cannot withdraw that rule afterwards.
+end note
+Backend -> Synth : place_credentials(profile, agent, run_dir)
+activate Synth
+Synth -> Synth : NOW write run_dir/config/.credentials.json, 0600.\nThe agent exists in the guest, so a token can be of use to it.
+deactivate Synth
+Backend -> Msb : msb exec ~--timeout 110s paddock-<run> ~-- /bin/sh -c\n`mkdir -p /paddock-config && cp -a /paddock-config-src/. /paddock-config/`
+Msb -> Guest : the guest takes its own copy, on its own filesystem
+note right
+  From here the guest reads and writes /paddock-config,
+  which is the overlay. The read-only mount is a source,
+  never a destination: nothing the agent writes to its
+  config reaches the host, and none of it survives the VM.
+
+  Anything that fails from `msb create` on: delete the
+  token, remove the VM, then raise. The session is not
+  registered yet, so nothing else would collect either.
 end note
 Backend -> Backend : write run_dir/launch.sh:\n`msb exec ~--tty paddock-<run> [~-- claude <config flags>]`\nwrite run_dir/launch.json: vm_handle, workdir, command
 Backend --> Sessions : Run(run_dir, workdir, vm_handle, command)
@@ -93,9 +108,10 @@ deactivate Msb
 note right
   Always -f: `msb rm` on its own refuses a
   running sandbox (`still running`, exit 1).
-  A VM that is already gone is reported on
-  stderr, not raised: the session is over
-  either way.
+  Best effort: a pane closing cannot raise,
+  so an msb that will not answer leaves the
+  VM up and the message names the handle and
+  the `msb rm -f` that finishes the job.
 end note
 deactivate Backend
 deactivate Sessions
@@ -104,7 +120,8 @@ note over Sessions, Guest
   What the run dir keeps: launch.json and launch.sh, config/ for an
   agent session, and work/ when the profile shares no host directory.
   Collecting a session leaves them, because deleting a workdir would
-  lose work, but the credential file in config/ goes.
+  lose work, but the credential file in config/ goes. config/ is as
+  the launcher built it: the guest wrote only to its own copy.
 
   What the guest never had: the host filesystem. An unmounted path
   is absent, not denied, so there is no PATH shim dir and no
