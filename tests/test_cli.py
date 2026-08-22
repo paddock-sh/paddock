@@ -1,14 +1,17 @@
 """The `paddock` command: argv to an action, and exactly one thing done about it."""
 
+import inspect
 import json
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
 
-from paddock import cli, tui
+from paddock import cli, sessions, tui
 from paddock.backends.srt import SrtNotFound
 from paddock.herdr_client import HerdrError
 from paddock.profiles import Profile, load_profiles
+from tests import fake_sessions as fake_sessions_module
 from tests.fake_sessions import Session
 
 
@@ -333,3 +336,30 @@ def test_a_profile_line_says_where_it_works_and_what_it_can_reach() -> None:
 
     assert "isolated workdir" in lines[0]
     assert "no network" in lines[0]
+
+
+# --- the stand-in still stands in ------------------------------------------
+
+
+def calling_shape(function: object) -> list[tuple[str, object]]:
+    return [(p.name, p.default) for p in inspect.signature(function).parameters.values()]
+
+
+def test_the_fake_sessions_module_matches_the_real_one() -> None:
+    """These tests only prove the CLI right while the stand-in has the real shape."""
+    for name in [
+        "list_sessions",
+        "get_session",
+        "create_session",
+        "attach",
+        "launch",
+        "remove_pane",
+        "launch_local",
+    ]:
+        real = getattr(sessions, name)
+        fake = getattr(fake_sessions_module, name)
+        assert calling_shape(fake) == calling_shape(real), name
+
+    assert [field.name for field in fields(fake_sessions_module.Session)] == [
+        field.name for field in fields(sessions.Session)
+    ]

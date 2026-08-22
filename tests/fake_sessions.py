@@ -1,15 +1,17 @@
-"""A stand-in for `paddock.sessions`, which lands in a parallel PR.
+"""A stand-in for `paddock.sessions`: the same calls, recorded instead of carried out.
 
-It holds the frozen contract the chooser and the CLI are written against, and
-records what it was asked to do instead of launching anything. `conftest.py`
-registers it as `paddock.sessions` when the real module is not there yet, and
-patches it in either way, so these tests never open a pane.
+The chooser and the CLI are tested on which call they make with what, not on what a
+session does about it, which `test_sessions.py` covers. `conftest.py`'s `fake_sessions`
+fixture patches this over the real module, and a test in `test_cli.py` fails if the two
+shapes drift apart. Only the `Session` defaults are a liberty, to keep the tests short.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from paddock.profiles import Profile
 
 
 @dataclass
@@ -48,7 +50,7 @@ def get_session(ref: str) -> Session | None:
     return None
 
 
-def create_session(profile, name: str | None = None) -> Session:
+def create_session(profile: Profile, name: str | None = None) -> Session:
     calls.append(("create_session", profile, name))
     return Session(name=name or "generated", profile_name=profile.name, agent=profile.agent)
 
@@ -58,7 +60,7 @@ def attach(session: Session, cwd: Path | None = None) -> str:
     return "wA:p9"
 
 
-def launch(profile, name: str | None = None) -> tuple[Session, str]:
+def launch(profile: Profile, name: str | None = None) -> tuple[Session, str]:
     calls.append(("launch", profile, name))
     session = Session(name=name or "generated", profile_name=profile.name, agent=profile.agent)
     return session, "wA:p3"
