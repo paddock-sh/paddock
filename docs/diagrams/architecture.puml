@@ -89,9 +89,11 @@ note bottom of Log
   Every module logs through this one, under its own
   name, so `paddock.backends.srt` says which layer
   wrote the line. Never a token, a credential file's
-  contents, an environment value or a proxy URL:
-  paths, byte counts and lengths instead.
+  contents, an environment value, a proxy URL or a
+  traceback: paths, byte counts and lengths instead.
   `paddock logs` prints the path and the last 40 lines.
+  A run's pane.log is the agent's own output and carries
+  no such promise, which `paddock logs <session>` says.
 end note
 
 note right of Sessions

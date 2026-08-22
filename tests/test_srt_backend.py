@@ -708,7 +708,7 @@ def test_a_run_dir_with_a_space_is_still_one_argument(tmp_path: Path) -> None:
 
 
 def stub_srt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
-    """Put a fake srt first on PATH. The rest of PATH stays: the script needs `tee`."""
+    """Put a fake srt first on PATH. The rest of PATH stays: the script needs `tail` and `date`."""
     stub_dir = tmp_path / "stub bin"
     stub_dir.mkdir()
     stub = stub_dir / "srt"
@@ -718,9 +718,18 @@ def stub_srt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None
 
 
 def run_script(run_dir: Path) -> subprocess.CompletedProcess:
-    """Run the launch script the way a pane does, with a keypress ready for a held pane."""
+    """Run the launch script the way a pane does, with a keypress ready for a held pane.
+
+    The timeout is the point of several of these: a script that waits on something it
+    should not has to fail the build, not hang it.
+    """
     return subprocess.run(
-        srt.launch_line(run_dir), shell=True, capture_output=True, text=True, input="\n"
+        srt.launch_line(run_dir),
+        shell=True,
+        capture_output=True,
+        text=True,
+        input="\n",
+        timeout=20,
     )
 
 
@@ -749,7 +758,7 @@ def test_the_script_reaches_srt_with_everything_intact(
 # --- a launch that fails, and the pane that has to show it -------------------
 
 
-def test_the_pane_keeps_the_stderr_of_a_launch_and_writes_it_down(
+def test_the_launch_keeps_its_stderr_and_replays_it_when_it_fails(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A pane that closed on failure took the one line that said why with it."""
@@ -760,7 +769,24 @@ def test_the_pane_keeps_the_stderr_of_a_launch_and_writes_it_down(
 
     assert result.returncode == 7
     assert "srt: sandbox setup failed" in (tmp_path / "pane.log").read_text()
-    assert "srt: sandbox setup failed" in result.stderr  # and the pane still showed it
+    # The pane sees it again on the way out, because the log is where it went live.
+    assert "srt: sandbox setup failed" in result.stderr
+
+
+def test_a_launch_that_leaves_a_process_behind_still_closes_the_pane(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anything holding the launch's stderr used to keep the whole pane waiting on it.
+
+    A pipe closes when the last writer does, and a backgrounded descendant never does,
+    so a clean launch could wedge the pane. A file has no such thing to wait for.
+    """
+    stub_srt(tmp_path, monkeypatch, "sleep 30 >/dev/null &\nexit 0")
+    srt.write_launch_script(tmp_path, "srt")
+
+    result = run_script(tmp_path)
+
+    assert result.returncode == 0
 
 
 def test_a_failed_launch_says_what_happened_and_waits(
@@ -774,6 +800,58 @@ def test_a_failed_launch_says_what_happened_and_waits(
     assert "paddock: launch failed (exit 3)" in result.stderr
     assert str(tmp_path / "pane.log") in result.stderr
     assert "press enter" in result.stderr
+
+
+def test_the_hold_puts_the_terminal_back_in_order_first(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """An agent whose interface died can leave the terminal raw, and then nothing echoes."""
+    run = srt.prepare(Profile(tools=[]))
+
+    text = (run.run_dir / "launch.sh").read_text()
+    assert text.index("stty sane") < text.index("press enter")
+
+
+def test_an_agent_that_ran_a_while_and_then_exited_does_not_hold_the_pane(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ctrl-C is exit 130. Holding the pane on that would hold it hostage."""
+    monkeypatch.setattr(srt, "HOLD_WITHIN_SECONDS", 1)
+    stub_srt(tmp_path, monkeypatch, "sleep 2\nexit 130")
+    srt.write_launch_script(tmp_path, "srt")
+
+    result = run_script(tmp_path)
+
+    assert result.returncode == 130
+    assert "launch failed" not in result.stderr
+    assert "press enter" not in result.stderr
+
+
+def test_a_big_pane_log_is_moved_aside_before_the_launch(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One generation, so a session nobody closes cannot fill the disk."""
+    stub_srt(tmp_path, monkeypatch, 'echo "this run" >&2')
+    srt.write_launch_script(tmp_path, "srt")
+    (tmp_path / "pane.log").write_text("x" * (srt.PANE_LOG_MAX_BYTES + 1))
+
+    run_script(tmp_path)
+
+    assert (tmp_path / "pane.log.1").stat().st_size == srt.PANE_LOG_MAX_BYTES + 1
+    assert (tmp_path / "pane.log").read_text() == "this run\n"
+
+
+def test_a_small_pane_log_is_left_where_it_is(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stub_srt(tmp_path, monkeypatch, 'echo "this run" >&2')
+    srt.write_launch_script(tmp_path, "srt")
+    (tmp_path / "pane.log").write_text("an earlier run\n")
+
+    run_script(tmp_path)
+
+    assert not (tmp_path / "pane.log.1").exists()
+    assert (tmp_path / "pane.log").read_text() == "an earlier run\nthis run\n"
 
 
 def test_a_clean_launch_closes_the_pane_as_it_always_did(
@@ -811,7 +889,23 @@ def test_the_script_names_the_pane_log_in_the_run_dir(
 
     text = (run.run_dir / "launch.sh").read_text()
     assert str(run.run_dir / "pane.log") in text
-    assert "tee -a" in text
+    # A pipeline here would make the script wait for every process still holding fd 2.
+    called = [line for line in text.splitlines() if line.startswith("paddock_launch ")]
+    assert called == ['paddock_launch 2>>"$paddock_log"']
+
+
+def test_an_older_launch_script_is_replaced_when_a_tab_attaches(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    """A run prepared by an older paddock gets the current launch behaviour on its next tab."""
+    run = srt.prepare(Profile(tools=[]))
+    (run.run_dir / "launch.sh").write_text(f"#!/bin/sh\n{run.command}\n")
+
+    assert srt.load_run(run.run_dir) == run
+
+    assert launch_command(run.run_dir) == run.command
+    assert 'paddock_launch 2>>"$paddock_log"' in (run.run_dir / "launch.sh").read_text()
+    assert (run.run_dir / "launch.sh").stat().st_mode & 0o777 == 0o700
 
 
 # --- attaching a pane to a prepared run ------------------------------------

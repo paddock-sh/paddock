@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -115,19 +116,36 @@ def context(**fields: object) -> str:
     return " ".join(f"{name}={value}" for name, value in fields.items() if value not in (None, ""))
 
 
+# The credentials in a URL: srt's proxy keeps its password there, and other tools quote
+# the whole URL back at us when they cannot reach it.
+CREDENTIALS_IN_A_URL = re.compile(r"([a-zA-Z][\w+.-]*://)[^\s/@]*@")
+
+
 def redact_env(args: tuple[str, ...] | list[str]) -> str:
     """A command line with every `--env` value taken out. The name is kept, the value never is.
 
     An environment value is a token as often as it is a path, so none of them is written.
+    Both spellings count: `--env NAME=VALUE` and `--env=NAME=VALUE`.
     """
     parts, next_is_env = [], False
     for arg in args:
         if next_is_env:
             parts.append(arg.split("=", 1)[0] + "=...")
+        elif arg.startswith("--env="):
+            parts.append("--env=" + arg[len("--env=") :].split("=", 1)[0] + "=...")
         else:
             parts.append(arg)
         next_is_env = arg == "--env"
     return " ".join(parts)
+
+
+def scrub(text: str) -> str:
+    """Text with the credentials taken out of any URL in it, and the rest left as it was.
+
+    Error messages from other programs quote what they were given, and what paddock is
+    given includes a proxy URL with a password in it.
+    """
+    return CREDENTIALS_IN_A_URL.sub(r"\1...@", text)
 
 
 def tail(path: Path, count: int) -> str:

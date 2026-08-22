@@ -638,7 +638,7 @@ no v1.1 concern appears in any of them:
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `logs`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 | `paddock/log.py` | Where paddock logs, at what level, and what never reaches the file (§9) | Done |
 
@@ -675,7 +675,21 @@ paddock writes down what it did, so a pane that vanished can still be explained.
 **Where.** `~/.local/state/paddock/logs/paddock.log`, rotated at 1 MB with three
 backups kept. `PADDOCK_LOG_FILE` moves it. Each run also gets
 `<run_dir>/pane.log`: the stderr of every pane that launched on that run,
-written by `launch.sh` as it happens.
+appended by `launch.sh` as it happens, with one earlier generation kept as
+`pane.log.1` once it passes 1 MB.
+
+**A failed launch keeps its pane.** `launch.sh` runs the command in the
+foreground with its stderr appended to `pane.log`, not piped: a pipe closes only
+when its last writer does, and an agent that backgrounds anything holds stderr
+open for as long as it lives, which would hang the pane on a launch that went
+fine. On a non-zero exit the script puts the terminal back in order with `stty
+sane`, prints `paddock: launch failed (exit N), log: <path>`, replays the last
+20 lines of `pane.log` and waits for a keypress. It only does that when the exit
+came within 10 seconds of the start: a non-zero exit later than that is the
+agent ending, ctrl-c (130) included, and holding the pane on that would hold it
+hostage. `load_run` rewrites a launch script that is not the one this paddock
+would write, so a session prepared before an upgrade gets the current behaviour
+on its next tab.
 
 **Levels.** The file takes everything from DEBUG up. stderr takes WARNING and
 worse, because the chooser is a popup and every line there is in the user's
@@ -693,8 +707,16 @@ one of which may be a token: `--env NAME=VALUE` is logged as `NAME=...`. The
 composed launch command, which carries every environment value the sandbox
 keeps: its length is logged instead. Paths, byte counts and lengths are what the
 log is made of. `tests/test_log.py` plants a fake token in the Keychain, in a
-config file and in a proxy URL, runs a whole launch at DEBUG, and fails if
-either the token or the proxy URL reaches the file.
+config file and in a proxy URL, runs a whole launch at DEBUG and a failing one
+that makes herdr quote the proxy URL back, and fails if either the token or the
+proxy URL reaches the file. Error text from other programs is scrubbed of URL
+credentials on the way in, and no traceback is ever logged: a traceback carries
+the arguments of every frame, which is exactly what the redaction takes out.
+
+**What that guarantee does not cover.** `pane.log` is the agent's own stderr,
+written straight through. paddock does not read it, filter it or redact it, and
+an agent that prints a token prints it there. The rule above is about paddock's
+own lines. `paddock logs <session>` says so before it prints one.
 
 **Reading it back.** `paddock logs` prints the path and the last 40 lines.
 `paddock logs <session>` prints that session's run directory and the end of its

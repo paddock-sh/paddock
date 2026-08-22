@@ -434,6 +434,29 @@ def test_logs_for_a_session_shows_that_run_and_its_pane_log(
     assert "srt: sandbox setup failed" in printed
 
 
+def test_a_pane_log_is_shown_with_a_warning_that_it_is_not_paddocks(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """paddock keeps secrets out of its own lines. It cannot promise that of the agent's."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "pane.log").write_text("agent: token abc\n")
+    fake_sessions.registry.append(fake_sessions.Session(name="review", run_dir=str(run_dir)))
+
+    cli.main(["logs", "review"])
+
+    assert "the agent's own output" in capsys.readouterr().out
+
+
+def test_paddocks_own_log_carries_no_such_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    log.setup()
+    log.get_logger("paddock.demo").info("a thing that happened")
+
+    cli.main(["logs"])
+
+    assert "the agent's own output" not in capsys.readouterr().out
+
+
 def test_logs_for_a_session_that_is_gone_says_so(
     fake_sessions, capsys: pytest.CaptureFixture[str]
 ) -> None:

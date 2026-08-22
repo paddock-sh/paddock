@@ -68,8 +68,10 @@ def _run(*args: str) -> str:
         logger.debug("herdr is not on PATH")
         raise HerdrMissing("herdr not found on PATH: paddock needs herdr 0.8.0") from error
     except subprocess.CalledProcessError as error:
-        reason = (error.stderr or "").strip()
+        # herdr quotes back what it was given, proxy URL and all, so the reason is scrubbed
+        # before it goes anywhere: this message is logged and shown to the user both.
+        reason = log.scrub((error.stderr or "").strip())
         logger.debug("herdr failed %s", log.context(exit=error.returncode, stderr=reason))
-        raise HerdrError(f"herdr {' '.join(args)} failed: {reason}") from error
+        raise HerdrError(f"herdr {called} failed: {reason}") from error
     logger.debug("herdr done %s", log.context(exit=0, output=f"{len(completed.stdout)} bytes"))
     return completed.stdout

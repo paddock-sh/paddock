@@ -3,12 +3,13 @@
 import json
 import logging
 import re
+import subprocess
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
 
-from paddock import log, sessions
+from paddock import cli, log, sessions
 from paddock.profiles import Profile
 from tests.conftest import FakeClient
 
@@ -254,6 +255,49 @@ def test_the_command_is_logged_by_length_not_by_content(
     assert re.search(r"command=\d+ chars", written), written
 
 
+def test_scrub_takes_the_credentials_out_of_a_url() -> None:
+    """srt's proxy URL carries the password, and it turns up in other tools' error text."""
+    written = log.scrub(f"cannot reach http://srt.local:{FAKE_TOKEN}@127.0.0.1:9000: refused")
+
+    assert written == "cannot reach http://...@127.0.0.1:9000: refused"
+
+
+def test_scrub_leaves_a_url_without_credentials_alone() -> None:
+    assert log.scrub("GET https://api.anthropic.com/v1 failed") == (
+        "GET https://api.anthropic.com/v1 failed"
+    )
+
+
+def test_a_launch_that_fails_writes_no_proxy_password_to_the_log(
+    which: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """herdr quotes the proxy URL back in its own error text, and the password is in it."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    proxy = f"http://srt.local:{FAKE_TOKEN}@127.0.0.1:9000"
+    monkeypatch.setenv("HTTPS_PROXY", proxy)
+    monkeypatch.setenv("PADDOCK_LOG", "debug")
+
+    def refuse(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        raise subprocess.CalledProcessError(1, argv, stderr=f"cannot reach {proxy}: refused")
+
+    monkeypatch.setattr(subprocess, "run", refuse)
+    log.setup()
+
+    assert cli.main(["launch", "claude-default"]) == 1
+
+    written = log.log_path().read_text()
+    assert "herdr failed" in written  # the failure really was logged
+    assert "://...@127.0.0.1:9000" in written  # and the URL really did reach the log
+    assert FAKE_TOKEN not in written
+    assert "://srt." not in written
+    assert FAKE_TOKEN not in capsys.readouterr().err  # nor the message the user is shown
+
+
 def test_an_environment_value_never_reaches_the_log(
     which: dict[str, str], client: FakeClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -270,3 +314,10 @@ def test_an_environment_value_never_reaches_the_log(
     written = log.log_path().read_text()
     assert FAKE_TOKEN not in written
     assert "TOKEN=..." in written
+
+
+def test_an_environment_value_written_as_one_word_is_redacted_too() -> None:
+    """`--env=NAME=VALUE` is the same argument, spelled the other way."""
+    redacted = log.redact_env(["tab", "create", f"--env=TOKEN={FAKE_TOKEN}", "--focus"])
+
+    assert redacted == "tab create --env=TOKEN=... --focus"

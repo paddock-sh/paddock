@@ -33,26 +33,41 @@ def modules() -> dict[str, Path]:
     return found
 
 
-def imports(path: Path) -> set[str]:
+def imports(name: str, path: Path) -> set[str]:
     """The paddock modules one file imports, by dotted name.
 
     `from paddock.backends import srt` counts as importing `paddock.backends.srt`, which
-    is the edge that matters: the package alone says nothing.
+    is the edge that matters: the package alone says nothing. A relative import is resolved
+    against the module's own package, so `from .. import sessions` is the same edge as
+    spelling it out.
     """
     found = set()
     for node in ast.walk(ast.parse(path.read_text())):
         if isinstance(node, ast.Import):
             found |= {alias.name for alias in node.names}
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            found.add(node.module)
-            found |= {f"{node.module}.{alias.name}" for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module if node.level == 0 else _relative(name, path, node)
+            if not base:
+                continue
+            found.add(base)
+            found |= {f"{base}.{alias.name}" for alias in node.names}
     return {name for name in found if name == "paddock" or name.startswith("paddock.")}
+
+
+def _relative(name: str, path: Path, node: ast.ImportFrom) -> str:
+    """What `from ..x import y` means, written out, inside the module called `name`."""
+    package = name if path.name == "__init__.py" else name.rsplit(".", 1)[0]
+    parts = package.split(".")
+    base = ".".join(parts[: len(parts) - (node.level - 1)])
+    return f"{base}.{node.module}" if node.module else base
 
 
 def edges() -> list[tuple[str, str]]:
     """Every (importer, imported) pair inside paddock."""
     return [
-        (name, imported) for name, path in modules().items() for imported in sorted(imports(path))
+        (name, imported)
+        for name, path in modules().items()
+        for imported in sorted(imports(name, path))
     ]
 
 
@@ -123,4 +138,36 @@ def test_both_ways_of_writing_an_import_are_seen(tmp_path: Path) -> None:
     offender = tmp_path / "srt.py"
     offender.write_text("import paddock.tui\nfrom paddock import sessions\nimport json\n")
 
-    assert imports(offender) == {"paddock", "paddock.tui", "paddock.sessions"}
+    assert imports("paddock.backends.srt", offender) == {
+        "paddock",
+        "paddock.tui",
+        "paddock.sessions",
+    }
+
+
+def test_a_relative_import_is_the_same_edge_written_shorter(tmp_path: Path) -> None:
+    """`from .. import sessions` must not be a way round the rule."""
+    offender = tmp_path / "srt.py"
+    offender.write_text("from .. import sessions\nfrom ..tui import choose\nfrom . import msb\n")
+
+    assert imports("paddock.backends.srt", offender) == {
+        "paddock",
+        "paddock.sessions",
+        "paddock.tui",
+        "paddock.tui.choose",
+        "paddock.backends",
+        "paddock.backends.msb",
+    }
+
+
+def test_a_relative_import_inside_a_package_starts_from_that_package(tmp_path: Path) -> None:
+    """In `paddock/backends/__init__.py`, one dot is `paddock.backends`, not `paddock`."""
+    offender = tmp_path / "__init__.py"
+    offender.write_text("from . import srt\nfrom .. import sessions\n")
+
+    assert imports("paddock.backends", offender) == {
+        "paddock.backends",
+        "paddock.backends.srt",
+        "paddock",
+        "paddock.sessions",
+    }

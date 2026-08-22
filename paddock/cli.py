@@ -47,9 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except (RuntimeError, ValueError) as error:
         # HerdrError and SrtNotFound are RuntimeErrors. The popup closes with the process,
-        # so a traceback is never read by anyone: say what went wrong instead. The traceback
-        # goes in the log, where `paddock logs` can find it afterwards.
-        logger.debug("failed: %s", error, exc_info=True)
+        # so a traceback is never read by anyone: say what went wrong instead. No traceback
+        # in the log either: it would carry the arguments of every frame, and those are the
+        # argv and environment values that redact_env exists to keep out.
+        logger.debug(
+            "failed %s", log.context(error=type(error).__name__, message=log.scrub(str(error)))
+        )
         return _fail(str(error))
 
 
@@ -139,6 +142,9 @@ def logs(ref: str = "") -> int:
         if session is None:
             return _fail(f"no session named {ref!r}")
         print(f"session {session.session_id} {session.name} run dir {session.run_dir}")
+        # paddock keeps secrets out of its own lines. A pane log is the agent's output,
+        # unread and unfiltered, and paddock can promise nothing about what is in it.
+        print("paddock: below is the agent's own output, not paddock's log: it can hold anything")
         path = log.pane_log_path(Path(session.run_dir))
     print(path)
     print(log.tail(path, TAIL_LINES), end="")
