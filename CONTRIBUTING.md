@@ -150,6 +150,11 @@ launcher: it asks some questions, writes some JSON, and runs two commands.
 - **Small modules, plain functions.** Prefer a function to a class and a class to
   a hierarchy. Most of this code should take a `Profile` and return a string or a
   dict, which is also what makes it testable without a sandbox.
+- **The layers hold.** `tui.py` and `cli.py` never import a backend, and no
+  backend imports them or `sessions.py`: `sessions` is the one door
+  ([docs/SPEC.md §10](docs/SPEC.md#10-architecture-layers-and-the-one-door-rule)).
+  `tests/test_architecture.py` reads the imports and fails on any edge that
+  breaks it, so this is enforced, not agreed.
 - **Few dependencies.** `questionary` is the only runtime dependency. Argue for a
   second one in the PR. The standard library covers JSON, paths, subprocess and
   dataclasses.

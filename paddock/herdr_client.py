@@ -7,6 +7,10 @@ import os
 import subprocess
 from pathlib import Path
 
+from paddock import log
+
+logger = log.get_logger(__name__)
+
 
 class HerdrError(RuntimeError):
     """herdr is missing, refused the command, or answered with something unusable."""
@@ -55,11 +59,19 @@ def check_config() -> str:
 
 
 def _run(*args: str) -> str:
+    # The values of `--env` are left out: one of them can be a token.
+    called = log.redact_env(args)
+    logger.debug("herdr %s", called)
     try:
         completed = subprocess.run(["herdr", *args], capture_output=True, text=True, check=True)
     except FileNotFoundError as error:
+        logger.debug("herdr is not on PATH")
         raise HerdrMissing("herdr not found on PATH: paddock needs herdr 0.8.0") from error
     except subprocess.CalledProcessError as error:
-        reason = (error.stderr or "").strip()
-        raise HerdrError(f"herdr {' '.join(args)} failed: {reason}") from error
+        # herdr quotes back what it was given, proxy URL and all, so the reason is scrubbed
+        # before it goes anywhere: this message is logged and shown to the user both.
+        reason = log.scrub((error.stderr or "").strip())
+        logger.debug("herdr failed %s", log.context(exit=error.returncode, stderr=reason))
+        raise HerdrError(f"herdr {called} failed: {reason}") from error
+    logger.debug("herdr done %s", log.context(exit=0, output=f"{len(completed.stdout)} bytes"))
     return completed.stdout

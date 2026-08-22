@@ -13,8 +13,11 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from paddock import log
 from paddock.agents import AgentSpec
 from paddock.profiles import Profile
+
+logger = log.get_logger(__name__)
 
 # The file an agent reads its token from inside the config dir, and what a collected session
 # loses (SPEC §8).
@@ -91,6 +94,17 @@ def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
     # Written even when empty: with --strict-mcp-config it is what stops every other server.
     mcp_file.write_text(json.dumps({"mcpServers": servers}, indent=2) + "\n")
 
+    # Paths only. What these files hold is the agent's login (SPEC §4.3).
+    logger.debug(
+        "config dir built %s",
+        log.context(
+            dir=config,
+            linked=_paths(linked + sources),
+            copied=_paths(copied),
+            servers=len(servers),
+            missing=", ".join(missing + [f"MCP server {name!r}" for name in unknown]),
+        ),
+    )
     return SynthConfig(
         dir=config,
         env={redirect.env_var: str(config)},
@@ -115,6 +129,11 @@ def discard_credentials(run_dir: Path) -> None:
     token must not outlive the session. A symlinked one loses only the link.
     """
     (run_dir / "config" / CREDENTIALS_FILE).unlink(missing_ok=True)
+
+
+def _paths(paths: list[Path]) -> str:
+    """Paths for one log line. Never what is in them."""
+    return ", ".join(str(path) for path in paths)
 
 
 def _take(source: Path, dest: Path, copy: bool) -> bool:
@@ -180,15 +199,23 @@ def _export_token(service: str, dest: Path) -> None:
             check=True,
         )
     except (OSError, subprocess.SubprocessError):
+        logger.debug("no keychain login %s", log.context(service=service))
         return
+    # Nothing below logs the entry, or any part of it: the whole thing is secret.
     try:
         entry = json.loads(found.stdout)
     except json.JSONDecodeError:
+        logger.debug("the keychain entry is not JSON %s", log.context(service=service))
         return
     if not isinstance(entry, dict) or LOGIN_KEY not in entry:
+        logger.debug("the keychain entry has no login in it %s", log.context(service=service))
         return
     dest.touch(mode=0o600)
     dest.write_text(json.dumps({LOGIN_KEY: entry[LOGIN_KEY]}, indent=2) + "\n")
+    logger.debug(
+        "exported the keychain login %s",
+        log.context(service=service, path=dest, size=f"{dest.stat().st_size} bytes"),
+    )
 
 
 def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[list[Path], list[str]]:

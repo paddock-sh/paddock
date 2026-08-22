@@ -266,8 +266,11 @@ one line. The composed command is longer than that, so it is written to
 `exec /bin/sh <run_dir>/launch.sh`. The run dir is not writable from inside the
 sandbox, so the agent cannot rewrite its own launcher. `exec` replaces the pane's
 shell, so closing the agent closes the pane. Every tab on the session runs the
-same script. A run directory with no script, one prepared before paddock wrote
-them, gets it back when a tab attaches: `launch.json` holds the exact command.
+same script. A script that is not the one this paddock would write is replaced
+when a tab attaches, which covers a run directory with none (one prepared before
+paddock wrote them) and one an upgrade has moved on from: `launch.json` holds
+the exact command either way. What the script does around that command, and what
+a failed launch leaves behind, is §9.
 
 The inner command is the agent, wrapped so it starts from an empty environment:
 
@@ -651,8 +654,9 @@ no v1.1 concern appears in any of them:
 | `paddock/herdr_client.py` | Subprocess wrapper over the herdr CLI: the one seam tests mock | Done |
 | `paddock/synth_config.py` | Layer 3: build the config dir from credentials plus ticked skills | Done for Claude Code; other agents have no redirection (§4.3) |
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `logs`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
+| `paddock/log.py` | Where paddock logs, at what level, and what never reaches the file (§9) | Done |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
 `herdr`, and only the backend shells out to `srt`.** Everything else is pure
@@ -677,3 +681,86 @@ no sandbox present.
 - Is v2 per-binary blocking (§4.1) worth the enumeration cost, or is the honest
   answer that PATH shimming is a usability feature and the network and write
   boundaries are the real security story?
+
+---
+
+## 9. Logging
+
+paddock writes down what it did, so a pane that vanished can still be explained.
+
+**Where.** `~/.local/state/paddock/logs/paddock.log`, rotated at 1 MB with three
+backups kept. `PADDOCK_LOG_FILE` moves it. Each run also gets
+`<run_dir>/pane.log`: the stderr of every pane that launched on that run,
+appended by `launch.sh` as it happens, with one earlier generation kept as
+`pane.log.1` once it passes 1 MB.
+
+**A failed launch keeps its pane.** `launch.sh` runs the command in the
+foreground with its stderr appended to `pane.log`, not piped: a pipe closes only
+when its last writer does, and an agent that backgrounds anything holds stderr
+open for as long as it lives, which would hang the pane on a launch that went
+fine. On a non-zero exit the script puts the terminal back in order with `stty
+sane`, prints `paddock: launch failed (exit N), log: <path>`, replays the last
+20 lines of `pane.log` and waits for a keypress. It only does that when the exit
+came within 10 seconds of the start: a non-zero exit later than that is the
+agent ending, ctrl-c (130) included, and holding the pane on that would hold it
+hostage. `load_run` rewrites a launch script that is not the one this paddock
+would write, so a session prepared before an upgrade gets the current behaviour
+on its next tab.
+
+**Levels.** The file takes everything from DEBUG up. stderr takes WARNING and
+worse, because the chooser is a popup and every line there is in the user's
+face. `PADDOCK_LOG=debug|info|warning|error|critical` lowers that bar for one
+run.
+
+**What a line looks like.** `<ISO timestamp> <LEVEL> <module> <message>`. The
+module name says which layer wrote it: `paddock.tui`, `paddock.sessions`,
+`paddock.backends.srt`. Launch and session lines carry the session id, the run
+directory and the pane id, so one launch can be followed end to end.
+
+**What is never logged.** Tokens. What a credential file holds. Keychain output.
+Proxy URLs, because srt puts the password in the URL. Environment values, any
+one of which may be a token: `--env NAME=VALUE` is logged as `NAME=...`. The
+composed launch command, which carries every environment value the sandbox
+keeps: its length is logged instead. Paths, byte counts and lengths are what the
+log is made of. `tests/test_log.py` plants a fake token in the Keychain, in a
+config file and in a proxy URL, runs a whole launch at DEBUG and a failing one
+that makes herdr quote the proxy URL back, and fails if either the token or the
+proxy URL reaches the file. Error text from other programs is scrubbed of URL
+credentials on the way in, and no traceback is ever logged: a traceback carries
+the arguments of every frame, which is exactly what the redaction takes out.
+
+**What that guarantee does not cover.** `pane.log` is the agent's own stderr,
+written straight through. paddock does not read it, filter it or redact it, and
+an agent that prints a token prints it there. The rule above is about paddock's
+own lines. `paddock logs <session>` says so before it prints one.
+
+**Reading it back.** `paddock logs` prints the path and the last 40 lines.
+`paddock logs <session>` prints that session's run directory and the end of its
+`pane.log`.
+
+---
+
+## 10. Architecture: layers and the one-door rule
+
+paddock is four layers, and calls only ever go down them:
+
+| Layer | Modules | Job |
+| --- | --- | --- |
+| Presentation | `tui.py`, `cli.py` | Ask the questions, or read the arguments. Produce a plan. |
+| API | `sessions.py` | The one door to a running sandbox: create, attach, remove. |
+| Isolation | `backends/srt.py` | Turn a profile into a policy, a config dir and a command. |
+| Process seam | `herdr_client.py` | The one module that shells out to `herdr`. Any layer may use it. |
+
+The rule is that **the presentation layer never imports a backend**. It asks
+`sessions` for a session, and `sessions` picks the backend that runs it. No
+backend imports `tui`, `cli` or `sessions` either, so how a launch was chosen
+cannot leak into how it is enforced. `log.py` is a leaf like `herdr_client.py`:
+anything may log.
+
+This is what makes each layer testable on its own, and it is why a failure has
+one address. A wrong settings file is the backend's. A pane on the wrong session
+is `sessions`'. A question asked in the wrong order is the TUI's. When every
+layer can call every other one, every bug belongs to everybody.
+
+`tests/test_architecture.py` parses the imports and fails on any edge that
+breaks this, naming the file and the import it objected to.

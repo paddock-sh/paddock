@@ -21,10 +21,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, state_dir, synth_config
+from paddock import herdr_client, log, state_dir, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
+
+logger = log.get_logger(__name__)
 
 INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
 
@@ -61,6 +63,16 @@ LAUNCH_FILE = "launch.json"
 
 # The same command as a script, because the pane is sent a line, not a file (see launch_line).
 LAUNCH_SCRIPT = "launch.sh"
+
+# A launch that fails does so at once. A non-zero exit later than this is the agent ending,
+# ctrl-c included, and holding the pane on that would hold it hostage.
+HOLD_WITHIN_SECONDS = 10
+
+# How much of pane.log a failed launch replays into the pane before it waits.
+TAIL_ON_FAILURE = 20
+
+# One earlier generation of pane.log is kept, at this size.
+PANE_LOG_MAX_BYTES = 1_000_000
 
 
 class SrtNotFound(RuntimeError):
@@ -208,9 +220,64 @@ def write_launch_script(run_dir: Path, command: str) -> Path:
     the script that launched it.
     """
     script = run_dir / LAUNCH_SCRIPT
-    script.write_text(f"#!/bin/sh\n{command}\n")
+    script.write_text(_script_text(run_dir, command))
     script.chmod(0o700)
     return script
+
+
+def _script_text(run_dir: Path, command: str) -> str:
+    """The script the pane runs: the command, its stderr kept, and a pane that stays put.
+
+    A launch that failed used to take the pane with it, error and all, so the one thing
+    that would have said why was gone before anyone could read it. Now stderr is appended
+    to `pane.log`, and a failure replays the end of it and waits.
+
+    The launch runs in the foreground with a plain file redirection, not through a pipe.
+    A pipe closes when its last writer does, and an agent that backgrounds anything leaves
+    a process holding stderr for as long as it lives, so the pane would hang on a launch
+    that went perfectly well. stdout is untouched either way: the agent draws its interface
+    there, and it has to stay a terminal.
+    """
+    pane_log = shlex.quote(str(log.pane_log_path(run_dir)))
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            "# Written by paddock when the run was prepared.",
+            f"paddock_log={pane_log}",
+            "",
+            "# One earlier generation is kept, so a run nobody closes cannot fill the disk.",
+            "# The braces matter: without them the shell, not wc, reports a log that is not",
+            "# there yet, and the first launch of every run would print an error at the user.",
+            "paddock_size=$( { wc -c < \"$paddock_log\"; } 2>/dev/null | tr -dc '0-9' )",
+            '[ -n "$paddock_size" ] && [ "$paddock_size" -gt '
+            f'{PANE_LOG_MAX_BYTES} ] && mv -f "$paddock_log" "$paddock_log.1"',
+            "",
+            "paddock_launch() {",
+            command,
+            "}",
+            "",
+            "paddock_start=$(date +%s 2>/dev/null || echo 0)",
+            'paddock_launch 2>>"$paddock_log"',
+            "paddock_exit=$?",
+            '[ "$paddock_exit" = 0 ] && exit 0',
+            "",
+            "# Only a launch that failed holds the pane. An agent that ran for a while and",
+            "# then exited non-zero (ctrl-c is 130) was watched by whoever was sitting there.",
+            "paddock_end=$(date +%s 2>/dev/null || echo 0)",
+            '[ "$((paddock_end - paddock_start))" -ge '
+            f'{HOLD_WITHIN_SECONDS} ] && exit "$paddock_exit"',
+            "",
+            "# An interface that died can leave the terminal raw, and then nothing echoes.",
+            "stty sane 2>/dev/null",
+            "printf 'paddock: launch failed (exit %s), log: %s\\n'"
+            ' "$paddock_exit" "$paddock_log" >&2',
+            f'tail -n {TAIL_ON_FAILURE} "$paddock_log" >&2',
+            "printf 'paddock: press enter to close this pane. ' >&2",
+            "read -r paddock_key",
+            'exit "$paddock_exit"',
+            "",
+        ]
+    )
 
 
 def launch_line(run_dir: Path) -> str:
@@ -234,10 +301,20 @@ def prepare(profile: Profile) -> Run:
 
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
+    logger.debug(
+        "prepare %s",
+        log.context(
+            profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
+        ),
+    )
     # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
     # An agent named by absolute path (the shell, say) is found without one.
     tools = list(profile.tools) + shlex.split(agent.command)[:1]
     shim, skipped = build_shim_dir(run_dir, tools)
+    logger.debug(
+        "shim dir %s",
+        log.context(dir=shim, shimmed=len(tools) - len(skipped), skipped=", ".join(skipped)),
+    )
     # A name with a slash is the agent's own command. It runs without a shim, so it is
     # reported as how it runs, not as a tool that went missing.
     missing = [tool for tool in skipped if "/" not in tool]
@@ -254,10 +331,14 @@ def prepare(profile: Profile) -> Run:
         left_out = ", ".join(synth.missing)
         print(f"paddock: not in the sandbox config dir: {left_out}", file=sys.stderr)
     settings = run_dir / "srt-settings.json"
-    settings.write_text(json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n")
+    text = json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n"
+    settings.write_text(text)
+    logger.debug("settings written %s", log.context(path=settings, size=f"{len(text)} bytes"))
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
-    write_launch_script(run_dir, command)
+    script = write_launch_script(run_dir, command)
+    # The length, never the command: it carries every environment value the sandbox keeps.
+    logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
 
     run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
     (run_dir / LAUNCH_FILE).write_text(
@@ -267,23 +348,37 @@ def prepare(profile: Profile) -> Run:
 
 
 def load_run(run_dir: Path) -> Run:
-    """Read a prepared run back, so a later tab attaches to the same settings and workdir."""
+    """Read a prepared run back, so a later tab attaches to the same settings and workdir.
+
+    The script is rewritten when it is not the one this paddock would write, which covers
+    a run dir prepared before paddock wrote scripts at all (it has none, and the pane runs
+    it) as well as one whose script an upgrade has moved on from. The record holds the
+    exact command either way, so a session gets today's launch behaviour on its next tab.
+    """
     try:
         data = json.loads((run_dir / LAUNCH_FILE).read_text())
         run = Run(run_dir, Path(data["workdir"]), str(data["command"]), dict(data["env"]))
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise RunNotFound(f"no usable launch record in {run_dir}") from error
-    if not (run_dir / LAUNCH_SCRIPT).exists():
-        # A run dir prepared before paddock wrote a script has none, and the pane runs it.
-        # The record holds the exact command, so it can be written back.
+    if _written_script(run_dir) != _script_text(run_dir, run.command):
         write_launch_script(run_dir, run.command)
+        logger.debug("launch script rewritten %s", log.context(path=run_dir / LAUNCH_SCRIPT))
     return run
+
+
+def _written_script(run_dir: Path) -> str:
+    try:
+        return (run_dir / LAUNCH_SCRIPT).read_text()
+    except OSError:
+        return ""
 
 
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
-    herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
+    line = launch_line(run.run_dir)
+    herdr_client.run_in_pane(pane_id, line)
+    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, line=line))
     return pane_id
 
 
