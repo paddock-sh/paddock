@@ -335,6 +335,10 @@ New window:
 name. **Attach** lists live sessions with name, backend, profile and attached tab
 count, so the choice is made on what a session is, not on remembering its name.
 
+The questionnaire is not one way: every list question carries a **← Back** entry
+that returns to the question before it with the answers kept, and the last screen
+is a summary of every answer, with Launch, Edit a step and Cancel.
+
 ### 3.2 Attach means different things per backend
 
 This is why the session list shows the backend:
