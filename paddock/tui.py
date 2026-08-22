@@ -43,7 +43,8 @@ class Attach:
     """Put a new tab on a session that is already running."""
 
     ref: str
-    cwd: str
+    # Blank leaves the session its own workdir, which is what attaching usually means.
+    cwd: str = ""
 
 
 @dataclass
@@ -84,7 +85,7 @@ def _choose(cwd: Path) -> Plan:
         return Local(cwd=str(cwd))
     if what == "attach":
         ref = _ask(questionary.select("Attach to:", choices=_options(session_choices(live))))
-        return Attach(ref=ref, cwd=str(cwd))
+        return Attach(ref=ref)
     return _new_session(cwd)
 
 
@@ -105,27 +106,29 @@ def _new_session(cwd: Path) -> NewSession:
     if agent == CUSTOM:
         command = _ask(questionary.text("Command to run in the sandbox:")).strip()
         agent = _ask(
-            questionary.text("Remember it as:", default=command.split()[0] if command else "")
+            questionary.text("Remember it as:", default=suggested_key(command, registry))
         ).strip()
 
-    tools = _ask(
-        questionary.checkbox("Tools on the sandbox PATH:", choices=_ticks(tool_choices(base)))
-    )
+    tools = list(base.tools)
+    tool_rows = tool_choices(base)
+    if tool_rows:  # an empty checklist is not a question
+        tools = _ask(questionary.checkbox("Tools on the sandbox PATH:", choices=_ticks(tool_rows)))
     presets = _ask(questionary.checkbox("Network:", choices=_ticks(network_choices(base))))
     domains = _ask(
         questionary.text("Extra domains (space separated):", default=" ".join(base.extra_domains))
     )
 
-    skills = base.skills
-    offered = skill_choices(registry.get(agent, AgentSpec()), base)
-    if offered:
-        skills = _ask(questionary.checkbox("Skills:", choices=_ticks(offered)))
+    # Skills come out of the agent's own config dir, so another agent's do not carry over.
+    skills: list[str] = []
+    carried = base.skills if agent == base.agent else []
+    skill_rows = skill_choices(registry.get(agent, AgentSpec()), carried)
+    if skill_rows:
+        skills = _ask(questionary.checkbox("Skills:", choices=_ticks(skill_rows)))
 
     shared = ""
     if _ask(questionary.confirm("Share a host directory?", default=bool(base.shared_dir))):
-        shared = _ask(
-            questionary.text("Directory:", default=base.shared_dir or str(cwd))
-        ).strip()
+        answer = _ask(questionary.text("Directory:", default=base.shared_dir or str(cwd)))
+        shared = resolve_shared_dir(answer, cwd)
 
     name = _ask(questionary.text("Session name (blank to generate one):")).strip()
     save_as = _ask(questionary.text("Save these answers as a profile (blank to skip):")).strip()
@@ -144,8 +147,8 @@ def _options(pairs: list[tuple[str, str]]) -> list[questionary.Choice]:
     return [questionary.Choice(title, value=value) for title, value in pairs]
 
 
-def _ticks(pairs: list[tuple[str, bool]]) -> list[questionary.Choice]:
-    return [questionary.Choice(name, value=name, checked=ticked) for name, ticked in pairs]
+def _ticks(rows: list[tuple[str, str, bool]]) -> list[questionary.Choice]:
+    return [questionary.Choice(title, value=value, checked=on) for title, value, on in rows]
 
 
 # --- what each question offers ---------------------------------------------
@@ -160,9 +163,12 @@ def first_choices(has_sessions: bool) -> list[tuple[str, str]]:
 
 
 def session_label(session: sessions.Session) -> str:
-    """A session by what it is, so the choice does not depend on remembering names."""
+    """A session by what it is — agent, permissions, size — not by its name alone (SPEC §3.1)."""
     panes = len(session.pane_ids)
-    return f"{session.name} — {session.agent}, {panes} tab{'' if panes == 1 else 's'}"
+    return (
+        f"{session.name} — {session.agent} / {session.profile_name}, "
+        f"{panes} tab{'' if panes == 1 else 's'}"
+    )
 
 
 def session_choices(live: list[sessions.Session]) -> list[tuple[str, str]]:
@@ -181,33 +187,59 @@ def agent_choices(registry: dict[str, AgentSpec]) -> list[tuple[str, str]]:
     return entries + [("Custom command", CUSTOM)]
 
 
-def tool_choices(base: Profile) -> list[tuple[str, bool]]:
-    """Tool candidates the host actually has, ticked as the base profile has them.
+def tool_choices(base: Profile) -> list[tuple[str, str, bool]]:
+    """Tools to offer, as title, name and whether it is ticked.
 
-    The base profile's own tools are offered too, so a profile naming something off
-    the standard list does not quietly lose it.
+    Candidates the host does not have are left out — nobody needs a checklist of tools
+    they never installed. The base profile's own tools stay on the list either way,
+    marked when they are missing, so editing a profile on another machine cannot
+    quietly drop what that machine cannot see.
     """
-    names = dict.fromkeys(TOOL_CANDIDATES + base.tools)
-    return [(name, name in base.tools) for name in names if shutil.which(name)]
+    rows = []
+    for name in dict.fromkeys(TOOL_CANDIDATES + base.tools):
+        if shutil.which(name):
+            rows.append((name, name, name in base.tools))
+        elif name in base.tools:
+            rows.append((f"{name} (not installed)", name, True))
+    return rows
 
 
-def network_choices(base: Profile) -> list[tuple[str, bool]]:
-    return [(name, name in base.network_presets) for name in NETWORK_PRESETS]
+def network_choices(base: Profile) -> list[tuple[str, str, bool]]:
+    return [(name, name, name in base.network_presets) for name in NETWORK_PRESETS]
 
 
-def skill_choices(agent: AgentSpec, base: Profile) -> list[tuple[str, bool]]:
-    """Skills under the agent's own config dirs. An agent with none is skipped, not an error."""
+def skill_choices(agent: AgentSpec, selected: list[str]) -> list[tuple[str, str, bool]]:
+    """Skills under the agent's own config dirs, plus any already chosen, which stay ticked.
+
+    An agent with no skills directory offers none, and the question is skipped.
+    """
     names: list[str] = []
     for path in agent.config_write_paths:
         directory = Path(path).expanduser() / "skills"
         if directory.is_dir():
             names += sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
-    return [(name, name in base.skills) for name in dict.fromkeys(names)]
+    return [(name, name, name in selected) for name in dict.fromkeys(names + list(selected))]
 
 
 def parse_domains(text: str) -> list[str]:
     """Typed-in domains: commas or spaces, blanks dropped, no repeats."""
     return list(dict.fromkeys(text.replace(",", " ").split()))
+
+
+def resolve_shared_dir(answer: str, cwd: Path) -> str:
+    """A typed directory as an absolute path. Blank means share nothing, not share here."""
+    answer = answer.strip()
+    if not answer:
+        return ""
+    # An absolute or ~ answer wins the join, so relative answers mean "next to the popup".
+    return str((cwd / Path(answer).expanduser()).resolve())
+
+
+def suggested_key(command: str, registry: dict[str, AgentSpec]) -> str:
+    """A registry key for a typed-in command that does not stand on a registered one."""
+    words = command.split()
+    first = Path(words[0]).name if words else ""
+    return f"{first}-custom" if first in registry else first
 
 
 # --- the answers -----------------------------------------------------------
@@ -222,8 +254,12 @@ def build_profile(
     skills: list[str],
     shared_dir: str,
 ) -> Profile:
-    """The answers as a Profile. Fields the chooser never asks about keep the base's values."""
-    return replace(
+    """The answers as a Profile. Fields the chooser never asks about keep the base's values.
+
+    Changed answers get a changed name: a session that says it runs `claude-default` has
+    to be the permissions that profile describes. The blank start is already custom.
+    """
+    built = replace(
         base,
         agent=agent,
         tools=list(tools),
@@ -232,6 +268,9 @@ def build_profile(
         skills=list(skills),
         shared_dir=shared_dir,
     )
+    if built == base or base.name == Profile().name:
+        return built
+    return replace(built, name=f"{base.name}+custom")
 
 
 def save_answers(profile: Profile, name: str) -> tuple[Profile, str]:
@@ -247,10 +286,20 @@ def save_answers(profile: Profile, name: str) -> tuple[Profile, str]:
     return renamed, f"paddock: saved {path}"
 
 
-def remember_agent(key: str, command: str) -> Path:
-    """Write a typed-in command to the agent registry: a profile names a key, not a command."""
+def remember_agent(key: str, command: str) -> Path | None:
+    """Write a typed-in command to the agent registry: a profile names a key, not a command.
+
+    None means the key already runs that command and nothing was written. A key that runs
+    something else is refused: a user file replaces a registry entry whole, so overwriting
+    one would drop its domains and credential paths for every profile that names it.
+    """
     if not key or "/" in key or key.startswith("."):
         raise ValueError(f"agent key must be a plain filename, got {key!r}")
+    known = load_agents().get(key)
+    if known is not None:
+        if known.command == command:
+            return None
+        raise ValueError(f"agent {key!r} already runs {known.command!r} — choose another name")
     agent_dir().mkdir(parents=True, exist_ok=True)
     path = agent_dir() / f"{key}.json"
     path.write_text(json.dumps({"name": key, "command": command}, indent=2) + "\n")

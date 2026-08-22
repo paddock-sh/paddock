@@ -28,11 +28,17 @@ def main(argv: list[str] | None = None) -> int:
         return run(command)
     except KeyboardInterrupt:
         return 130
+    except (RuntimeError, ValueError) as error:
+        # HerdrError and SrtNotFound are RuntimeErrors. The popup closes with the process,
+        # so a traceback is never read by anyone: say what went wrong instead.
+        return _fail(str(error))
 
 
 def parse_args(argv: list[str]) -> Command:
-    """argv to a Command. Nothing at all means the chooser, which is how the popup runs it."""
-    args = _parser().parse_args(argv or ["choose"])
+    """argv to a Command. No subcommand means the chooser, which is how the popup runs it."""
+    if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
+        argv = ["choose", *argv]
+    args = _parser().parse_args(argv)
     return Command(
         name=args.command,
         profile=getattr(args, "profile", ""),
@@ -55,7 +61,8 @@ def run(command: Command) -> int:
         if plan is None:  # backed out: nothing chosen, nothing done
             return 0
     elif command.name == "attach":
-        plan = tui.Attach(ref=command.ref, cwd=str(cwd))
+        # Only an asked-for cwd, so an attached tab otherwise keeps the session's workdir.
+        plan = tui.Attach(ref=command.ref, cwd=command.cwd)
     else:  # launch
         saved = load_profiles()
         if command.profile not in saved:
@@ -80,7 +87,7 @@ def perform(plan: tui.Plan) -> int:
         session = sessions.get_session(plan.ref)
         if session is None:
             return _fail(f"no session named {plan.ref!r}")
-        print(sessions.attach(session, Path(plan.cwd)))
+        print(sessions.attach(session, Path(plan.cwd) if plan.cwd else None))
         return 0
 
     profile = plan.profile
@@ -89,7 +96,8 @@ def perform(plan: tui.Plan) -> int:
             path = tui.remember_agent(profile.agent, plan.agent_command)
         except ValueError as error:
             return _fail(str(error))
-        print(f"paddock: remembered agent in {path}", file=sys.stderr)
+        if path is not None:
+            print(f"paddock: remembered agent in {path}", file=sys.stderr)
     if plan.save_as:
         profile, message = tui.save_answers(profile, plan.save_as)
         print(message, file=sys.stderr)
@@ -103,7 +111,8 @@ def describe(plan: tui.Plan) -> str:
     if isinstance(plan, tui.Local):
         return f"would open a local tab in {plan.cwd}"
     if isinstance(plan, tui.Attach):
-        return f"would attach a tab to session {plan.ref!r} in {plan.cwd}"
+        where = plan.cwd or "its own workdir"
+        return f"would attach a tab to session {plan.ref!r} in {where}"
     parts = [
         f"would launch session {plan.name or '(generated name)'}",
         f"profile {plan.profile.name}",
@@ -131,21 +140,27 @@ def profile_lines(saved: dict[str, Profile]) -> list[str]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paddock", description=__doc__)
-    options = argparse.ArgumentParser(add_help=False)
-    # For launch it is the directory to share, which is the only thing a cwd can mean there.
-    options.add_argument("--cwd", default="", help="use this directory, not the current one")
-    options.add_argument(
-        "--dry-run", action="store_true", help="print what would happen, and do nothing"
-    )
+    dry = argparse.ArgumentParser(add_help=False)
+    dry.add_argument("--dry-run", action="store_true", help="print what would happen, do nothing")
+    where = argparse.ArgumentParser(add_help=False)
+    where.add_argument("--cwd", default="", help="use this directory, not the current one")
 
     subcommands = parser.add_subparsers(dest="command")
-    subcommands.add_parser("choose", parents=[options], help="ask what to open (the default)")
+    subcommands.add_parser(
+        "choose", parents=[dry, where], help="ask what to open (the default)"
+    )
     launch = subcommands.add_parser(
-        "launch", parents=[options], help="start a session from a saved profile, no questions"
+        "launch", parents=[dry], help="start a session from a saved profile, no questions"
     )
     launch.add_argument("profile", help="profile name, as listed by `paddock profiles`")
+    launch.add_argument(
+        "--cwd",
+        default="",
+        help="share this host directory with the sandbox, read-write "
+        "(overrides the profile's shared_dir)",
+    )
     attach = subcommands.add_parser(
-        "attach", parents=[options], help="put a new tab on a running session"
+        "attach", parents=[dry, where], help="put a new tab on a running session"
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
     subcommands.add_parser("profiles", help="list saved profiles")

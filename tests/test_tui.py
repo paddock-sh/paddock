@@ -9,7 +9,13 @@ import questionary
 
 from paddock import tui
 from paddock.agents import AgentSpec, builtin_agents, load_agents
-from paddock.profiles import NETWORK_PRESETS, Profile, builtin_profiles, load_profiles
+from paddock.profiles import (
+    NETWORK_PRESETS,
+    Profile,
+    builtin_profiles,
+    load_profiles,
+    save_profile,
+)
 from tests.fake_sessions import Session
 
 
@@ -39,6 +45,18 @@ class Scripted:
     select = checkbox = text = confirm = _next
 
 
+def titles(rows: list[tuple[str, str, bool]]) -> list[str]:
+    return [title for title, _, _ in rows]
+
+
+def values(rows: list[tuple[str, str, bool]]) -> list[str]:
+    return [value for _, value, _ in rows]
+
+
+def ticks(rows: list[tuple[str, str, bool]]) -> dict[str, bool]:
+    return {value: ticked for _, value, ticked in rows}
+
+
 @pytest.fixture
 def which(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Control what the chooser finds on the host PATH."""
@@ -59,15 +77,17 @@ def test_attach_is_offered_only_when_a_session_exists() -> None:
 
 
 def test_a_session_is_shown_by_what_it_is() -> None:
-    """The point of the list is picking on agent and size, not remembering names."""
-    session = Session(name="review", agent="claude", pane_ids=["wA:p1", "wA:p2"])
+    """The point of the list is picking on agent, permissions and size (SPEC 3.1)."""
+    session = Session(
+        name="review", agent="claude", profile_name="hardened", pane_ids=["wA:p1", "wA:p2"]
+    )
 
-    assert tui.session_label(session) == "review — claude, 2 tabs"
+    assert tui.session_label(session) == "review — claude / hardened, 2 tabs"
 
 
 def test_one_tab_is_not_two() -> None:
     assert tui.session_label(Session(name="solo", agent="codex", pane_ids=["wA:p1"])).endswith(
-        "codex, 1 tab"
+        ", 1 tab"
     )
 
 
@@ -97,26 +117,40 @@ def test_every_registered_agent_is_offered_plus_a_typed_command() -> None:
     assert any("claude" in title for title, _ in choices)
 
 
-def test_only_tools_the_host_has_are_offered(which: dict[str, str]) -> None:
-    """A tool that is not installed cannot be symlinked into the shim dir anyway."""
-    choices = tui.tool_choices(Profile(tools=["git", "curl"]))
+def test_tools_the_host_has_are_offered_and_ticked_from_the_profile(
+    which: dict[str, str],
+) -> None:
+    rows = tui.tool_choices(Profile(tools=["git", "curl"]))
 
-    assert [name for name, _ in choices] == ["git", "jq"]
-    assert dict(choices) == {"git": True, "jq": False}
+    assert values(rows) == ["git", "jq", "curl"]
+    assert ticks(rows) == {"git": True, "jq": False, "curl": True}
 
 
 def test_a_profiles_own_tools_are_offered_too(which: dict[str, str]) -> None:
     """Otherwise editing a profile that names something off the standard list drops it."""
-    choices = tui.tool_choices(Profile(tools=["kubectl"]))
+    rows = tui.tool_choices(Profile(tools=["kubectl"]))
 
-    assert dict(choices)["kubectl"] is True
+    assert ticks(rows)["kubectl"] is True
+
+
+def test_a_tool_this_host_lacks_stays_ticked_and_says_so(which: dict[str, str]) -> None:
+    """Editing a profile on a second machine must not quietly drop what it cannot see."""
+    rows = tui.tool_choices(Profile(tools=["git", "curl"]))
+
+    assert ticks(rows)["curl"] is True
+    assert titles(rows)[-1] == "curl (not installed)"
+
+
+def test_a_candidate_the_host_lacks_is_left_out(which: dict[str, str]) -> None:
+    """Nobody needs a checklist of every tool they have never installed."""
+    assert "docker" not in values(tui.tool_choices(Profile()))
 
 
 def test_network_presets_are_pre_ticked_from_the_base_profile() -> None:
-    choices = tui.network_choices(Profile(network_presets=["github"]))
+    rows = tui.network_choices(Profile(network_presets=["github"]))
 
-    assert [name for name, _ in choices] == list(NETWORK_PRESETS)
-    assert dict(choices) == {name: name == "github" for name in NETWORK_PRESETS}
+    assert values(rows) == list(NETWORK_PRESETS)
+    assert ticks(rows) == {name: name == "github" for name in NETWORK_PRESETS}
 
 
 @pytest.mark.parametrize(
@@ -140,20 +174,30 @@ def test_skills_come_from_the_agents_own_config_dir(tmp_path: Path) -> None:
     (skills / "notes.md").write_text("not a skill")
     agent = AgentSpec(command="claude", config_write_paths=[str(tmp_path / "agent-config")])
 
-    choices = tui.skill_choices(agent, Profile(skills=["reviewer"]))
+    rows = tui.skill_choices(agent, ["reviewer"])
 
-    assert dict(choices) == {"release": False, "reviewer": True}
+    assert ticks(rows) == {"release": False, "reviewer": True}
+
+
+def test_a_skill_already_chosen_stays_on_the_list(tmp_path: Path) -> None:
+    """A skill the agent's directory no longer holds is still the user's answer."""
+    (tmp_path / "agent-config" / "skills" / "release").mkdir(parents=True)
+    agent = AgentSpec(command="claude", config_write_paths=[str(tmp_path / "agent-config")])
+
+    rows = tui.skill_choices(agent, ["reviewer"])
+
+    assert ticks(rows) == {"release": False, "reviewer": True}
 
 
 def test_an_agent_with_no_skills_dir_is_fine(tmp_path: Path) -> None:
     """Most agents have no skills at all, and the question is skipped."""
     agent = AgentSpec(command="codex", config_write_paths=[str(tmp_path / "nothing-here")])
 
-    assert tui.skill_choices(agent, Profile()) == []
+    assert tui.skill_choices(agent, []) == []
 
 
 def test_an_agent_with_no_config_dirs_is_fine() -> None:
-    assert tui.skill_choices(AgentSpec(command="sh"), Profile()) == []
+    assert tui.skill_choices(AgentSpec(command="sh"), []) == []
 
 
 # --- answers to a Profile --------------------------------------------------
@@ -194,7 +238,59 @@ def test_fields_the_chooser_does_not_ask_about_come_from_the_base_profile() -> N
     assert profile.deny_read == ["~/.ssh", "~/.kube"]
     assert profile.include_system_path is False
     assert profile.extra_allow_write == ["/var/tmp"]
-    assert profile.name == "hardened"
+
+
+def test_answers_kept_as_they_were_keep_the_profiles_name() -> None:
+    base = builtin_profiles()["claude-default"]
+
+    profile = tui.build_profile(
+        base,
+        base.agent,
+        base.tools,
+        base.network_presets,
+        base.extra_domains,
+        base.skills,
+        base.shared_dir,
+    )
+
+    assert profile == base
+
+
+def test_changed_answers_do_not_keep_the_profiles_name() -> None:
+    """A session claiming `claude-default` must be the permissions that profile describes."""
+    base = builtin_profiles()["claude-default"]
+
+    profile = tui.build_profile(base, "codex", base.tools, [], [], [], "")
+
+    assert profile.name == "claude-default+custom"
+
+
+def test_the_blank_start_is_already_custom() -> None:
+    """No point calling it custom+custom."""
+    profile = tui.build_profile(Profile(), "codex", ["git"], [], [], [], "")
+
+    assert profile.name == "custom"
+
+
+def test_a_typed_directory_is_resolved_against_the_popups_cwd(tmp_path: Path) -> None:
+    """A relative answer means "here", and the sandbox settings need an absolute path."""
+    cwd = (tmp_path / "here").resolve()
+    cwd.mkdir()
+
+    assert tui.resolve_shared_dir("repo", cwd) == str(cwd / "repo")
+    assert tui.resolve_shared_dir("./repo", cwd) == str(cwd / "repo")
+    assert tui.resolve_shared_dir("../sibling", cwd) == str(cwd.parent / "sibling")
+
+
+def test_a_blank_directory_means_no_sharing(tmp_path: Path) -> None:
+    """An isolated scratch workdir is the safe default, so blank must not mean the cwd."""
+    assert tui.resolve_shared_dir("", tmp_path) == ""
+    assert tui.resolve_shared_dir("   ", tmp_path) == ""
+
+
+def test_an_absolute_or_home_directory_is_taken_as_written(tmp_path: Path) -> None:
+    assert tui.resolve_shared_dir("/work/repo", tmp_path) == "/work/repo"
+    assert tui.resolve_shared_dir("~/repo", tmp_path) == str((Path.home() / "repo").resolve())
 
 
 # --- saving the answers ----------------------------------------------------
@@ -242,6 +338,32 @@ def test_a_remembered_agent_needs_a_plain_name(key: str) -> None:
         tui.remember_agent(key, "claude")
 
 
+def test_a_key_that_already_runs_something_else_is_refused(config_dir: Path) -> None:
+    """Overwriting `claude` would strip its domains and credentials for every later launch."""
+    with pytest.raises(ValueError, match="already runs"):
+        tui.remember_agent("claude", "claude --model opus")
+
+    assert not (config_dir / "agents").exists()
+    assert load_agents()["claude"].api_domains == builtin_agents()["claude"].api_domains
+
+
+def test_remembering_the_same_command_again_writes_nothing(config_dir: Path) -> None:
+    """Re-running a saved profile's own agent is not a collision."""
+    tui.remember_agent("wrapped", "npx claude-code")
+
+    assert tui.remember_agent("wrapped", "npx claude-code") is None
+    assert load_agents()["wrapped"].command == "npx claude-code"
+
+
+def test_the_suggested_key_does_not_stand_on_a_registered_agent() -> None:
+    registry = load_agents()
+
+    assert tui.suggested_key("npx claude-code", registry) == "npx"
+    assert tui.suggested_key("claude --model opus", registry) == "claude-custom"
+    assert tui.suggested_key("/opt/bin/wrapper --flag", registry) == "wrapper"
+    assert tui.suggested_key("", registry) == ""
+
+
 # --- the questionary shell -------------------------------------------------
 
 
@@ -267,10 +389,11 @@ def test_backing_out_of_a_question_ends_the_chooser(
 def test_an_existing_session_is_picked_from_the_list(
     monkeypatch: pytest.MonkeyPatch, fake_sessions, tmp_path: Path
 ) -> None:
+    """No cwd: an attached tab belongs in the session's own workdir."""
     fake_sessions.registry.append(Session(session_id="s1", name="review"))
     monkeypatch.setattr(tui, "questionary", Scripted("attach", "s1"))
 
-    assert tui.choose(tmp_path) == tui.Attach(ref="s1", cwd=str(tmp_path))
+    assert tui.choose(tmp_path) == tui.Attach(ref="s1")
 
 
 def test_the_whole_questionnaire_becomes_one_plan(
@@ -300,7 +423,7 @@ def test_the_whole_questionnaire_becomes_one_plan(
             tools=["git"],
             network_presets=["npm"],
             extra_domains=["example.com"],
-            shared_dir=str(tmp_path),
+            shared_dir=str(tmp_path.resolve()),
         ),
         name="review",
         save_as="review-profile",
@@ -353,12 +476,41 @@ def test_skills_are_asked_about_when_the_agent_has_some(
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".claude" / "skills" / "reviewer").mkdir(parents=True)
-    script = Scripted(
-        "new", tui.CUSTOM, "claude", [], [], "", ["reviewer"], False, "", ""
-    )
+    script = Scripted("new", tui.CUSTOM, "claude", [], [], "", ["reviewer"], False, "", "")
     monkeypatch.setattr(tui, "questionary", script)
 
     plan = tui.choose(tmp_path)
 
     assert "Skills:" in script.asked
     assert plan.profile.skills == ["reviewer"]
+
+
+def test_changing_the_agent_drops_the_profiles_skills(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, which: dict[str, str], tmp_path: Path
+) -> None:
+    """Skills belong to the agent whose config dir they came from, not to the profile."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    save_profile(Profile(name="reviewing", agent="claude", skills=["reviewer"]))
+    script = Scripted("new", "reviewing", "codex", [], [], "", False, "", "")
+    monkeypatch.setattr(tui, "questionary", script)
+
+    plan = tui.choose(tmp_path)
+
+    assert "Skills:" not in script.asked
+    assert plan.profile.skills == []
+
+
+def test_the_tools_question_is_skipped_when_the_host_has_nothing_to_offer(
+    monkeypatch: pytest.MonkeyPatch, fake_sessions, tmp_path: Path
+) -> None:
+    """An empty checklist is not a question, and the profile's tools stand."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    save_profile(Profile(name="bare", agent="codex", tools=[]))
+    script = Scripted("new", "bare", "codex", [], "", False, "", "")
+    monkeypatch.setattr(tui, "questionary", script)
+
+    plan = tui.choose(tmp_path)
+
+    assert "Tools on the sandbox PATH:" not in script.asked
+    assert plan.profile.tools == []

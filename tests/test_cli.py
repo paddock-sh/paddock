@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from paddock import cli, tui
+from paddock.backends.srt import SrtNotFound
+from paddock.herdr_client import HerdrError
 from paddock.profiles import Profile, load_profiles
 from tests.fake_sessions import Session
 
@@ -30,6 +32,17 @@ def names(calls: list[tuple]) -> list[str]:
 def test_no_arguments_means_the_chooser() -> None:
     """That is how the herdr popup runs it."""
     assert cli.parse_args([]).name == "choose"
+
+
+def test_flags_with_no_subcommand_still_mean_the_chooser() -> None:
+    command = cli.parse_args(["--dry-run"])
+
+    assert (command.name, command.dry_run) == ("choose", True)
+
+
+def test_help_is_still_help() -> None:
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--help"])
 
 
 def test_each_subcommand_is_recognised() -> None:
@@ -151,6 +164,15 @@ def test_attach_finds_the_session_then_puts_a_tab_on_it(
     assert capsys.readouterr().out.strip() == "wA:p9"
 
 
+def test_attach_without_a_cwd_leaves_the_session_its_own_workdir(fake_sessions) -> None:
+    """The tab belongs where the session works, not where the popup happened to open."""
+    session = Session(session_id="s1", name="review")
+    fake_sessions.registry.append(session)
+
+    assert cli.main(["attach", "review"]) == 0
+    assert fake_sessions.calls[1] == ("attach", session, None)
+
+
 def test_attaching_to_a_session_that_is_gone_says_so(
     fake_sessions, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -236,6 +258,28 @@ def test_a_typed_command_with_an_unusable_key_launches_nothing(
     assert "plain filename" in capsys.readouterr().err
 
 
+def test_a_typed_command_that_would_overwrite_an_agent_launches_nothing(
+    fake_sessions, chooser, config_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Better to ask for another name than to change what `claude` means from now on."""
+    chooser(tui.NewSession(profile=Profile(agent="claude"), agent_command="claude --model opus"))
+
+    assert cli.main(["choose"]) == 1
+    assert fake_sessions.calls == []
+    assert "already runs" in capsys.readouterr().err
+    assert not (config_dir / "agents").exists()
+
+
+def test_a_command_the_registry_already_runs_is_not_written_again(
+    fake_sessions, chooser, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chooser(tui.NewSession(profile=Profile(agent="claude"), agent_command="claude"))
+
+    assert cli.main(["choose"]) == 0
+    assert "remembered" not in capsys.readouterr().err
+    assert names(fake_sessions.calls) == ["launch"]
+
+
 def test_ctrl_c_leaves_no_traceback(fake_sessions, monkeypatch: pytest.MonkeyPatch) -> None:
     def interrupt(cwd: Path) -> None:
         raise KeyboardInterrupt
@@ -244,6 +288,30 @@ def test_ctrl_c_leaves_no_traceback(fake_sessions, monkeypatch: pytest.MonkeyPat
 
     assert cli.main(["choose"]) == 130
     assert fake_sessions.calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HerdrError("herdr not found on PATH"),
+        SrtNotFound("srt not found, and no npx to run it"),
+        RuntimeError("the sandbox would not start"),
+        ValueError("profile names an unknown agent"),
+    ],
+)
+def test_a_launch_that_fails_says_why_instead_of_tracing_back(
+    error: Exception, fake_sessions, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The popup closes with the process, so a traceback is never seen by anyone."""
+
+    def fail(cwd: Path) -> None:
+        raise error
+
+    monkeypatch.setattr(tui, "choose", fail)
+
+    assert cli.main(["choose"]) == 1
+    assert capsys.readouterr().err.strip() == f"paddock: {error}"
 
 
 # --- listing profiles ------------------------------------------------------

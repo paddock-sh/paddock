@@ -515,7 +515,10 @@ Data-driven, not hardcoded branching. Built-ins:
 Users add or override entries with JSON in `~/.config/paddock/agents/*.json`; a
 user file wins over a built-in of the same key. The chooser writes one of these
 files when the user types a command instead of picking an agent, because a
-profile names a registry key, not a command. Each entry:
+profile names a registry key, not a command. It refuses a key that already runs
+something else: a user file replaces an entry whole, so overwriting one would
+drop its domains and credential paths for every profile that names it. Each
+entry:
 
 | Field | Meaning |
 | --- | --- |

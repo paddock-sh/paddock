@@ -14,21 +14,21 @@ elseif (launch <profile>) then
   :load the saved profile\n(--cwd shares that directory instead);
   :plan = NewSession(profile);
 elseif (attach <session>) then
-  :plan = Attach(session ref, cwd);
+  :plan = Attach(session ref, cwd only if --cwd was given);
 else (choose)
   :sessions.list_sessions();
   if (what kind of window?) then (Local)
     :plan = Local(cwd);
   elseif (Attach\n— offered only when a session is live) then
-    :pick a session by name, agent, tab count;
-    :plan = Attach(session id, cwd);
+    :pick a session by name, agent,\nprofile and tab count;
+    :plan = Attach(session id)\n— the session keeps its own workdir;
   else (New sandbox session)
     partition "permissions questionnaire" {
       :start from a saved profile, or Custom;
       :agent from the registry,\nor a command typed in;
-      :tools — candidates found on PATH,\nticked as the profile has them;
+      :tools — candidates on PATH plus the\nprofile's own, marked when missing;
       :network presets, plus typed domains;
-      :skills under the agent's config dir\n(skipped when it has none);
+      :skills under the agent's config dir\n(none, or a different agent: skipped);
       :share a host directory?\n(default: the popup's cwd);
       :session name, and whether to\nsave the answers as a profile;
     }
@@ -43,15 +43,16 @@ else (no)
 endif
 
 :save the profile and remember a typed-in\nagent, if the answers asked for it;
-:sessions.launch_local / attach / launch;
+:sessions.launch_local\n| get_session then attach\n| launch;
 :print the pane id;
 stop
 
 note right
-  Ctrl-C or escape answers None at any question.
-  The chooser then returns no plan at all, and
-  cli.py stops. Only cli.py calls sessions, so
-  backing out cannot leave a pane or a file behind.
+  Ctrl-C or escape answers None at any question:
+  the chooser returns no plan and cli.py stops.
+  Only cli.py acts on a plan; the chooser reads
+  the session list and nothing else. So backing
+  out cannot leave a pane or a file behind.
 end note
 
 @enduml
