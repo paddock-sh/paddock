@@ -26,6 +26,9 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Lint the install script
+        run: shellcheck install.sh
+
       - name: Test
         run: uv run pytest -q
 
