@@ -7,8 +7,13 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import init, sessions, tui
+from paddock import init, log, sessions, tui
 from paddock.profiles import Profile, load_profiles
+
+logger = log.get_logger(__name__)
+
+# How much of a log `paddock logs` shows. Enough to hold a launch, short enough to read.
+TAIL_LINES = 40
 
 
 @dataclass
@@ -24,14 +29,27 @@ class Command:
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.setup()
     command = parse_args(sys.argv[1:] if argv is None else argv)
+    logger.debug(
+        "paddock %s",
+        log.context(
+            command=command.name,
+            profile=command.profile,
+            ref=command.ref,
+            cwd=command.cwd,
+            dry_run=command.dry_run,
+        ),
+    )
     try:
         return run(command)
     except KeyboardInterrupt:
         return 130
     except (RuntimeError, ValueError) as error:
         # HerdrError and SrtNotFound are RuntimeErrors. The popup closes with the process,
-        # so a traceback is never read by anyone: say what went wrong instead.
+        # so a traceback is never read by anyone: say what went wrong instead. The traceback
+        # goes in the log, where `paddock logs` can find it afterwards.
+        logger.debug("failed: %s", error, exc_info=True)
         return _fail(str(error))
 
 
@@ -58,6 +76,8 @@ def run(command: Command) -> int:
         return 0
     if command.name == "init":
         return init.run(dry_run=command.dry_run, undo=command.undo)
+    if command.name == "logs":
+        return logs(command.ref)
 
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
@@ -107,6 +127,21 @@ def perform(plan: tui.Plan) -> int:
         print(message, file=sys.stderr)
     _, pane_id = sessions.launch(profile, plan.name or None)
     print(pane_id)
+    return 0
+
+
+def logs(ref: str = "") -> int:
+    """Say where the log is, then show the end of it. A session ref shows that pane's log."""
+    if not ref:
+        path = log.log_path()
+    else:
+        session = sessions.get_session(ref)
+        if session is None:
+            return _fail(f"no session named {ref!r}")
+        print(f"session {session.session_id} {session.name} run dir {session.run_dir}")
+        path = log.pane_log_path(Path(session.run_dir))
+    print(path)
+    print(log.tail(path, TAIL_LINES), end="")
     return 0
 
 
@@ -168,6 +203,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
     subcommands.add_parser("profiles", help="list saved profiles")
+    tail = subcommands.add_parser("logs", help="where paddock logged what it did, and the end")
+    tail.add_argument(
+        "ref",
+        metavar="session",
+        nargs="?",
+        default="",
+        help="show this session's pane log instead of paddock's own",
+    )
     setup = subcommands.add_parser(
         "init", parents=[dry], help="bind the chooser to prefix+c in herdr's config"
     )

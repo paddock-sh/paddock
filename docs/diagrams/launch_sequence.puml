@@ -92,7 +92,7 @@ note right of Synth
 end note
 Backend -> Backend : build_settings(profile, agent, workdir, synth)\n-> run_dir/srt-settings.json\nnetwork.allowedDomains (allowlist-only) + deniedDomains\nfilesystem.allowWrite (workdir, /tmp, /private/tmp, /dev/null,\nand run_dir/config when redirected, else config_write_paths)\nfilesystem.allowRead (what the config dir linked to, since srt\nsees the target, else the agent's own credentials)\nfilesystem.denyRead (~/.ssh, ~/.aws, ..., plus the real config\ndir and what was copied when redirected); denyWrite adds\nevery credential path\nevery configured path expanded here
 Backend -> Backend : pane_command(...)\nfind_srt(): `srt`, else `npx -y @anthropic-ai/sandbox-runtime`\n(composed before any tab exists, so a missing srt\nfails with no empty pane left behind)
-Backend -> Backend : write run_dir/launch.json\n(command, workdir, env: what a later attach replays)\nwrite run_dir/launch.sh, mode 0700\n(the same command as a script: the pane is sent a line,\nand a tty drops one past 1024 bytes)
+Backend -> Backend : write run_dir/launch.json\n(command, workdir, env: what a later attach replays)\nwrite run_dir/launch.sh, mode 0700\n(the same command as a script: the pane is sent a line,\nand a tty drops one past 1024 bytes)\nthe script tees the launch's stderr to run_dir/pane.log\nand holds the pane open when it exits non-zero
 Backend --> Sessions : Run
 deactivate Backend
 Sessions -> Sessions : register in <state>/sessions.json\n(written whole, then swapped in)
@@ -141,6 +141,13 @@ note over Backend, Srt
   them in the shell it spawns and that proxy is the sandbox's only
   way out, so `VAR="$VAR"` is left for that shell to expand. No
   value is read from the popup's environment (SPEC section 2.1).
+
+  A launch that fails keeps its pane. launch.sh sends the command's
+  stderr through `tee`, so it is on the screen and in run_dir/pane.log
+  both, then prints `paddock: launch failed (exit N), log: <path>`
+  and waits for a keypress. stdout is left alone: the agent draws its
+  interface there, and a pipe is not a terminal. `paddock logs
+  <session>` prints the same file afterwards (SPEC section 9).
 end note
 
 @enduml

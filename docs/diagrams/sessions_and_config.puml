@@ -48,7 +48,9 @@ database "$PADDOCK_STATE_DIR\n(default $HOME/.local/state/paddock)" as StateDir 
   folder "runs/<timestamp>-<rand>/" as RunDir {
     file "srt-settings.json" as Settings
     file "launch.json\ncommand + workdir + env" as Launch
-    file "launch.sh, mode 0700\nthe command as a script, what every pane execs" as LaunchScript
+    file "launch.sh, mode 0700\nthe command as a script, what every pane execs\ntees the launch's stderr to pane.log, then holds\nthe pane open when the command exits non-zero" as LaunchScript
+    file "pane.log\nthe stderr of every pane that ran this launch" as PaneLog
+    file "launch.status\nthe exit code, for launch.sh's own last lines" as LaunchStatus
     folder "bin/: one symlink per ticked tool" as Shim
     folder "work/: scratch workdir" as Work
     folder "config/" as Config {
@@ -102,6 +104,13 @@ note bottom of Config
   around it is not. CLAUDE_CONFIG_DIR points
   here, via `tab create --env` and the sandbox
   command itself.
+end note
+
+note bottom of PaneLog
+  Appended, because every tab on this run writes
+  to it. `paddock logs <session>` prints the end
+  of it. paddock's own log is elsewhere, in
+  $PADDOCK_STATE_DIR/logs/paddock.log.
 end note
 
 @enduml

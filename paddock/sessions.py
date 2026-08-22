@@ -19,12 +19,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from paddock import herdr_client, state_dir, synth_config
+from paddock import herdr_client, log, state_dir, synth_config
 from paddock.backends import srt
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
 LOCK_FILE = "sessions.lock"
+
+logger = log.get_logger(__name__)
 
 
 @dataclass
@@ -100,6 +102,17 @@ def create_session(profile: Profile, name: str | None = None) -> Session:
             pane_ids=[],
         )
         _save(live + [session])
+        logger.info(
+            "session created %s",
+            log.context(
+                session=session.session_id,
+                name=session.name,
+                backend="srt",
+                profile=profile.name,
+                agent=profile.agent,
+                run_dir=session.run_dir,
+            ),
+        )
         return session
 
 
@@ -112,6 +125,10 @@ def attach(session: Session, cwd: Path | None = None) -> str:
     pane_id = srt.open_pane(run, label=f"sbx:{session.name}", cwd=cwd)
     session.pane_ids.append(pane_id)
     _record(session)
+    logger.info(
+        "session attached %s",
+        log.context(session=session.session_id, name=session.name, pane=pane_id, cwd=cwd),
+    )
     return pane_id
 
 
@@ -136,15 +153,25 @@ def remove_pane(pane_id: str) -> None:
                     continue
             kept.append(session)
         _save(kept)
+        logger.info("pane removed %s", log.context(pane=pane_id, sessions_left=len(kept)))
         for session in collected:
             # The run dir stays on disk, because deleting a workdir would lose work, but the
             # token in it does not outlive the session (SPEC §8).
             synth_config.discard_credentials(Path(session.run_dir))
+            logger.info(
+                "session collected %s",
+                log.context(
+                    session=session.session_id, name=session.name, run_dir=session.run_dir
+                ),
+            )
 
 
 def launch_local(cwd: Path | None = None) -> str:
     """The chooser's other branch: an ordinary tab. No session, no sandbox, no label."""
-    return herdr_client.create_tab(cwd or Path.cwd())
+    where = cwd or Path.cwd()
+    pane_id = herdr_client.create_tab(where)
+    logger.info("local tab %s", log.context(pane=pane_id, cwd=where))
+    return pane_id
 
 
 @contextmanager

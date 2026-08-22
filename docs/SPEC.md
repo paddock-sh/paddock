@@ -640,6 +640,7 @@ no v1.1 concern appears in any of them:
 | `paddock/tui.py` | The questionary chooser: questions in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
 | `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `init` | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
+| `paddock/log.py` | Where paddock logs, at what level, and what never reaches the file (§9) | Done |
 
 One constraint runs through all of it: **only `herdr_client.py` shells out to
 `herdr`, and only the backend shells out to `srt`.** Everything else is pure
@@ -664,3 +665,37 @@ no sandbox present.
 - Is v2 per-binary blocking (§4.1) worth the enumeration cost, or is the honest
   answer that PATH shimming is a usability feature and the network and write
   boundaries are the real security story?
+
+---
+
+## 9. Logging
+
+paddock writes down what it did, so a pane that vanished can still be explained.
+
+**Where.** `~/.local/state/paddock/logs/paddock.log`, rotated at 1 MB with three
+backups kept. `PADDOCK_LOG_FILE` moves it. Each run also gets
+`<run_dir>/pane.log`: the stderr of every pane that launched on that run,
+written by `launch.sh` as it happens.
+
+**Levels.** The file takes everything from DEBUG up. stderr takes WARNING and
+worse, because the chooser is a popup and every line there is in the user's
+face. `PADDOCK_LOG=debug|info|warning|error|critical` lowers that bar for one
+run.
+
+**What a line looks like.** `<ISO timestamp> <LEVEL> <module> <message>`. The
+module name says which layer wrote it: `paddock.tui`, `paddock.sessions`,
+`paddock.backends.srt`. Launch and session lines carry the session id, the run
+directory and the pane id, so one launch can be followed end to end.
+
+**What is never logged.** Tokens. What a credential file holds. Keychain output.
+Proxy URLs, because srt puts the password in the URL. Environment values, any
+one of which may be a token: `--env NAME=VALUE` is logged as `NAME=...`. The
+composed launch command, which carries every environment value the sandbox
+keeps: its length is logged instead. Paths, byte counts and lengths are what the
+log is made of. `tests/test_log.py` plants a fake token in the Keychain, in a
+config file and in a proxy URL, runs a whole launch at DEBUG, and fails if
+either the token or the proxy URL reaches the file.
+
+**Reading it back.** `paddock logs` prints the path and the last 40 lines.
+`paddock logs <session>` prints that session's run directory and the end of its
+`pane.log`.

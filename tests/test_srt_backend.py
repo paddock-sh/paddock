@@ -1,6 +1,7 @@
 """The srt backend: settings JSON, the PATH shim dir, the composed pane command."""
 
 import json
+import os
 import shlex
 import subprocess
 import time
@@ -12,7 +13,7 @@ from paddock.agents import AgentSpec, builtin_agents
 from paddock.backends import srt
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
-from tests.conftest import FakeClient
+from tests.conftest import FakeClient, launch_command
 
 HOME = Path.home()
 CLAUDE = builtin_agents()["claude"]
@@ -665,7 +666,8 @@ def test_prepare_writes_the_command_to_a_launch_script(
     run = srt.prepare(Profile(tools=[]))
 
     script = run.run_dir / "launch.sh"
-    assert script.read_text() == f"#!/bin/sh\n{run.command}\n"
+    assert script.read_text().startswith("#!/bin/sh\n")
+    assert launch_command(run.run_dir) == run.command
 
 
 def test_the_launch_script_is_executable_by_its_owner_only(
@@ -705,23 +707,35 @@ def test_a_run_dir_with_a_space_is_still_one_argument(tmp_path: Path) -> None:
     assert shlex.split(srt.launch_line(run_dir))[2] == str(run_dir / "launch.sh")
 
 
+def stub_srt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
+    """Put a fake srt first on PATH. The rest of PATH stays: the script needs `tee`."""
+    stub_dir = tmp_path / "stub bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "srt"
+    stub.write_text(f"#!/bin/sh\n{body}\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}:{os.environ['PATH']}")
+
+
+def run_script(run_dir: Path) -> subprocess.CompletedProcess:
+    """Run the launch script the way a pane does, with a keypress ready for a held pane."""
+    return subprocess.run(
+        srt.launch_line(run_dir), shell=True, capture_output=True, text=True, input="\n"
+    )
+
+
 def test_the_script_reaches_srt_with_everything_intact(
     real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """One more shell sits between the pane and srt now, so run the whole path past one."""
-    stub_dir = tmp_path / "stub bin"
-    stub_dir.mkdir()
-    stub = stub_dir / "srt"
-    stub.write_text('#!/bin/sh\nfor arg in "$@"; do echo "$arg"; done\n')
-    stub.chmod(0o755)
-    monkeypatch.setenv("PATH", str(stub_dir))
+    stub_srt(tmp_path, monkeypatch, 'for arg in "$@"; do echo "$arg"; done')
     monkeypatch.setenv("HTTPS_PROXY", "http://the-popups-proxy:1234")
 
     command = srt.pane_command(
         Profile(), CLAUDE, tmp_path / "s.json", tmp_path / "shim dir", NO_REDIRECT
     )
     srt.write_launch_script(tmp_path, command)
-    result = subprocess.run(srt.launch_line(tmp_path), shell=True, capture_output=True, text=True)
+    result = run_script(tmp_path)
 
     assert result.returncode == 0
     argv = result.stdout.splitlines()
@@ -730,6 +744,74 @@ def test_the_script_reaches_srt_with_everything_intact(
     # srt's own shell expands these, and it is the only one that has the right values.
     assert 'HTTPS_PROXY="$HTTPS_PROXY"' in argv[3]
     assert "the-popups-proxy" not in result.stdout
+
+
+# --- a launch that fails, and the pane that has to show it -------------------
+
+
+def test_the_pane_keeps_the_stderr_of_a_launch_and_writes_it_down(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A pane that closed on failure took the one line that said why with it."""
+    stub_srt(tmp_path, monkeypatch, 'echo "srt: sandbox setup failed" >&2\nexit 7')
+    srt.write_launch_script(tmp_path, "srt --settings s.json")
+
+    result = run_script(tmp_path)
+
+    assert result.returncode == 7
+    assert "srt: sandbox setup failed" in (tmp_path / "pane.log").read_text()
+    assert "srt: sandbox setup failed" in result.stderr  # and the pane still showed it
+
+
+def test_a_failed_launch_says_what_happened_and_waits(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stub_srt(tmp_path, monkeypatch, "exit 3")
+    srt.write_launch_script(tmp_path, "srt --settings s.json")
+
+    result = run_script(tmp_path)
+
+    assert "paddock: launch failed (exit 3)" in result.stderr
+    assert str(tmp_path / "pane.log") in result.stderr
+    assert "press enter" in result.stderr
+
+
+def test_a_clean_launch_closes_the_pane_as_it_always_did(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Holding a pane open after a good run would be a new annoyance, not a fix."""
+    stub_srt(tmp_path, monkeypatch, "echo done")
+    srt.write_launch_script(tmp_path, "srt")
+
+    result = run_script(tmp_path)
+
+    assert result.returncode == 0
+    assert result.stdout == "done\n"  # stdout is untouched: it is where the agent draws
+    assert "launch failed" not in result.stderr
+    assert "press enter" not in result.stderr
+
+
+def test_a_second_pane_appends_to_the_same_log(
+    real_subprocess: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Tabs share a run, so they share its log rather than overwriting each other's."""
+    stub_srt(tmp_path, monkeypatch, 'echo "first and second" >&2')
+    srt.write_launch_script(tmp_path, "srt")
+
+    run_script(tmp_path)
+    run_script(tmp_path)
+
+    assert (tmp_path / "pane.log").read_text().count("first and second") == 2
+
+
+def test_the_script_names_the_pane_log_in_the_run_dir(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    run = srt.prepare(Profile(tools=[]))
+
+    text = (run.run_dir / "launch.sh").read_text()
+    assert str(run.run_dir / "pane.log") in text
+    assert "tee -a" in text
 
 
 # --- attaching a pane to a prepared run ------------------------------------

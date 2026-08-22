@@ -25,11 +25,12 @@ package "paddock" {
   [backends/srt.py\nv1\nbuild_settings / build_shim_dir\npane_command / prepare / open_pane] as SrtBackend
   [backends/microsandbox.py\nv1.1 (planned)] as MsbBackend
   [herdr_client.py\ncreate_tab / run_in_pane\ncheck_config / reload_config\n(mockable seam)] as HerdrClient
+  [log.py\nget_logger(__name__)\nfile at DEBUG, stderr at WARNING\n($PADDOCK_LOG, $PADDOCK_LOG_FILE)] as Log
 }
 
 package "Host configuration" {
   database "~/.config/paddock/\n(override: $PADDOCK_CONFIG_DIR)\nprofiles/*.json\nagents/*.json" as ConfigFiles
-  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ bin/ + srt-settings.json +\nconfig/ + work/ + launch.json + launch.sh\nsessions.json (registry)\nworkspace default bindings (planned)" as RunDir
+  database "~/.local/state/paddock/\n(override: $PADDOCK_STATE_DIR)\nruns/<id>/ bin/ + srt-settings.json +\nconfig/ + work/ + launch.json + launch.sh + pane.log\nsessions.json (registry)\nlogs/paddock.log (1 MB, 3 backups)\nworkspace default bindings (planned)" as RunDir
 }
 
 package "Sandbox runtimes" {
@@ -57,6 +58,8 @@ BackendAPI <|.. SrtBackend
 BackendAPI <|.. MsbBackend
 
 SrtBackend --> RunDir : writes PATH shim dir, srt-settings.json,\nconfig dir, scratch workdir, launch.json, launch.sh
+Log ..> RunDir : appends logs/paddock.log
+CLI ..> Log : `paddock logs` reads it back
 Sessions --> BackendAPI : create_session -> prepare;\nattach -> open_pane on the same\nsettings + workdir (srt)\nor exec into guest (msb)
 Sessions --> HerdrClient : launch_local: a plain tab,\nno session, no sandbox
 SrtBackend ..> SynthConfig : build config dir
@@ -80,6 +83,15 @@ end note
 note bottom of HerdrClient
   The only module that shells out to `herdr`.
   Mocked in every test; CI has no herdr server.
+end note
+
+note bottom of Log
+  Every module logs through this one, under its own
+  name, so `paddock.backends.srt` says which layer
+  wrote the line. Never a token, a credential file's
+  contents, an environment value or a proxy URL:
+  paths, byte counts and lengths instead.
+  `paddock logs` prints the path and the last 40 lines.
 end note
 
 @enduml

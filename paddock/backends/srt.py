@@ -21,10 +21,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from paddock import herdr_client, state_dir, synth_config
+from paddock import herdr_client, log, state_dir, synth_config
 from paddock.agents import AgentSpec, load_agents
 from paddock.profiles import Profile
 from paddock.synth_config import SynthConfig
+
+logger = log.get_logger(__name__)
 
 INSTALL_COMMAND = "npm install -g @anthropic-ai/sandbox-runtime"
 
@@ -61,6 +63,9 @@ LAUNCH_FILE = "launch.json"
 
 # The same command as a script, because the pane is sent a line, not a file (see launch_line).
 LAUNCH_SCRIPT = "launch.sh"
+
+# Where the script leaves the command's exit status for its own last lines to read.
+LAUNCH_STATUS = "launch.status"
 
 
 class SrtNotFound(RuntimeError):
@@ -204,9 +209,52 @@ def write_launch_script(run_dir: Path, command: str) -> Path:
     the script that launched it.
     """
     script = run_dir / LAUNCH_SCRIPT
-    script.write_text(f"#!/bin/sh\n{command}\n")
+    script.write_text(_script_text(run_dir, command))
     script.chmod(0o700)
     return script
+
+
+def _script_text(run_dir: Path, command: str) -> str:
+    """The script the pane runs: the command, its stderr kept, and a pane that stays put.
+
+    A launch that failed used to take the pane with it, error and all, so the one thing
+    that would have said why was gone before anyone could read it. Now stderr goes through
+    `tee`: on the screen as before, and in `pane.log` as well. stdout is left alone,
+    because the agent draws its interface there and a pipe is not a terminal.
+    """
+    pane_log = shlex.quote(str(log.pane_log_path(run_dir)))
+    status = shlex.quote(str(run_dir / LAUNCH_STATUS))
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            "# Written by paddock when the run was prepared.",
+            f"paddock_log={pane_log}",
+            f"paddock_status={status}",
+            "",
+            "paddock_launch() {",
+            command,
+            "}",
+            "",
+            "# fd 3 is the pane's own stdout, so only stderr goes down the pipe. The status goes",
+            "# to a file because a pipeline reports the last command's status, which is tee's.",
+            "exec 3>&1",
+            '{ paddock_launch 2>&1 1>&3 3>&-; echo $? >"$paddock_status"; }'
+            ' | tee -a "$paddock_log" >&2',
+            "exec 3>&-",
+            "",
+            'read -r paddock_exit < "$paddock_status" 2>/dev/null',
+            '[ -n "$paddock_exit" ] || paddock_exit=1',
+            '[ "$paddock_exit" = 0 ] && exit 0',
+            "",
+            "# A pane that closes on failure takes the reason with it, so this one waits.",
+            "printf 'paddock: launch failed (exit %s), log: %s\\n'"
+            ' "$paddock_exit" "$paddock_log" >&2',
+            "printf 'paddock: press enter to close this pane. ' >&2",
+            "read -r paddock_key",
+            'exit "$paddock_exit"',
+            "",
+        ]
+    )
 
 
 def launch_line(run_dir: Path) -> str:
@@ -230,10 +278,20 @@ def prepare(profile: Profile) -> Run:
 
     run_dir = new_run_dir()
     workdir = workdir_for(profile, run_dir)
+    logger.debug(
+        "prepare %s",
+        log.context(
+            profile=profile.name, agent=profile.agent, run_dir=run_dir, workdir=workdir
+        ),
+    )
     # The agent runs on the shimmed PATH like everything else, so it needs a shim of its own.
     # An agent named by absolute path (the shell, say) is found without one.
     tools = list(profile.tools) + shlex.split(agent.command)[:1]
     shim, skipped = build_shim_dir(run_dir, tools)
+    logger.debug(
+        "shim dir %s",
+        log.context(dir=shim, shimmed=len(tools) - len(skipped), skipped=", ".join(skipped)),
+    )
     if skipped:
         print(f"paddock: left off the sandbox PATH: {', '.join(skipped)}", file=sys.stderr)
     synth = synth_config.build(profile, agent, run_dir)
@@ -241,10 +299,14 @@ def prepare(profile: Profile) -> Run:
         left_out = ", ".join(synth.missing)
         print(f"paddock: not in the sandbox config dir: {left_out}", file=sys.stderr)
     settings = run_dir / "srt-settings.json"
-    settings.write_text(json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n")
+    text = json.dumps(build_settings(profile, agent, workdir, synth), indent=2) + "\n"
+    settings.write_text(text)
+    logger.debug("settings written %s", log.context(path=settings, size=f"{len(text)} bytes"))
     # Composed before any tab exists, so a missing srt fails with no pane left behind.
     command = pane_command(profile, agent, settings, shim, synth)
-    write_launch_script(run_dir, command)
+    script = write_launch_script(run_dir, command)
+    # The length, never the command: it carries every environment value the sandbox keeps.
+    logger.debug("launch script %s", log.context(path=script, command=f"{len(command)} chars"))
 
     run = Run(run_dir=run_dir, workdir=workdir, command=command, env=synth.env)
     (run_dir / LAUNCH_FILE).write_text(
@@ -265,7 +327,9 @@ def load_run(run_dir: Path) -> Run:
 def open_pane(run: Run, label: str = "", cwd: Path | None = None) -> str:
     """Open a tab on a prepared run and start the sandboxed agent in it. Returns the pane id."""
     pane_id = herdr_client.create_tab(cwd or run.workdir, label=label, env=run.env)
-    herdr_client.run_in_pane(pane_id, launch_line(run.run_dir))
+    line = launch_line(run.run_dir)
+    herdr_client.run_in_pane(pane_id, line)
+    logger.debug("pane opened %s", log.context(pane=pane_id, label=label, line=line))
     return pane_id
 
 

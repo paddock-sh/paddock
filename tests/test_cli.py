@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from paddock import cli, sessions, tui
+from paddock import cli, log, sessions, tui
 from paddock.backends.srt import SrtNotFound
 from paddock.herdr_client import HerdrError
 from paddock.profiles import Profile, load_profiles
@@ -376,6 +376,70 @@ def test_a_profile_line_says_where_it_works_and_what_it_can_reach() -> None:
 
     assert "isolated workdir" in lines[0]
     assert "no network" in lines[0]
+
+
+# --- reading the log back --------------------------------------------------
+
+
+def test_logs_takes_an_optional_session() -> None:
+    assert cli.parse_args(["logs"]).ref == ""
+    assert cli.parse_args(["logs", "review"]).ref == "review"
+
+
+def test_logs_prints_the_path_and_the_end_of_the_file(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    log.setup()
+    log.get_logger("paddock.demo").info("a thing that happened")
+
+    assert cli.main(["logs"]) == 0
+
+    printed = capsys.readouterr().out
+    assert str(log.log_path()) in printed
+    assert "a thing that happened" in printed
+
+
+def test_logs_shows_the_last_lines_only(capsys: pytest.CaptureFixture[str]) -> None:
+    log.setup()
+    for number in range(cli.TAIL_LINES + 10):
+        log.get_logger("paddock.demo").info("line %s", number)
+
+    cli.main(["logs"])
+
+    printed = capsys.readouterr().out
+    assert "line 9\n" not in printed
+    assert "line 49" in printed
+
+
+def test_logs_with_no_log_yet_says_where_it_will_be(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["logs"]) == 0
+
+    assert str(log.log_path()) in capsys.readouterr().out
+
+
+def test_logs_for_a_session_shows_that_run_and_its_pane_log(
+    fake_sessions, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "pane.log").write_text("srt: sandbox setup failed\n")
+    fake_sessions.registry.append(
+        fake_sessions.Session(session_id="abc123", name="review", run_dir=str(run_dir))
+    )
+
+    assert cli.main(["logs", "review"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "abc123" in printed and str(run_dir) in printed
+    assert "srt: sandbox setup failed" in printed
+
+
+def test_logs_for_a_session_that_is_gone_says_so(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["logs", "nope"]) == 1
+
+    assert "no session named 'nope'" in capsys.readouterr().err
 
 
 # --- the stand-in still stands in ------------------------------------------

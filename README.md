@@ -108,6 +108,7 @@ The popup is the usual way in. The same jobs work without questions:
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock profiles                # list saved profiles
+paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
 ```
 
@@ -150,6 +151,12 @@ longer want them.
 **4. Press `prefix+c` inside herdr.**
 
 To check herdr is happy with the result: `herdr config check`.
+
+## Troubleshooting
+
+`paddock logs` prints where the log is and the last 40 lines of it, and
+`paddock logs <session>` prints what that session's pane printed. A launch that
+fails leaves its pane open with the reason on screen.
 
 ## Docs
 
