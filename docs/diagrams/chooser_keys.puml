@@ -1,0 +1,45 @@
+@startuml chooser_keys
+title paddock: the chooser's screens, and the keys between them
+
+skinparam shadowing false
+hide empty description
+
+[*] --> Form : the popup opens on the answers,\nfilled in from the profile used last
+
+state Form : eight fields, the hint for the one the\ncursor is on, then Launch and Cancel
+state "List" as Pick : one row per choice, what it means beside it
+state "Checklist" as Tick : two columns, a count in the header
+state "Box" as Type : one line to type, and what is wrong with it
+
+Form --> Pick : enter on Open, Profile or Agent
+Form --> Tick : enter on Tools, Network or Skills
+Form --> Type : enter on a name or a typed command
+Pick --> Form : enter takes the row\nesc takes nothing, so the old value stands
+Tick --> Form : enter or esc, and the ticks stand either way
+Type --> Form : enter when the check passes\nesc keeps what was typed
+Form --> [*] : L, or enter on Launch\nesc, or enter on Cancel: nothing at all
+
+note right of Tick
+  `/` opens a filter on a list and on a
+  checklist. Bare typing never filters, so
+  every letter stays a shortcut: that is why
+  a checklist can keep `a` for all and `n`
+  for none while still narrowing.
+end note
+
+note right of Type
+  `?` puts the whole key map over whatever is
+  on screen, and any key takes it off again.
+
+  ctrl-c cancels the popup from any of these,
+  at any depth, by raising KeyboardInterrupt.
+  Nothing has been launched or written by
+  then, so backing out costs nothing.
+
+  screen.py draws these and knows nothing
+  about profiles, sessions or plans. It takes
+  rows of text and hands back what was picked.
+  tui.py drives it next.
+end note
+
+@enduml
