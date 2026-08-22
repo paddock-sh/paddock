@@ -211,6 +211,7 @@ paddock gc                      # collect sessions whose tabs are all closed, an
                                 # sweep sandboxes and run dirs nothing claims
 paddock logs                    # where paddock logged what it did, and the end of it
 paddock init                    # wire the chooser into herdr's config
+paddock --version               # print the version and exit
 ```
 
 `--dry-run` prints what would happen instead of doing it, and `paddock init`
