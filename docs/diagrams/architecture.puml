@@ -94,4 +94,11 @@ note bottom of Log
   `paddock logs` prints the path and the last 40 lines.
 end note
 
+note right of Sessions
+  The one door. cli.py and tui.py never import a
+  backend, and no backend imports them or sessions.py.
+  tests/test_architecture.py parses the imports and
+  fails on any edge that breaks that (SPEC section 10).
+end note
+
 @enduml

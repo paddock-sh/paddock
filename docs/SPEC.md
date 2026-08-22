@@ -699,3 +699,30 @@ either the token or the proxy URL reaches the file.
 **Reading it back.** `paddock logs` prints the path and the last 40 lines.
 `paddock logs <session>` prints that session's run directory and the end of its
 `pane.log`.
+
+---
+
+## 10. Architecture: layers and the one-door rule
+
+paddock is four layers, and calls only ever go down them:
+
+| Layer | Modules | Job |
+| --- | --- | --- |
+| Presentation | `tui.py`, `cli.py` | Ask the questions, or read the arguments. Produce a plan. |
+| API | `sessions.py` | The one door to a running sandbox: create, attach, remove. |
+| Isolation | `backends/srt.py` | Turn a profile into a policy, a config dir and a command. |
+| Process seam | `herdr_client.py` | The one module that shells out to `herdr`. Any layer may use it. |
+
+The rule is that **the presentation layer never imports a backend**. It asks
+`sessions` for a session, and `sessions` picks the backend that runs it. No
+backend imports `tui`, `cli` or `sessions` either, so how a launch was chosen
+cannot leak into how it is enforced. `log.py` is a leaf like `herdr_client.py`:
+anything may log.
+
+This is what makes each layer testable on its own, and it is why a failure has
+one address. A wrong settings file is the backend's. A pane on the wrong session
+is `sessions`'. A question asked in the wrong order is the TUI's. When every
+layer can call every other one, every bug belongs to everybody.
+
+`tests/test_architecture.py` parses the imports and fails on any edge that
+breaks this, naming the file and the import it objected to.
