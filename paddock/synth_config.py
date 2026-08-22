@@ -3,6 +3,10 @@
 It gets the agent's own credentials and the ticked skills, and a generated MCP whitelist.
 Nothing else is in it, so unselected skills and MCP servers are not there to be found
 (SPEC §4.3). The agent is pointed at it with an environment variable.
+
+The same directory serves both backends. srt reads it where it was built, so it can be
+symlinks; msb mounts it into a guest, where a link to a host path leads nowhere, so a
+caller that names a `guest_dir` gets copies (SPEC §2.2).
 """
 
 from __future__ import annotations
@@ -11,10 +15,13 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+from paddock import log
 from paddock.agents import AgentSpec
 from paddock.profiles import Profile
+
+logger = log.get_logger(__name__)
 
 # The file an agent reads its token from inside the config dir, and what a collected session
 # loses (SPEC §8).
@@ -31,7 +38,8 @@ class Redirection:
     # The variable that points the agent at the synthesized dir.
     env_var: str
     # Credential files the agent writes back to. Copied, so the sandbox works on its own
-    # and the host's file is never touched. Everything else is a read-only symlink.
+    # and the host's file is never touched. Everything else is a read-only symlink, unless
+    # the whole directory is going into a guest, where a link out of the mount dangles.
     copied: tuple[str, ...] = ()
     # macOS Keychain service holding the token when the agent kept none in a file. A
     # fallback source for CREDENTIALS_FILE, never a replacement for one (SPEC §4.3).
@@ -66,41 +74,95 @@ class SynthConfig:
     missing: list[str] = field(default_factory=list)
 
 
-def build(profile: Profile, agent: AgentSpec, run_dir: Path) -> SynthConfig:
-    """Build `run_dir/config` for the agent, or nothing when the agent cannot be redirected."""
+def build(
+    profile: Profile,
+    agent: AgentSpec,
+    run_dir: Path,
+    guest_dir: str = "",
+    defer_credentials: bool = False,
+) -> SynthConfig:
+    """Build `run_dir/config` for the agent, or nothing when the agent cannot be redirected.
+
+    `guest_dir` is the path this directory gets mounted at inside a microVM. Naming one
+    changes two things (SPEC §4.3): everything is copied, because a symlink to a host path
+    is outside the mount and dangles in the guest, and the agent is pointed at the mount
+    point rather than at the run dir, which the guest cannot see.
+
+    `defer_credentials` leaves the token out, for a caller that has more that can fail
+    before the agent could use one. `place_credentials` puts it in afterwards.
+    """
     redirect = REDIRECTIONS.get(profile.agent)
     if redirect is None or not agent.config_write_paths:
         return SynthConfig()
 
     config = run_dir / "config"
     config.mkdir(parents=True, exist_ok=True)
+    in_guest = bool(guest_dir)
 
     linked, copied = [], []
     for path in agent.auth_read_paths:
         source = Path(path).expanduser()
-        by_copy = source.name in redirect.copied
+        if defer_credentials and source.name == CREDENTIALS_FILE:
+            continue
+        by_copy = in_guest or source.name in redirect.copied
         if _take(source, config / source.name, copy=by_copy):
             (copied if by_copy else linked).append(source)
-    if redirect.keychain and not (config / CREDENTIALS_FILE).exists():
+    if redirect.keychain and not defer_credentials and not (config / CREDENTIALS_FILE).exists():
         # The host keeps no credential file, so the redirected agent has nothing to read.
         _export_token(redirect.keychain, config / CREDENTIALS_FILE)
-    sources, missing = _link_skills(skill_dirs(agent), config / "skills", profile.skills)
+    sources, missing = _take_skills(
+        skill_dirs(agent), config / "skills", profile.skills, copy=in_guest
+    )
 
     servers, unknown = _whitelisted_servers(agent, profile.mcp)
-    mcp_file = config / ".mcp.json"
     # Written even when empty: with --strict-mcp-config it is what stops every other server.
-    mcp_file.write_text(json.dumps({"mcpServers": servers}, indent=2) + "\n")
+    (config / ".mcp.json").write_text(json.dumps({"mcpServers": servers}, indent=2) + "\n")
 
+    # Where the agent will read all this from, which is not where it was built when the
+    # directory is on its way into a guest.
+    seen_as = PurePosixPath(guest_dir) if in_guest else config
+    # Paths only. What these files hold is the agent's login (SPEC §4.3). The two lists are
+    # reported the way they were built: a dir on its way into a guest is copies, not links.
+    logger.debug(
+        "config dir built %s",
+        log.context(
+            dir=config,
+            seen_as=seen_as,
+            linked=_paths([] if in_guest else linked + sources),
+            copied=_paths(copied + sources if in_guest else copied),
+            servers=len(servers),
+            missing=", ".join(missing + [f"MCP server {name!r}" for name in unknown]),
+        ),
+    )
     return SynthConfig(
         dir=config,
-        env={redirect.env_var: str(config)},
+        env={redirect.env_var: str(seen_as)},
         # --strict-mcp-config is the important one: without it the agent merges MCP config
         # from its other scopes and the whitelist leaks (SPEC §4.2).
-        args=["--mcp-config", str(mcp_file), "--strict-mcp-config"],
-        linked=linked + sources,
-        copied=copied,
+        args=["--mcp-config", str(seen_as / ".mcp.json"), "--strict-mcp-config"],
+        linked=[] if in_guest else linked + sources,
+        copied=copied + sources if in_guest else copied,
         missing=missing + [f"MCP server {name!r}" for name in unknown],
     )
+
+
+def place_credentials(profile: Profile, agent: AgentSpec, run_dir: Path) -> None:
+    """Put the agent's token in a config dir that was built without one.
+
+    The copy, not the symlink: deferring is the msb path, where a link out of the mount
+    leads nowhere. The point of the split is that a launch which fails before this runs
+    never wrote a token to disk at all (SPEC §2.2).
+    """
+    redirect = REDIRECTIONS.get(profile.agent)
+    if redirect is None:
+        return
+    dest = run_dir / "config" / CREDENTIALS_FILE
+    for path in agent.auth_read_paths:
+        source = Path(path).expanduser()
+        if source.name == CREDENTIALS_FILE:
+            _take(source, dest, copy=True)
+    if redirect.keychain and not dest.exists():
+        _export_token(redirect.keychain, dest)
 
 
 def skill_dirs(agent: AgentSpec) -> list[Path]:
@@ -115,6 +177,11 @@ def discard_credentials(run_dir: Path) -> None:
     token must not outlive the session. A symlinked one loses only the link.
     """
     (run_dir / "config" / CREDENTIALS_FILE).unlink(missing_ok=True)
+
+
+def _paths(paths: list[Path]) -> str:
+    """Paths for one log line. Never what is in them."""
+    return ", ".join(str(path) for path in paths)
 
 
 def _take(source: Path, dest: Path, copy: bool) -> bool:
@@ -180,21 +247,31 @@ def _export_token(service: str, dest: Path) -> None:
             check=True,
         )
     except (OSError, subprocess.SubprocessError):
+        logger.debug("no keychain login %s", log.context(service=service))
         return
+    # Nothing below logs the entry, or any part of it: the whole thing is secret.
     try:
         entry = json.loads(found.stdout)
     except json.JSONDecodeError:
+        logger.debug("the keychain entry is not JSON %s", log.context(service=service))
         return
     if not isinstance(entry, dict) or LOGIN_KEY not in entry:
+        logger.debug("the keychain entry has no login in it %s", log.context(service=service))
         return
     dest.touch(mode=0o600)
     dest.write_text(json.dumps({LOGIN_KEY: entry[LOGIN_KEY]}, indent=2) + "\n")
+    logger.debug(
+        "exported the keychain login %s",
+        log.context(service=service, path=dest, size=f"{dest.stat().st_size} bytes"),
+    )
 
 
-def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[list[Path], list[str]]:
-    """Symlink the ticked skills. Returns what was linked, and what the host does not have."""
+def _take_skills(
+    sources: list[Path], dest: Path, names: list[str], copy: bool
+) -> tuple[list[Path], list[str]]:
+    """Put the ticked skills in the dir. Returns what was taken, and what the host lacks."""
     dest.mkdir(parents=True, exist_ok=True)
-    linked, missing = [], []
+    taken, missing = [], []
     for name in names:
         # A skill is a bare directory name: `../..` would link the whole config dir in.
         plain = bool(name) and "/" not in name and not name.startswith(".")
@@ -202,11 +279,15 @@ def _link_skills(sources: list[Path], dest: Path, names: list[str]) -> tuple[lis
         if not found:
             missing.append(f"skill {name!r}")
             continue
-        link = dest / name
-        if not link.exists():
-            link.symlink_to(found[0])
-        linked.append(found[0])
-    return linked, missing
+        skill = dest / name
+        if not skill.exists():
+            if copy:
+                # A copy follows the skill's own symlinks on the way in, so what lands is files.
+                shutil.copytree(found[0], skill)
+            else:
+                skill.symlink_to(found[0])
+        taken.append(found[0])
+    return taken, missing
 
 
 def _whitelisted_servers(agent: AgentSpec, wanted: list[str]) -> tuple[dict, list[str]]:

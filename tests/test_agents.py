@@ -27,7 +27,21 @@ def test_claude_entry_has_command_domains_and_paths() -> None:
     assert "api.anthropic.com" in claude.api_domains
     assert claude.auth_read_paths
     assert claude.config_write_paths
-    assert claude.image == ""
+
+
+def test_claude_names_the_image_and_the_install_that_puts_it_in_a_guest() -> None:
+    """The msb backend boots this image and runs this command when the image lacks claude."""
+    claude = builtin_agents()["claude"]
+
+    assert claude.image == "node:22-slim"
+    # Pinned: a session must not pick up a new agent release on its own (SPEC §2.2).
+    assert claude.install == "npm install -g @anthropic-ai/claude-code@2.1.239"
+
+
+def test_an_agent_with_no_image_is_srt_only() -> None:
+    """No image means the msb backend refuses it, so the field stays blank until one exists."""
+    assert builtin_agents()["codex"].image == ""
+    assert builtin_agents()["codex"].install == ""
 
 
 def test_only_the_selected_agents_credentials_are_listed() -> None:
@@ -125,3 +139,39 @@ def test_unknown_fields_are_ignored(config_dir: Path) -> None:
 
 def test_agent_dir_follows_the_config_dir_override(config_dir: Path) -> None:
     assert agent_dir() == config_dir / "agents"
+
+
+def test_codex_names_the_tool_its_command_cannot_start_without() -> None:
+    """`codex` is a `#!/usr/bin/env node` script, so the sandbox PATH needs node on it."""
+    assert builtin_agents()["codex"].required_tools == ["node"]
+
+
+def test_no_other_builtin_asks_for_a_tool_it_does_not_need() -> None:
+    """A required tool goes on the sandbox PATH unasked, so only a real one may be listed."""
+    asked = {key: agent.required_tools for key, agent in builtin_agents().items()}
+
+    assert asked == {
+        "claude": [],
+        "codex": ["node"],
+        "opencode": [],
+        "aider": [],
+        "gemini": [],
+        "shell": [],
+    }
+
+
+def test_a_user_file_can_say_what_its_agent_needs(config_dir: Path) -> None:
+    write_agent(config_dir, "mycoder", {"command": "mycoder", "required_tools": ["python3"]})
+
+    assert load_agents()["mycoder"].required_tools == ["python3"]
+
+
+def test_required_tools_that_are_not_strings_reject_the_file(config_dir: Path) -> None:
+    """Half a policy is worse than none: the whole entry goes, as any wrong field does."""
+    write_agent(config_dir, "numeric", {"command": "x", "required_tools": [7]})
+    write_agent(config_dir, "not-a-list", {"command": "x", "required_tools": "node"})
+
+    loaded = load_agents()
+
+    assert "numeric" not in loaded
+    assert "not-a-list" not in loaded

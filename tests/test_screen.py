@@ -26,6 +26,7 @@ from paddock import screen
 ESC = "\x1b"
 CTRL_C = "\x03"
 DOWN, UP = "\x1b[B", "\x1b[A"
+RIGHT, LEFT = "\x1b[C", "\x1b[D"
 
 # Every character of this is two columns wide.
 WIDE = "日本語のテキストはとても長い"
@@ -346,12 +347,19 @@ def test_the_confirm_keeps_its_buttons_on_an_ordinary_popup() -> None:
         assert "[ Cancel ]" in "".join(lines[-3:])
 
 
-def test_the_confirm_says_how_much_it_had_to_leave_out() -> None:
+def test_the_confirm_scrolls_rather_than_leaving_anything_out() -> None:
+    """Saying the grant in full is the whole job, so no part of it may be unreachable."""
     policy = [("can reach", ", ".join(f"host{index}.example.com" for index in range(40)))]
+    every = screen.policy_lines(policy, POPUP[1])
 
-    lines = screen.confirm_lines_drawn("Launch?", policy, 0, POPUP[1], POPUP[0])
+    seen = set()
+    for scroll in range(len(every)):
+        drawn = screen.confirm_lines_drawn("Launch?", policy, 0, POPUP[1], POPUP[0], scroll)
+        seen |= {line for line in drawn if line in every}
+        assert drawn[-1].strip().startswith("> [ Launch ]")  # the buttons never scroll off
 
-    assert any("more lines" in line for line in lines)
+    assert seen == set(every)
+    assert not any("more lines" in line for line in every)
 
 
 def test_the_confirm_never_cuts_a_path_it_is_granting() -> None:
@@ -790,3 +798,173 @@ def test_the_error_goes_as_soon_as_the_answer_changes() -> None:
 def test_a_box_opens_with_the_cursor_after_what_is_in_it() -> None:
     """Typing into a filled box carries on from the value rather than in front of it."""
     assert drive("-2\r", lambda: screen.type_in("Name", "review")) == "review-2"
+# --- the screen a failed launch ends on -------------------------------------
+
+
+def test_the_failure_screen_says_what_went_wrong_and_where_the_log_is() -> None:
+    lines = screen.failed_lines("the microVM would not install claude", "/state/paddock.log")
+
+    assert lines[0] == screen.FAILED_TITLE
+    assert "the microVM would not install claude" in "\n".join(lines)
+    assert "  log: /state/paddock.log" in lines
+    assert lines[-1].strip().startswith("> [ ← Back to the form ]")
+
+
+def test_a_failure_with_no_log_file_names_none() -> None:
+    """Nothing to read is better said by leaving the row out than by naming an empty path."""
+    lines = screen.failed_lines("no msb on PATH")
+
+    assert not [line for line in lines if line.startswith("  log:")]
+
+
+def test_a_long_failure_message_wraps_instead_of_running_off_the_screen() -> None:
+    lines = screen.failed_lines("word " * 60)
+
+    assert max(get_cwidth(line) for line in lines) <= screen.WIDTH
+
+
+def test_enter_on_back_returns_to_the_form_and_enter_on_cancel_does_not() -> None:
+    """The buttons are on left and right, as they are on the confirm: up and down scroll."""
+    assert drive("\r", lambda: screen.failed("nope")) is True
+    assert drive(f"{RIGHT}\r", lambda: screen.failed("nope")) is False
+
+
+def test_escape_off_the_failure_screen_is_the_way_back_like_everywhere_else() -> None:
+    assert drive(ESC * 2, lambda: screen.failed("nope")) is True
+
+
+def test_ctrl_c_cancels_the_popup_from_the_failure_screen_too() -> None:
+    with pytest.raises(KeyboardInterrupt):
+        drive(CTRL_C, lambda: screen.failed("nope"))
+
+
+def test_the_failure_message_is_on_the_screen_that_was_drawn() -> None:
+    assert "would not install" in drawn(f"{DOWN}\r", lambda: screen.failed("would not install"))
+
+
+# --- the screen in front of a step that blocks ------------------------------
+
+
+def test_the_progress_screen_is_the_title_and_the_steps_under_it() -> None:
+    lines = screen.progress_lines("Starting review", ["pulling the image", "installing claude"])
+
+    assert lines == ["Starting review", "  pulling the image", "  installing claude"]
+
+
+def test_a_long_step_wraps_rather_than_losing_its_end() -> None:
+    """Nothing is drawn under it, so a row is cheaper than an ellipsis on the reason."""
+    lines = screen.progress_lines("t", ["word " * 40])
+
+    assert len(lines) > 2
+    assert max(get_cwidth(line) for line in lines) <= screen.WIDTH
+    assert "".join(lines[1:]).split() == ["word"] * 40
+
+
+def test_the_progress_screen_goes_to_stderr_so_stdout_stays_the_pane_id(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    screen.progress("Starting review", ["pulling the image"])
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Starting review\n  pulling the image\n"
+
+
+# --- everything a small popup has to keep reachable -------------------------
+
+# The smallest popup the design admits: 70% of a small terminal, and then some.
+SMALL = (18, 48)
+
+
+def test_every_policy_line_is_reachable_in_the_smallest_popup() -> None:
+    """The grant is the whole point of the screen, so none of it may be off the end."""
+    policy = [
+        ("can write", "its own workdir, /tmp and /dev/null, plus /Users/someone/work/repo"),
+        ("can read", "your disk, except ~/.ssh ~/.aws ~/.gnupg ~/.config/gh"),
+        ("can reach", ", ".join(f"host{index}.example.com" for index in range(12))),
+        ("can run", "git rg fd jq curl node npm npx uv python3, plus /usr/bin:/bin"),
+        ("can see", "its own Claude Code login. No other agent's keys. No skills."),
+    ]
+    every = screen.policy_lines(policy, SMALL[1])
+
+    seen: set[str] = set()
+    for scroll in range(len(every)):
+        drawn = screen.confirm_lines_drawn("Launch?", policy, 0, SMALL[1], SMALL[0], scroll)
+        seen |= {line for line in drawn if line in every}
+        assert any("Launch" in line for line in drawn[-len(drawn) // 3 :])
+        assert max(get_cwidth(line) for line in drawn) <= SMALL[1]
+
+    assert seen == set(every)
+
+
+def test_the_confirm_keeps_its_buttons_whatever_the_scroll(
+) -> None:
+    policy = [("can reach", ", ".join(f"host{index}.example.com" for index in range(40)))]
+
+    for scroll in (0, 5, 40, 400):
+        drawn = screen.confirm_lines_drawn("Launch?", policy, 2, SMALL[1], SMALL[0], scroll)
+        assert "Cancel" in drawn[-1]
+        assert len(drawn) <= SMALL[0]
+
+
+def test_a_long_failure_message_is_reachable_to_its_last_word() -> None:
+    """The reason a backend gives is at the end of its sentence, so the tail is the point."""
+    message = " ".join(f"word{index}" for index in range(80)) + " because npm was refused"
+    seen: set[str] = set()
+
+    for scroll in range(60):
+        drawn = screen.failed_lines(message, "/state/paddock.log", 0, SMALL[1], SMALL[0], scroll)
+        seen |= set(drawn)
+        assert drawn[0] == screen.FAILED_TITLE
+        assert any("Back to the form" in line or "Back" in line for line in drawn[-3:])
+
+    assert any("refused" in line for line in seen)
+    assert any("log:" in line for line in seen)
+
+
+def test_up_and_down_scroll_the_failure_message_and_left_right_move_the_buttons() -> None:
+    long_message = " ".join(f"word{index}" for index in range(200))
+
+    assert drive(f"{DOWN * 3}\r", lambda: screen.failed(long_message)) is True
+    assert drive(f"{DOWN * 3}{RIGHT}\r", lambda: screen.failed(long_message)) is False
+
+
+def test_the_progress_screen_wraps_to_the_terminal_it_prints_into(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """It is printed, not drawn, so the terminal is asked directly rather than assumed."""
+    monkeypatch.setattr(screen.shutil, "get_terminal_size", lambda fallback=None: Size(40, 30))
+
+    screen.progress("Starting review", ["the in-guest install needs npm; add the npm preset"])
+
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) > 2
+    assert max(get_cwidth(line) for line in lines) <= 30
+
+
+def test_the_form_header_keeps_the_profile_when_the_popup_forces_a_choice() -> None:
+    """The title says which profile runs and whether it still matches. The path is context."""
+    line = screen.header("paddock   claude-default + changes", "in /Users/someone/dev/repo", 40)
+
+    assert line.startswith("paddock   claude-default + changes")
+    assert get_cwidth(line) <= 40
+
+
+def test_the_form_header_keeps_both_ends_when_there_is_room() -> None:
+    line = screen.header("paddock   custom", "in /work", 40)
+
+    assert line.startswith("paddock   custom")
+    assert line.endswith("in /work")
+
+
+def test_the_log_path_is_reachable_even_behind_a_short_message() -> None:
+    """It is the one line whose job is being copied somewhere else, so it may not be stranded."""
+    log_path = "/Users/someone/.local/state/paddock/runs/20260822-000000-abcdefgh/pane.log"
+    every = screen.failure_lines("no msb on PATH", log_path, 40)
+    tiny = (8, 40)
+
+    seen: set[str] = set()
+    for scroll in range(len(every)):
+        seen |= set(screen.failed_lines("no msb on PATH", log_path, 0, tiny[1], tiny[0], scroll))
+
+    assert set(every) <= seen

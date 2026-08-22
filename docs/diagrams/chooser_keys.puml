@@ -11,6 +11,7 @@ state "List" as Pick : one row per choice, what it means beside it
 state "Checklist" as Tick : as many columns as the width holds,\nand a count in the header
 state "Box" as Type : one line to type, and what is wrong with it
 state Confirm : the resolved policy in full, over\nLaunch, Back to the form and Cancel.\n`s` saves the answers from here
+state "Failed" as Failed : what went wrong, the log path,\nand the two ways on
 
 Form --> Pick : enter on Open, Profile, Backend, Agent or Files
 Form --> Tick : enter on Tools, Network or Skills
@@ -20,8 +21,10 @@ Tick --> Form : enter, esc or the Back row,\nand the ticks stand either way
 Type --> Form : enter when the check passes\nesc keeps what was typed
 Form --> Confirm : L, or enter on Launch,\nfor a sandbox
 Form --> [*] : L on a local or an attached tab:\nno policy, so nothing to confirm\nesc, or enter on Cancel: nothing at all
-Confirm --> [*] : Launch: one plan\nCancel: nothing at all
 Confirm --> Form : Back to the form, or esc,\nwith every answer where it was
+Confirm --> Failed : Launch, and it raised before any pane existed\n(cli.py draws this, not the chooser)
+Failed --> Form : enter on Back to the form, or esc:\nthe answers that made the plan, back
+Failed --> [*] : Launch that opened a pane, or Cancel here
 
 note right of Tick
   `/` opens a filter on a list and on a
@@ -58,6 +61,11 @@ note right of Type
   about profiles, sessions or plans. It takes
   rows of text and hands back what was picked.
   tui.py drives it.
+
+  screen.progress is the one thing here that is
+  not an Application. It is printed in front of
+  the launch and left on the screen, because the
+  call it stands in front of blocks the process.
 end note
 
 @enduml

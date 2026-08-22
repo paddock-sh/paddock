@@ -2,7 +2,7 @@
 
 import shutil
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -12,7 +12,7 @@ from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from paddock import herdr_client
+from paddock import herdr_client, log
 from tests import fake_sessions as fake_sessions_module
 
 
@@ -34,6 +34,16 @@ def press() -> Callable[[str, Callable[[], object]], object]:
                 return action()
 
     return run
+
+
+@pytest.fixture(autouse=True)
+def clean_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Handlers live on a module-level logger, so each test starts and leaves with none."""
+    monkeypatch.delenv("PADDOCK_LOG", raising=False)
+    monkeypatch.delenv("PADDOCK_LOG_FILE", raising=False)
+    log.reset()
+    yield
+    log.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -100,19 +110,40 @@ def keychain(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
     return entries
 
 
+def launch_command(run_dir: Path) -> str:
+    """The composed command back out of the launch script, which wraps it in a shell function."""
+    text = (run_dir / "launch.sh").read_text()
+    return text.split("paddock_launch() {\n", 1)[1].split("\n}\n", 1)[0]
+
+
 class FakeClient:
     """Stands in for herdr_client: records what would have been asked of herdr."""
 
     def __init__(self) -> None:
         self.tabs: list[tuple[Path, str, dict[str, str]]] = []
         self.commands: list[tuple[str, str]] = []
+        # The panes herdr would list: every tab this fake opened, less the ones a test closed.
+        self.live: set[str] = set()
+        # Set this to make herdr unreachable, which every caller has to survive.
+        self.unreachable = False
 
     def create_tab(self, cwd: Path, label: str = "", env: dict[str, str] | None = None) -> str:
         self.tabs.append((cwd, label, dict(env or {})))
-        return f"wA:p{len(self.tabs) + 1}"
+        pane_id = f"wA:p{len(self.tabs) + 1}"
+        self.live.add(pane_id)
+        return pane_id
 
     def run_in_pane(self, pane_id: str, command: str) -> None:
         self.commands.append((pane_id, command))
+
+    def list_pane_ids(self) -> set[str]:
+        if self.unreachable:
+            raise herdr_client.HerdrError("herdr pane list failed: no herdr server")
+        return set(self.live)
+
+    def close_pane(self, pane_id: str) -> None:
+        """A tab the user closed: herdr stops listing it, and nothing tells paddock."""
+        self.live.discard(pane_id)
 
 
 @pytest.fixture
@@ -121,12 +152,18 @@ def client(monkeypatch: pytest.MonkeyPatch) -> FakeClient:
     fake = FakeClient()
     monkeypatch.setattr(herdr_client, "create_tab", fake.create_tab)
     monkeypatch.setattr(herdr_client, "run_in_pane", fake.run_in_pane)
+    monkeypatch.setattr(herdr_client, "list_pane_ids", fake.list_pane_ids)
     return fake
 
 
 @pytest.fixture
 def which(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Control what the code finds on the host PATH."""
-    found = {"srt": "/opt/bin/srt", "npx": "/opt/bin/npx", "git": "/usr/bin/git"}
+    found = {
+        "srt": "/opt/bin/srt",
+        "npx": "/opt/bin/npx",
+        "msb": "/opt/bin/msb",
+        "git": "/usr/bin/git",
+    }
     monkeypatch.setattr(shutil, "which", found.get)
     return found

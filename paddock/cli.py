@@ -7,8 +7,14 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import init, recent, sessions, tui
+from paddock import init, log, recent, sessions, tui
 from paddock.profiles import Profile, load_profiles
+from paddock.sessions import DEFAULT_BACKEND
+
+logger = log.get_logger(__name__)
+
+# How much of a log `paddock logs` shows. Enough to hold a launch, short enough to read.
+TAIL_LINES = 40
 
 
 @dataclass
@@ -19,19 +25,37 @@ class Command:
     profile: str = ""
     ref: str = ""
     cwd: str = ""
+    backend: str = DEFAULT_BACKEND
     dry_run: bool = False
     undo: bool = False
+    shell: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
+    log.setup()
     command = parse_args(sys.argv[1:] if argv is None else argv)
+    logger.debug(
+        "paddock %s",
+        log.context(
+            command=command.name,
+            profile=command.profile,
+            ref=command.ref,
+            cwd=command.cwd,
+            dry_run=command.dry_run,
+        ),
+    )
     try:
         return run(command)
     except KeyboardInterrupt:
         return 130
     except (RuntimeError, ValueError) as error:
         # HerdrError and SrtNotFound are RuntimeErrors. The popup closes with the process,
-        # so a traceback is never read by anyone: say what went wrong instead.
+        # so a traceback is never read by anyone: say what went wrong instead. No traceback
+        # in the log either: it would carry the arguments of every frame, and those are the
+        # argv and environment values that redact_env exists to keep out.
+        logger.debug(
+            "failed %s", log.context(error=type(error).__name__, message=log.scrub(str(error)))
+        )
         return _fail(str(error))
 
 
@@ -45,8 +69,10 @@ def parse_args(argv: list[str]) -> Command:
         profile=getattr(args, "profile", ""),
         ref=getattr(args, "ref", ""),
         cwd=getattr(args, "cwd", ""),
+        backend=getattr(args, "backend", "") or DEFAULT_BACKEND,
         dry_run=getattr(args, "dry_run", False),
         undo=getattr(args, "undo", False),
+        shell=getattr(args, "shell", False),
     )
 
 
@@ -59,16 +85,31 @@ def run(command: Command) -> int:
     if command.name == "init":
         return init.run(dry_run=command.dry_run, undo=command.undo)
 
+    if command.name == "gc":
+        for session in sessions.reconcile():
+            print(f"collected {session.name}")
+        # Only here, not at every invocation: it asks each backend what it is running,
+        # and a launch nobody could roll back is rare enough to sweep for on request.
+        for handle in sessions.collect_orphans():
+            print(f"removed the orphaned sandbox {handle}")
+        return 0
+    # Every command left here opens or lists sessions, so first drop the ones whose tabs
+    # are gone (SPEC §3.4). A dry run changes nothing, so it collects nothing either.
+    if not command.dry_run:
+        sessions.reconcile()
+    # Below the reconcile like every other session lookup: a ref that named a session whose
+    # tabs are all gone says so, rather than printing the pane log of a session that is over.
+    if command.name == "logs":
+        return logs(command.ref)
+
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
         if not has_terminal():
             return _fail("no terminal to ask in. Try: paddock launch <profile>")
-        plan = tui.choose(cwd)
-        if plan is None:  # backed out: nothing chosen, nothing done
-            return 0
-    elif command.name == "attach":
+        return choose(cwd, command.dry_run)
+    if command.name == "attach":
         # Only an asked-for cwd, so an attached tab otherwise keeps the session's workdir.
-        plan = tui.Attach(ref=command.ref, cwd=command.cwd)
+        plan = tui.Attach(ref=command.ref, cwd=command.cwd, shell=command.shell)
     else:  # launch
         saved = load_profiles()
         if command.profile not in saved:
@@ -76,12 +117,46 @@ def run(command: Command) -> int:
         profile = saved[command.profile]
         if command.cwd:
             profile = replace(profile, shared_dir=str(cwd))
-        plan = tui.NewSession(profile=profile)
+        plan = tui.NewSession(profile=profile, backend=command.backend)
 
     if command.dry_run:
         print(describe(plan))
         return 0
     return perform(plan)
+
+
+def choose(cwd: Path, dry_run: bool = False) -> int:
+    """Ask what to open and do it, staying open until something is done or nobody wants to.
+
+    Everything the popup was asked to do is done from here, so everything that can go wrong
+    doing it ends on a screen. The popup closes with the process (SPEC §1.1), so a message
+    printed instead is written to a terminal that is already gone, which is what made a
+    failed launch look like a launcher that did nothing.
+    """
+    answers: dict = {}
+    while True:
+        plan = tui.choose(cwd, answers)
+        if plan is None:  # backed out: nothing chosen, nothing done
+            return 0
+        if dry_run:
+            print(describe(plan))
+            return 0
+        if isinstance(plan, tui.NewSession):
+            # Before the call, not after it: prepare blocks for as long as a guest install
+            # takes, and a blank popup is what that minute used to look like.
+            tui.starting(plan)
+        try:
+            return perform(plan)
+        except Exception as error:
+            # Every one of them, not only the two main() knows: a traceback into a popup
+            # that is closing is no more use to anyone than a message into it.
+            message = log.scrub(str(error)) or type(error).__name__
+            logger.debug(
+                "launch failed %s", log.context(error=type(error).__name__, message=message)
+            )
+            if not tui.launch_failed(message, _log_path()):
+                return 1
+            answers = tui.answers_from(plan, load_profiles())
 
 
 def perform(plan: tui.Plan) -> int:
@@ -93,7 +168,8 @@ def perform(plan: tui.Plan) -> int:
         session = sessions.get_session(plan.ref)
         if session is None:
             return _fail(f"no session named {plan.ref!r}")
-        print(sessions.attach(session, Path(plan.cwd) if plan.cwd else None))
+        where = Path(plan.cwd) if plan.cwd else None
+        print(sessions.attach(session, where, shell=plan.shell))
         return 0
 
     profile = plan.profile
@@ -117,13 +193,50 @@ def perform(plan: tui.Plan) -> int:
     return 0
 
 
+def logs(ref: str = "") -> int:
+    """Say where the log is, then show the end of it. A session ref shows that pane's log."""
+    if not ref:
+        path = log.log_path()
+    else:
+        session = sessions.get_session(ref)
+        if session is None:
+            return _fail(f"no session named {ref!r}")
+        print(f"session {session.session_id} {session.name} run dir {session.run_dir}")
+        # paddock keeps secrets out of its own lines. A pane log is the agent's output,
+        # unread and unfiltered, and paddock can promise nothing about what is in it.
+        print("paddock: below is the agent's own output, not paddock's log: it can hold anything")
+        for path in pane_logs(Path(session.run_dir)):
+            print(path)
+            print(log.tail(path, TAIL_LINES), end="")
+        return 0
+    print(path)
+    print(log.tail(path, TAIL_LINES), end="")
+    return 0
+
+
+def pane_logs(run_dir: Path) -> list[Path]:
+    """The logs this run's tabs kept: the agent's, the shell tabs', or whichever there is.
+
+    Both are named, because a session with a shell tab on it has two stories and the one
+    that explains a launch is not always the one the agent wrote. A run with neither yet
+    still names the agent's, so the line says where it will be.
+    """
+    found = [
+        log.pane_log_path(run_dir, name)
+        for name in (log.PANE_LOG, log.SHELL_LOG)
+        if log.pane_log_path(run_dir, name).exists()
+    ]
+    return found or [log.pane_log_path(run_dir)]
+
+
 def describe(plan: tui.Plan) -> str:
     """What a plan would do, for --dry-run."""
     if isinstance(plan, tui.Local):
         return f"would open a local tab in {plan.cwd}"
     if isinstance(plan, tui.Attach):
         where = plan.cwd or "its own workdir"
-        return f"would attach a tab to session {plan.ref!r} in {where}"
+        what = "a shell" if plan.shell else "a tab"
+        return f"would attach {what} to session {plan.ref!r} in {where}"
     parts = [
         f"would launch session {plan.name or '(generated name)'}",
         f"profile {plan.profile.name}",
@@ -131,6 +244,9 @@ def describe(plan: tui.Plan) -> str:
         f"backend {plan.backend}",
         plan.profile.shared_dir or "isolated workdir",
     ]
+    needed = tui.required_note(plan)
+    if needed:
+        parts.append(needed)
     if plan.agent_command:
         parts.append(f"remembering the command {plan.agent_command!r}")
     if plan.save_as:
@@ -173,11 +289,32 @@ def _parser() -> argparse.ArgumentParser:
         help="share this host directory with the sandbox, read-write "
         "(overrides the profile's shared_dir)",
     )
+    launch.add_argument(
+        "--backend",
+        default=DEFAULT_BACKEND,
+        help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
+    )
     attach = subcommands.add_parser(
         "attach", parents=[dry, where], help="put a new tab on a running session"
     )
     attach.add_argument("ref", metavar="session", help="session id or name")
+    attach.add_argument(
+        "--shell",
+        action="store_true",
+        help="open a plain shell inside the sandbox instead of the agent",
+    )
     subcommands.add_parser("profiles", help="list saved profiles")
+    subcommands.add_parser(
+        "gc", help="collect sessions whose tabs are all closed (every command does this first)"
+    )
+    tail = subcommands.add_parser("logs", help="where paddock logged what it did, and the end")
+    tail.add_argument(
+        "ref",
+        metavar="session",
+        nargs="?",
+        default="",
+        help="show this session's pane log instead of paddock's own",
+    )
     setup = subcommands.add_parser(
         "init", parents=[dry], help="bind the chooser to prefix+c in herdr's config"
     )
@@ -194,6 +331,12 @@ def has_terminal() -> bool:
     that says so goes to stderr either way, which is where every other one goes.
     """
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _log_path() -> str:
+    """Where paddock wrote what it did, for a screen to name. Blank when there is no file."""
+    path = log.log_path()
+    return str(path) if path.exists() else ""
 
 
 def _fail(message: str) -> int:

@@ -1,11 +1,14 @@
 """The screens the chooser draws, and the keys that work on them.
 
-Four screens: the form of fields, a list to pick from, a checklist to tick, and a box to type
-in. Each is one prompt_toolkit Application over one body, with the same key map: enter takes
-what the cursor is on, escape backs out one level and keeps what was done, ctrl-c cancels the
-popup at any depth by raising KeyboardInterrupt, and `?` puts the key list over the screen.
-Filtering is a mode `/` opens, never something bare typing starts, which is what keeps every
-letter free as a shortcut.
+Five screens: the form of fields, a list to pick from, a checklist to tick, a box to type
+in, and the one a failed launch ends on. Each is one prompt_toolkit Application over one
+body, with the same key map: enter takes what the cursor is on, escape backs out one level
+and keeps what was done, ctrl-c cancels the popup at any depth by raising KeyboardInterrupt,
+and `?` puts the key list over the screen. Filtering is a mode `/` opens, never something
+bare typing starts, which is what keeps every letter free as a shortcut.
+
+`progress` is the exception and not an Application: the call it stands in front of blocks
+the whole process, so it is printed once and left on the screen rather than drawn.
 
 Nothing here knows about profiles, sessions or plans. A screen takes rows of text and hands
 back what the user picked, so the rest of the chooser stays plain functions over an answers
@@ -18,6 +21,8 @@ them and a line that counts wrong wraps and pushes the layout around.
 
 from __future__ import annotations
 
+import shutil
+import sys
 from collections.abc import Callable
 
 from prompt_toolkit.application import Application, get_app
@@ -63,9 +68,10 @@ BACK_KEY = "esc back (keeps your answers)"
 FORM_KEYS = ("enter edit", "^v move", "L launch", "s save", "esc cancel", "? keys")
 PICK_KEYS = ("enter choose", "^v move", BACK_KEY, "? keys")
 TICK_KEYS = ("space toggle", "/ filter", "enter done", BACK_KEY, "? keys")
+FAILED_KEYS = ("enter choose", "<> move", "^v scroll", "esc back to the form")
 BOX_KEYS = ("space toggle", "tab to the box", "enter done", BACK_KEY)
 TYPE_KEYS = ("enter done", "esc back (keeps what you typed)")
-CONFIRM_KEYS = ("enter choose", "<> move", "s save", BACK_KEY, "? keys")
+CONFIRM_KEYS = ("enter choose", "<> move", "^v scroll", "s save", BACK_KEY)
 
 # The way back, drawn as the first row of every list and every checklist. Escape is the key
 # for it, and this is the row for everyone who has not learned the key.
@@ -78,6 +84,15 @@ SHORT_BUTTONS = ((LAUNCH, "Launch"), (BACK, "← Back"), (CANCEL, "Cancel"))
 
 # How wide the labels column of the confirm is, so a long value wraps under itself.
 POLICY_ROOM = 12
+
+# The screen a launch that never opened a pane ends on. The popup closes with the process,
+# so an error printed instead is written to a terminal nobody is left looking at (SPEC §1.1).
+FAILED_TITLE = "The launch failed"
+FAILED_BUTTONS = ("← Back to the form", "Cancel")
+
+# How many lines the message gets. Long enough for what a backend says about a guest that
+# would not install, short enough that the two ways on are still on the screen.
+FAILED_MESSAGE_ROWS = 12
 FILTER_KEYS = ("type to narrow", "enter keep", "esc clear")
 FILTER_KEY = "/ filter"
 
@@ -220,6 +235,21 @@ def spread(left: str, right: str, width: int = WIDTH) -> str:
     return (left + " " * gap + right).rstrip()
 
 
+def header(left: str, right: str, width: int = WIDTH) -> str:
+    """One line with something at each end, where the LEFT end is what must survive.
+
+    `spread` gives the left end up first, which is right for a row whose count belongs at
+    the edge. The form's title is the opposite case: it says which profile is about to run
+    and whether the answers still match it, which is a statement about permissions. The
+    directory is context, so the directory is what gives way.
+    """
+    left = cut(left, width)
+    room = max(width - get_cwidth(left) - 2, 0)
+    right = cut(right, room) if room >= 3 else ""
+    gap = max(width - get_cwidth(left) - get_cwidth(right), 0)
+    return (left + " " * gap + right).rstrip()
+
+
 # How much of a line one checklist cell wants. Two of them fit the 80 columns the mockups are
 # drawn to, and a wider terminal gets another column rather than a longer walk down one.
 CELL_ROOM = 28
@@ -268,7 +298,7 @@ def form_lines(
         fields.append(spread(left, note, width) if note else cut(left, width))
     hint = str(rows[cursor][2]) if cursor < len(rows) else ""
     shown = window(fields, height - 8, min(cursor, max(len(fields) - 1, 0)))
-    top = [spread(f"paddock   {title}", where, width), ""]
+    top = [header(f"paddock   {title}", where, width), ""]
     return top + shown + ["", *wrapped(hint, 3, width), "", _buttons(cursor - len(rows))]
 
 
@@ -350,6 +380,7 @@ def confirm_lines_drawn(
     chosen: int,
     width: int = WIDTH,
     height: int = HEIGHT,
+    scroll: int = 0,
 ) -> list[str]:
     """The resolved policy over the three buttons.
 
@@ -357,20 +388,26 @@ def confirm_lines_drawn(
     across lines rather than cut: this is the one screen whose whole job is saying the grant in
     full, so nothing it grants may be hidden by an ellipsis.
 
-    The buttons are pinned to the bottom and the policy scrolls above them. A confirm whose
-    buttons have gone off the end of a small popup is worse than useless: the cursor is still
-    on one of them, so the enter that was meant to launch cancels instead.
+    The buttons are pinned to the bottom and the policy scrolls above them, the way the
+    form scrolls its fields. A confirm whose buttons have gone off the end of a small popup
+    is worse than useless: the cursor is still on one of them, so the enter that was meant
+    to launch cancels instead. Nothing is elided: every line of the grant is reachable by
+    scrolling, however small the popup, because that is the one thing this screen is for.
     """
+    said = policy_lines(policy, width)
+    buttons = _confirm_buttons(chosen, width)
+    room = height - (3 + len(buttons))  # the title, a blank, a blank, and the buttons
+    return [title, "", *window(said, room, scroll), "", *buttons]
+
+
+def policy_lines(policy: list[tuple[str, str]], width: int = WIDTH) -> list[str]:
+    """The resolved policy as lines: a label, then its value wrapped under itself."""
     said = []
     for label, text in policy:
         for place, part in enumerate(_wrap(text, width - POLICY_ROOM - 3, split_long=True)):
             head = pad(label, POLICY_ROOM) if place == 0 else " " * POLICY_ROOM
             said.append(f"  {head} {part}")
-    buttons = _confirm_buttons(chosen, width)
-    room = height - (3 + len(buttons))  # the title, a blank, a blank, and the buttons
-    if len(said) > room > 0:
-        said = said[: room - 1] + [f"  {' ' * POLICY_ROOM} +{len(said) - room + 1} more lines"]
-    return [title, "", *said, "", *buttons]
+    return said
 
 
 def _confirm_buttons(chosen: int, width: int = WIDTH) -> list[str]:
@@ -399,6 +436,68 @@ def type_lines(title: str, hint: str, width: int = WIDTH) -> list[str]:
     return [title, "", *wrapped(hint, 3, width), ""]
 
 
+def failed_lines(
+    message: str,
+    log_path: str = "",
+    cursor: int = 0,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    scroll: int = 0,
+) -> list[str]:
+    """What a failed launch says: what went wrong, where the log is, and the two ways on.
+
+    The message is most of the screen, because this is the only place it is ever shown. It
+    scrolls rather than being cut, the way the confirm's policy does: the reason a backend
+    gives is at the end of its sentence, so dropping the tail drops the point. The log path
+    is broken across lines rather than cut for the same reason: a path with an ellipsis in
+    it is one nobody can open.
+    """
+    buttons = _failed_buttons(cursor, width)
+    said = failure_lines(message, log_path, width)
+    room = height - (3 + len(buttons))  # the title, a blank, a blank, and the buttons
+    return [FAILED_TITLE, "", *window(said, room, scroll), "", *buttons]
+
+
+def failure_lines(message: str, log_path: str = "", width: int = WIDTH) -> list[str]:
+    """What a failed launch has to say, as lines: what went wrong, then where the log is.
+
+    One block, so what scrolls is all of it. Counting only the message would put the log
+    path out of reach on a short message in a small popup, which is the one line whose
+    whole job is being copied somewhere else.
+    """
+    said = [f"  {part}" for part in _wrap(message, width - 2)]
+    if log_path:
+        said += ["", *(f"  log: {part}" for part in _wrap(log_path, width - 8, split_long=True))]
+    return said
+
+
+def progress_lines(title: str, steps: list[str], width: int = WIDTH) -> list[str]:
+    """The static screen in front of a step that blocks: what is starting, and what it does.
+
+    Wrapped rather than cut: nothing is drawn under this, so a long step costs a row and
+    an ellipsis would cost the end of the sentence that says why the wait is about to fail.
+    """
+    return [title, *(f"  {part}" for step in steps for part in _wrap(step, width - 2))]
+
+
+def progress(title: str, steps: list[str]) -> None:
+    """Say what is happening before the call that blocks on it. Drawn once and left there.
+
+    On stderr, where every other line paddock says to a person goes, so the pane id a
+    launch prints is still the whole of its stdout.
+    """
+    print("\n".join(progress_lines(title, steps, printed_width())), file=sys.stderr, flush=True)
+
+
+def printed_width() -> int:
+    """How wide to wrap something printed rather than drawn.
+
+    There is no Application running by the time this is called, so the terminal is asked
+    directly. A terminal that will not say falls back to the width the design is drawn to.
+    """
+    return content_width(shutil.get_terminal_size((WIDTH, HEIGHT)).columns)
+
+
 def matching(labels: list[str], text: str) -> list[int]:
     """The rows a filter leaves, as indexes into the whole list."""
     wanted = text.lower()
@@ -410,6 +509,13 @@ def _buttons(chosen: int) -> str:
     launch = ">" if chosen == 0 else " "
     cancel = ">" if chosen == 1 else " "
     return f"  {launch} [ Launch ]      {cancel} [ Cancel ]"
+
+
+def _failed_buttons(chosen: int, width: int = WIDTH) -> list[str]:
+    """Both on one line where the popup is wide enough, and one per line where it is not."""
+    drawn = [_button(place, label, chosen) for place, label in enumerate(FAILED_BUTTONS)]
+    line = "  " + "    ".join(drawn)
+    return [line] if get_cwidth(line) <= width else [f"  {one}" for one in drawn]
 
 
 def _label_room(labels: list[str]) -> int:
@@ -657,8 +763,9 @@ def confirm(title: str, policy: list[tuple[str, str]]) -> str:
     It opens on Launch, because the common case is confirming what the form already said, and
     escape is the Back button: one level back, with every answer where it was.
     """
-    state: dict = {"cursor": 0, "keys": False}
+    state: dict = {"cursor": 0, "keys": False, "scroll": 0}
     keys = KeyBindings()
+    _scroll_keys(keys, state, lambda: len(policy_lines(policy, _room()[1])))
 
     @keys.add("left")
     @keys.add("h")
@@ -685,9 +792,46 @@ def confirm(title: str, policy: list[tuple[str, str]]) -> str:
     _finish(keys, state)
 
     def body(height: int, width: int) -> list[str]:
-        return confirm_lines_drawn(title, policy, state["cursor"], width, height)
+        return confirm_lines_drawn(title, policy, state["cursor"], width, height, state["scroll"])
 
     return str(_run(body, lambda width: footer_line(CONFIRM_KEYS, width), keys, state))
+
+
+def failed(message: str, log_path: str = "") -> bool:
+    """The screen a launch that never opened a pane ends on. True means back to the form.
+
+    Escape is the way back here as it is everywhere else, so the answers behind a launch
+    that failed are one key from being edited rather than typed again. It comes after the
+    confirm, not instead of it: the confirm asks, and this says what happened when it went.
+    """
+    state: dict = {"cursor": 0, "keys": False, "scroll": 0}
+    keys = KeyBindings()
+    _scroll_keys(keys, state, lambda: len(failure_lines(message, log_path, _room()[1])))
+
+    @keys.add("left")
+    @keys.add("h")
+    def _(event: object) -> None:
+        state["cursor"] = 0
+
+    @keys.add("right")
+    @keys.add("l")
+    def _(event: object) -> None:
+        state["cursor"] = 1
+
+    @keys.add("enter")
+    def _(event) -> None:
+        event.app.exit(result=state["cursor"] == 0)
+
+    @keys.add("escape")
+    def _(event) -> None:
+        event.app.exit(result=True)
+
+    _finish(keys, state)
+
+    def body(height: int, width: int) -> list[str]:
+        return failed_lines(message, log_path, state["cursor"], width, height, state["scroll"])
+
+    return bool(_run(body, lambda width: footer_line(FAILED_KEYS, width), keys, state))
 
 
 def type_in(
@@ -836,6 +980,24 @@ def _list_keys(state: dict, shown: Callable[[], list[int]], extra: int = 0) -> K
         onto_the_first_match()
 
     return keys
+
+
+def _scroll_keys(keys: KeyBindings, state: dict, deep: Callable[[], int]) -> None:
+    """Up and down walk a block that is taller than the popup, one line at a time.
+
+    The buttons are on left and right on these screens, so up and down are free to scroll,
+    and every line stays reachable however small the popup is.
+    """
+
+    @keys.add("up")
+    @keys.add("k")
+    def _(event: object) -> None:
+        state["scroll"] = max(state["scroll"] - 1, 0)
+
+    @keys.add("down")
+    @keys.add("j")
+    def _(event: object) -> None:
+        state["scroll"] = min(state["scroll"] + 1, max(deep() - 1, 0))
 
 
 def _finish(keys: KeyBindings, state: dict, help_key: bool = True) -> None:

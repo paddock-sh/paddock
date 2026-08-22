@@ -45,9 +45,15 @@ else (no)
 endif
 
 :save the profile and remember a typed-in\nagent, if the answers asked for it;
+:screen.progress("Starting <name>"):\nthe image it pulls, the agent it installs in the guest,\nand the warning when the profile cannot reach npm;
 :sessions.launch_local\n| get_session then attach\n| launch;
-:print the pane id;
-stop
+if (did it open a pane?) then (yes)
+  :print the pane id;
+  stop
+else (no: it raised)
+  :screen.failed(the message, the log path):\nBack to the form reopens it with answers_from(plan),\nCancel closes the popup;
+  stop
+endif
 
 note right
   Ctrl-C cancels at any depth, and Cancel on the
@@ -68,6 +74,13 @@ note right
   to permit. Nothing is hidden and nothing moves. A
   session that ended between the list and the form
   says so, rather than reading as a new sandbox.
+
+  Nothing the popup was asked to do dies without a
+  screen. The popup closes with the process, so a
+  message printed after the form has gone is written
+  to a terminal nobody is left looking at: a launch
+  that never opened a pane is drawn instead, and Back
+  to the form keeps every answer behind it.
 
   tui.py holds the fields, the words and the rules;
   screen.py draws them (chooser_keys.puml), and
