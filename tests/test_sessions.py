@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import shutil
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -223,7 +224,7 @@ def test_attach_opens_a_pane_labelled_with_the_session_name(
     cwd, label, env = client.tabs[0]
     assert label == "sbx:demo"
     assert cwd == Path(session.run_dir) / "work"
-    assert env == {"CLAUDE_CONFIG_DIR": str(Path(session.run_dir) / "config")}
+    assert env["CLAUDE_CONFIG_DIR"] == str(Path(session.run_dir) / "config")
     assert [pane for pane, _ in client.commands] == [pane_id]
 
 
@@ -1036,3 +1037,97 @@ def test_a_backend_that_will_not_answer_a_sweep_is_a_message_not_a_failure(
 
     assert sessions.collect_orphans() == []
     assert "could not sweep" in capsys.readouterr().err
+
+
+# --- sweeping the run dirs of launches that failed --------------------------
+
+
+def raising(error: Exception):
+    """A backend call that will not do what it was asked."""
+
+    def fail(*args: object, **kwargs: object):
+        raise error
+
+    return fail
+
+
+def test_a_launch_that_never_opened_a_tab_takes_its_run_dir_with_it(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing ran in there, so nothing in it is anyone's work."""
+    monkeypatch.setattr(srt, "open_pane", raising(RuntimeError("no srt")))
+    runs = sessions.state_dir() / "runs"
+
+    with pytest.raises(RuntimeError):
+        sessions.launch(Profile(name="demo", tools=[]), "demo")
+
+    assert list(runs.glob("*")) == []
+
+
+def test_ctrl_c_before_the_first_tab_takes_the_run_dir_too(
+    which: dict[str, str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(srt, "open_pane", raising(KeyboardInterrupt()))
+    runs = sessions.state_dir() / "runs"
+
+    with pytest.raises(KeyboardInterrupt):
+        sessions.launch(Profile(name="demo", tools=[]), "demo")
+
+    assert list(runs.glob("*")) == []
+
+
+def test_a_directory_outside_the_runs_dir_is_never_removed(tmp_path: Path) -> None:
+    """The only directories paddock takes away are the ones it made."""
+    elsewhere = tmp_path / "work"
+    elsewhere.mkdir()
+
+    sessions.remove_run_dir(elsewhere)
+
+    assert elsewhere.is_dir()
+
+
+def stale_run(state_dir: Path, name: str, work: str = "") -> Path:
+    """A run dir old enough to sweep, with something in its workdir when `work` is named."""
+    path = state_dir / "runs" / name
+    (path / "work").mkdir(parents=True)
+    if work:
+        (path / "work" / work).write_text("someone's work\n")
+    old = time.time() - sessions.RUN_DIR_GRACE_SECONDS - 60
+    os.utime(path, (old, old))
+    return path
+
+
+def test_gc_sweeps_a_run_dir_no_session_claims(state_dir: Path) -> None:
+    left = stale_run(state_dir, "20260822-000000-gone")
+
+    assert sessions.collect_run_dirs() == [left]
+    assert not left.exists()
+
+
+def test_gc_leaves_the_run_dir_of_a_live_session_alone(state_dir: Path) -> None:
+    kept = stale_run(state_dir, "20260822-000000-live")
+    write_registry(state_dir, [record(run_dir=str(kept))])
+
+    assert sessions.collect_run_dirs() == []
+    assert kept.is_dir()
+
+
+def test_gc_never_sweeps_a_workdir_with_work_in_it(state_dir: Path) -> None:
+    """A collected session keeps its run dir on purpose: deleting a workdir loses work."""
+    kept = stale_run(state_dir, "20260822-000000-used", work="notes.md")
+
+    assert sessions.collect_run_dirs() == []
+    assert (kept / "work" / "notes.md").is_file()
+
+
+def test_gc_leaves_a_run_dir_that_is_still_being_prepared(state_dir: Path) -> None:
+    """`prepare` makes the directory before the session that claims it is registered."""
+    fresh = state_dir / "runs" / "20260822-000000-new"
+    (fresh / "work").mkdir(parents=True)
+
+    assert sessions.collect_run_dirs() == []
+    assert fresh.is_dir()
+
+
+def test_gc_with_no_runs_directory_at_all_sweeps_nothing(state_dir: Path) -> None:
+    assert sessions.collect_run_dirs() == []

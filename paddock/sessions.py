@@ -12,12 +12,14 @@ import fcntl
 import json
 import os
 import secrets
+import shutil
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -34,6 +36,14 @@ logger = log.get_logger(__name__)
 BACKENDS: dict[str, ModuleType] = {"srt": srt, "msb": microsandbox}
 
 DEFAULT_BACKEND = "srt"
+
+# Where every backend's run dirs live, under the state dir.
+RUNS = "runs"
+
+# How long a run dir nothing claims is left alone. `prepare` makes the directory before
+# the session that claims it is registered, so a sweep in another pane must not take a
+# launch's own workdir out from under it while it is still starting.
+RUN_DIR_GRACE_SECONDS = 300
 
 
 @dataclass
@@ -125,7 +135,7 @@ def create_session(
             name=name,
             profile_name=profile.name,
             agent=profile.agent,
-            created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            created_at=datetime.now(UTC).isoformat(timespec="seconds"),
             run_dir=str(run.run_dir),
             keep_alive=False,
             pane_ids=[],
@@ -203,6 +213,9 @@ def launch(
         # never got its first tab must not keep that running, or sit in the registry.
         # BaseException, so ctrl-c between the boot and the tab tears the VM down too.
         _forget(session)
+        # And the directory it prepared goes with it: no tab ever opened, so nothing in
+        # there is anyone's work, and a run dir nothing removes is a run dir for ever.
+        remove_run_dir(Path(session.run_dir))
         if isinstance(error, (KeyboardInterrupt, SystemExit)):
             raise  # never wrapped: cli.py turns it into the exit code the convention wants
         raise RuntimeError(f"{_describe(session)} could not open its first tab: {error}") from error
@@ -230,6 +243,48 @@ def collect_orphans() -> list[str]:
             logger.info("orphan swept %s", log.context(backend=name, vm=handle))
         removed += found
     return removed
+
+
+def collect_run_dirs() -> list[Path]:
+    """Remove the run dirs of launches nothing is left to roll back (SPEC §8). Returns them.
+
+    A launch that fails takes its own directory away, but a paddock killed outright cannot,
+    and neither can one whose registry was lost. What that leaves is a directory no session
+    claims, which nothing else would ever remove.
+
+    A dir whose workdir holds anything is left where it is, however old, because that is
+    somebody's work and no `paddock gc` is worth losing it. So this only ever removes the
+    settings, the shim dir and the empty scratch dir of a session that produced nothing.
+    """
+    runs = state_dir() / RUNS
+    claimed = {Path(session.run_dir) for session in list_sessions()}
+    removed = []
+    for path in sorted(runs.glob("*")):
+        if not path.is_dir() or path in claimed or _holds_work(path):
+            continue
+        if time.time() - path.stat().st_mtime < RUN_DIR_GRACE_SECONDS:
+            continue  # young enough to be a launch that has not registered its session yet
+        remove_run_dir(path)
+        removed.append(path)
+    return removed
+
+
+def remove_run_dir(run_dir: Path) -> None:
+    """Take a run dir away, if it is one paddock made. Doing it twice is not an error."""
+    if run_dir.parent != state_dir() / RUNS:
+        return  # not paddock's directory, so not paddock's to remove
+    shutil.rmtree(run_dir, ignore_errors=True)
+    logger.info("run dir removed %s", log.context(run_dir=run_dir))
+
+
+def _holds_work(run_dir: Path) -> bool:
+    """Whether the scratch workdir under this run has anything in it.
+
+    A profile that shares a host directory has no scratch dir at all, and what it wrote
+    is outside the run dir where nothing here would touch it.
+    """
+    work = run_dir / "work"
+    return work.is_dir() and any(work.iterdir())
 
 
 def set_keep_alive(session: Session, keep_alive: bool) -> None:
