@@ -149,6 +149,13 @@ def net_rules(domains: list[str], everything: bool = False) -> list[str]:
     A rule names a host, a protocol and a port, so this is https to those hosts and
     nothing else. No domains at all means no network, and no DNS to resolve it with.
 
+    **Every remote target is spelled `domain=`.** msb's targets share one namespace with
+    its groups, so a bare `allow@public:tcp:443` is the group and not the domain: a
+    profile with `public` typed into its extra-domains box reached example.com and
+    api.github.com, neither of them on its allowlist (measured on 0.6.13). `domain=`
+    settles which kind of target this is, and the guest is then refused, because the
+    name is looked up like any other and nothing answers to it.
+
     **A loopback domain is not one of those hosts.** The guest has its own kernel, so
     `allow@127.0.0.1` would name the guest's own loopback and reach nothing. What the
     profile meant is this machine, which msb spells as the `host` group. The rule carries
@@ -173,7 +180,7 @@ def net_rules(domains: list[str], everything: bool = False) -> list[str]:
     if remote:
         rules += ["--net-rule", "allow@dns"]
         for domain in remote:
-            rules += ["--net-rule", f"allow@{domain}:tcp:443"]
+            rules += ["--net-rule", f"allow@domain={domain}:tcp:443"]
     if None in local:
         # One entry asked for the whole machine, so the ports named alongside it are
         # already inside the grant and a rule apiece would say nothing extra.

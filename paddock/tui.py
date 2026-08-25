@@ -29,6 +29,8 @@ from paddock.profiles import (
     TOOL_CANDIDATES,
     Profile,
     load_profiles,
+    loopback_port,
+    names_loopback,
     save_profile,
 )
 
@@ -744,7 +746,7 @@ def confirm_lines(
         ("profile", _profile_line(answers, base)),
         ("can write", _writable(profile, plan.backend)),
         ("can read", _readable(profile, plan.backend)),
-        ("can reach", _reachable(profile)),
+        ("can reach", _reachable(profile, plan.backend)),
         ("can run", _runnable(profile, registry, plan.backend)),
         ("can see", _visible(profile, registry)),
     ]
@@ -986,8 +988,16 @@ def _readable(profile: Profile, backend: str = SRT) -> str:
     return f"your disk, except {' '.join(profile.deny_read)}"
 
 
-def _reachable(profile: Profile) -> str:
-    """The count and every domain it names. The screen elides only when the popup makes it."""
+def _reachable(profile: Profile, backend: str = SRT) -> str:
+    """The count and every domain it names. The screen elides only when the popup makes it.
+
+    The local grant is the one line that differs by backend, and by more than wording.
+    srt's loopback rule takes no port, so the grant is every service listening here
+    whatever the profile named. msb writes the port into the rule, so a profile that
+    named one reaches that port and no other (SPEC §2.1, §2.2). Saying "whatever port"
+    on an msb session would overstate what was granted, which is the one direction this
+    screen must never be wrong in.
+    """
     if profile.opens_every_domain():
         # No list to print, and no count that would mean anything: this is the whole grant.
         return ALL_GRANTED["network"]
@@ -997,9 +1007,22 @@ def _reachable(profile: Profile) -> str:
     line = f"{_counted(domains)}: {', '.join(domains)}"
     if not profile.opens_local_services():
         return line
-    # Two names on the list understate the grant: the OS rule behind them takes no port,
-    # so the count is not what this sandbox can reach (SPEC §2.1).
-    return f"{line}. Plus {LOCAL_SERVICES_CONSEQUENCE}"
+    return f"{line}. Plus {_local_grant(profile, backend)}"
+
+
+def _local_grant(profile: Profile, backend: str) -> str:
+    """What ticking loopback actually opens on this backend, in the confirm's own voice."""
+    domains = profile.allowed_domains()
+    ports = sorted({port for port in map(loopback_port, domains) if port is not None})
+    portless = any(names_loopback(domain) and loopback_port(domain) is None for domain in domains)
+    if backend != MSB or portless or not ports:
+        # Either the backend cannot scope the grant, or an entry named no port, which msb
+        # writes as the whole machine. Both are wide, and the wide wording is the true one.
+        return LOCAL_SERVICES_CONSEQUENCE
+    named = [str(port) for port in ports]
+    listed = " and ".join(named) if len(named) < 3 else f"{', '.join(named[:-1])} and {named[-1]}"
+    counted = "port" if len(named) == 1 else "ports"
+    return f"{counted} {listed} on this machine, and nothing else on it"
 
 
 def _runnable(profile: Profile, registry: dict[str, AgentSpec], backend: str = SRT) -> str:

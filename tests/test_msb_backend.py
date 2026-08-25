@@ -143,9 +143,27 @@ def test_one_allow_rule_per_domain_the_profile_named(
 
     assert flag(argv, "--net-rule") == [
         "allow@dns",
-        "allow@github.com:tcp:443",
-        "allow@*.github.com:tcp:443",
+        "allow@domain=github.com:tcp:443",
+        "allow@domain=*.github.com:tcp:443",
     ]
+
+
+@pytest.mark.parametrize("group", ["public", "private", "host", "multicast"])
+def test_a_domain_that_collides_with_an_msb_group_is_never_a_group_grant(
+    which: dict[str, str], group: str
+) -> None:
+    """msb's rule targets share one namespace with its groups, so a bare name is ambiguous.
+
+    Measured on 0.6.13: a profile naming `public` used to emit `allow@public:tcp:443`,
+    which msb read as the group, and the guest reached example.com and api.github.com,
+    neither of them on the allowlist. `domain=` says which kind of target this is, and
+    the same guest is then refused: the name is looked up and nothing answers to it.
+    """
+    rules = msb.net_rules([group])
+
+    assert f"allow@domain={group}:tcp:443" in rules
+    assert f"allow@{group}:tcp:443" not in rules
+    assert f"allow@{group}" not in rules
 
 
 def test_a_profile_with_no_domains_gets_no_network_at_all(
@@ -170,7 +188,9 @@ def test_the_ordinary_case_is_untouched_by_the_allow_all_flag(
     which: dict[str, str], tmp_path: Path
 ) -> None:
     assert msb.net_rules(["github.com"]) == [
-        "--net-default", "deny", "--net-rule", "allow@dns", "--net-rule", "allow@github.com:tcp:443"
+        "--net-default", "deny",
+        "--net-rule", "allow@dns",
+        "--net-rule", "allow@domain=github.com:tcp:443",
     ]
     assert msb.net_rules([]) == ["--net-default", "deny"]
     assert msb.net_rules([], everything=True) == ["--net-default", "allow"]
@@ -230,9 +250,14 @@ def test_a_named_port_folds_into_a_grant_that_already_covers_it(which: dict[str,
     ]
 
 
-def test_a_local_only_profile_resolves_no_names_at_all(which: dict[str, str]) -> None:
+def test_a_port_scoped_local_profile_gets_no_dns_rule(which: dict[str, str]) -> None:
     """No `allow@dns`: the gateway is a name msb writes into the guest's own /etc/hosts,
-    so nothing has to be resolved, and a name lookup is a channel out (SPEC §2.2)."""
+    so nothing has to be resolved (SPEC §2.2).
+
+    For a port-scoped grant that is also the end of it: no rule reaches the gateway's
+    port 53, so names do not resolve, which the live gate measured. It is **not** true of
+    the portless `allow@host`, where 53 is one of the host ports the grant covers.
+    """
     assert "allow@dns" not in msb.net_rules(["localhost:8080"])
 
 
@@ -243,7 +268,7 @@ def test_a_loopback_domain_is_never_also_allowed_as_a_remote_host(which: dict[st
     assert rules == [
         "--net-default", "deny",
         "--net-rule", "allow@dns",
-        "--net-rule", "allow@github.com:tcp:443",
+        "--net-rule", "allow@domain=github.com:tcp:443",
         "--net-rule", "allow@host:tcp:8080",
     ]
 
@@ -301,6 +326,23 @@ def test_the_whole_machine_grant_names_no_endpoint(which: dict[str, str]) -> Non
     assert msb.inference_env(["localhost", "127.0.0.1"]) == {}
 
 
+def test_a_named_port_still_names_the_endpoint_inside_a_whole_machine_grant(
+    which: dict[str, str],
+) -> None:
+    """Ticking the preset and naming a port: the rule is the wider one, the endpoint stands.
+
+    The port was still declared, and it is still where the server is. The wider rule
+    reaches it, so the variable is true; it is the rule that is generous, not the name.
+    """
+    rules = msb.net_rules(["localhost", "localhost:8080"])
+
+    assert rules == ["--net-default", "deny", "--net-rule", "allow@host"]
+    assert msb.inference_env(["localhost", "localhost:8080"]) == {
+        "OPENAI_BASE_URL": f"http://{msb.HOST_ALIAS}:8080/v1",
+        "OLLAMA_HOST": f"http://{msb.HOST_ALIAS}:8080",
+    }
+
+
 def test_an_agents_own_api_domains_configure_the_port_end_to_end(
     which: dict[str, str], msb_calls: list[list[str]], config_dir: Path
 ) -> None:
@@ -333,15 +375,18 @@ def test_the_preset_carries_the_whole_machine_grant_through_a_prepared_session(
     assert flag(argv, "-e") == []
 
 
-def test_no_inference_port_is_baked_into_paddock(which: dict[str, str]) -> None:
-    """The port is configuration, so no module may carry one of its own.
+@pytest.mark.parametrize("port", ["11434", "1234", "8000"])
+def test_no_inference_port_is_baked_into_paddock(which: dict[str, str], port: str) -> None:
+    """The port is configuration, so no module may carry a default for one.
 
-    11434 is the port of one popular server. If it appears in the package, something has
-    been written for that server rather than for a server on a port the profile named.
+    These are the out-of-the-box ports of the servers the docs name: ollama, LM Studio,
+    vLLM. A literal here would mean paddock had been written for one of them rather than
+    for a server on whatever port the profile named. (8080 is deliberately not on this
+    list: it is nobody's default, which is why the docstrings use it as the example.)
     """
     sources = Path(msb.__file__).parent.parent.rglob("*.py")
 
-    assert [path.name for path in sources if "11434" in path.read_text()] == []
+    assert [path.name for path in sources if port in path.read_text()] == []
 
 
 def test_a_profile_that_opens_every_domain_boots_a_vm_that_can_reach_anything(
@@ -480,7 +525,7 @@ def test_prepare_opens_the_domains_the_profile_named(
 
     assert flag(create_call(msb_calls), "--net-rule") == [
         "allow@dns",
-        *[f"allow@{domain}:tcp:443" for domain in profile.allowed_domains()],
+        *[f"allow@domain={domain}:tcp:443" for domain in profile.allowed_domains()],
     ]
 
 
@@ -782,8 +827,8 @@ def test_the_agents_own_domains_reach_the_allow_rules(
     msb.prepare(CLAUDE)
 
     rules = flag(create_call(msb_calls), "--net-rule")
-    assert "allow@api.anthropic.com:tcp:443" in rules
-    assert "allow@registry.npmjs.org:tcp:443" in rules  # the boot script has to reach npm
+    assert "allow@domain=api.anthropic.com:tcp:443" in rules
+    assert "allow@domain=registry.npmjs.org:tcp:443" in rules  # the boot script reaches npm
 
 
 def test_the_ticked_skills_are_copied_into_the_dir_that_gets_mounted(

@@ -131,6 +131,33 @@ def test_a_domain_that_merely_looks_like_loopback_does_not_open_it(domain: str) 
     assert Profile(network_presets=[], extra_domains=[domain]).opens_local_services() is False
 
 
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "localhost:evil",  # not a number, so not a port, so not the loopback host
+        "localhost:8080:9090",  # two suffixes: only the last is read, and the rest is not a host
+        "LOCALHOST:8080",  # the spellings are a fixed set and this is not one of them
+        "::1:8080",  # unbracketed IPv6 keeps its last group: this is an address, not a port
+        "localhost:",  # an empty port is no port
+        "localhost:0",  # 0 is not a port a server listens on
+        "localhost:65536",  # one past the top of the range
+        "localhost:99999",
+        "localhost:\N{SUPERSCRIPT TWO}",  # `isdigit` says yes and `int` raises: neither happens
+        "host",  # a bare msb group name is a domain here, and nothing else
+        "public",
+    ],
+)
+def test_a_hostile_spelling_is_not_a_local_service(domain: str) -> None:
+    """Anything that is not exactly loopback plus a real port takes the remote branch.
+
+    The remote branch is the safe one: it is a domain rule for a name that will not
+    resolve. Reading one of these as loopback would hand msb a rule for this machine.
+    """
+    assert names_loopback(domain) is False
+    assert loopback_port(domain) is None
+    assert Profile(network_presets=[], extra_domains=[domain]).opens_local_services() is False
+
+
 @pytest.mark.parametrize("domain", ["localhost", "127.0.0.1", "::1", "[::1]"])
 def test_loopback_with_no_port_of_its_own_scopes_to_no_port(domain: str) -> None:
     """The preset's entries carry no port, and paddock does not invent one for them.

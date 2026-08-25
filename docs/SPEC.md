@@ -333,11 +333,13 @@ what was measured, and the limits. The preset's own entries carry no port, so on
 msb they stay as wide as they are on srt: `allow@host`, every port on this
 machine. That width is the reason to name a port instead.
 
-The chooser's confirm line is still the preset's own width: every service on this
-machine's loopback, whatever port, which is what ticking the preset does on both
-backends. It does not yet say that naming a port narrows the grant on msb
-and does not on srt. That line is the next thing to write, and it is not written
-here so that this section is not read as a promise the screen keeps.
+**The confirm screen says which of the two it is**, because the same tick is now two
+different grants. `_reachable` takes the backend the way `_writable`, `_readable` and
+`_runnable` already do (§3.1). On srt, and on msb for an entry that named no port, it
+is the preset's own width: every service listening on this machine's loopback, whatever
+port. On msb for a profile that named its ports it is `port 11434 on this machine, and
+nothing else on it`. A screen that said "whatever port" for a one-port session would
+overstate the grant, which is the one direction this screen must never be wrong in.
 
 **There is no allow-all, and the profile says so rather than pretending.** The
 `everything` network preset is a sentinel: it names no domains, and a backend
@@ -517,9 +519,18 @@ Four of those differ in kind, not in spelling:
   symlink to `/private/tmp` on macOS, which fails as a mount source. The backend
   passes `Path.resolve()` for every mount.
 - **Network rules name a host, a protocol and a port, not a URL path.** srt allows a
-  domain through its proxy; an msb rule is `allow@<domain>:tcp:443`, so it is https to
-  that host and nothing else. A profile with no domains gets no network at all, DNS
-  included.
+  domain through its proxy; an msb rule is `allow@domain=<domain>:tcp:443`, so it is
+  https to that host and nothing else. A profile with no domains gets no network at all,
+  DNS included.
+- **A domain is spelled `domain=`, and that is a security fix, not a style.** msb's rule
+  targets share one namespace with its groups (`public`, `private`, `host`, `multicast`,
+  ...), so a bare `allow@public:tcp:443` is read as **the group**. A profile with
+  `public` in its extra-domains box therefore booted a guest that reached example.com
+  and api.github.com, neither of them on its allowlist: measured on 0.6.13, an allowlist
+  silently turned into open egress on 443 by one typed word. Every remote target now
+  carries `domain=`, which makes it a name to resolve; the same guest is refused,
+  because nothing answers to `public`. A profile entry is user input and must never be
+  able to name an msb group.
 - **Allow-all is a default, not a rule.** A profile that ticks `everything` (§2.1) boots
   with `--net-default allow` and no rules at all: every host, every port, and DNS with
   them. It is the one network answer msb can give and srt cannot, which is why the
@@ -569,11 +580,18 @@ and nothing rebound:
   host server through `host.microsandbox.internal` and is refused at the host's LAN
   address for that same server. The grant does not carry the host's other addresses,
   and the guest cannot reach the LAN through it.
-- **No DNS is needed.** msb writes `host.microsandbox.internal` into the guest's
+- **No DNS rule is needed.** msb writes `host.microsandbox.internal` into the guest's
   `/etc/hosts` at boot, pointing at that sandbox's own gateway. A profile whose only
-  entry is loopback therefore gets no `allow@dns` at all, which closes the one hole
-  in this policy (see the DNS bullet above) for exactly the case that needs nothing
-  resolved.
+  entry is loopback therefore gets no `allow@dns`, because nothing has to be resolved.
+- **What that closes, and what it does not.** With a **port-scoped** grant it closes
+  the DNS hole outright: no rule reaches the gateway's port 53, so names do not
+  resolve, which the live gate measured (`wget: bad address 'example.com'`). With the
+  **portless** `allow@host` it does not, and the difference is not a subtlety: the
+  gateway's resolver listens on a port of the host group, so a grant on every host port
+  is a grant on 53. Measured on 0.6.13, a guest holding `allow@host` and no `allow@dns`
+  resolved `example.com` through the gateway; the connections were still refused, but
+  the names came back. Names are a low-bandwidth channel out (see the DNS bullet
+  above), so a profile that wants that channel shut has to name its port.
 - **The address is per sandbox and the name is not.** Every sandbox gets its own
   `/30`, so its gateway address differs (`172.16.2.213` in one run, `172.16.2.225` in
   the next). The name is the same in all of them, which is why paddock writes the
@@ -600,6 +618,12 @@ answers prompts, so it names neither rather than guessing wrong. A profile that 
 whole machine named no port at all and gets no endpoint either. In both cases the
 rules still let the traffic through: what is missing is only paddock's claim about
 where to aim, which it will not make when it does not know.
+
+**One port named inside a wider grant still gets the endpoint.** Ticking the preset and
+naming `localhost:8080` is one rule, `allow@host`, and one endpoint, `:8080`. The port
+was declared and it is still where the server is, so the variable is true; it is the
+rule that is generous, not the name. What suppresses the endpoint is ambiguity about
+which port answers prompts, never a grant being wider than the endpoint it names.
 
 **What this does not do.** No image ships a client, so the guest needs one it can
 install or one baked into its image; the endpoint is set either way. There is no

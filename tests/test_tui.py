@@ -712,6 +712,44 @@ def test_a_sandbox_without_the_local_grant_does_not_claim_it() -> None:
     assert LOCAL_SERVICES_CONSEQUENCE not in lines["can reach"]
 
 
+def test_an_msb_session_that_named_a_port_says_that_port(config_dir: Path) -> None:
+    """msb scopes the grant to the port, so the line that says otherwise is wrong there."""
+    profile = Profile(agent="shell", network_presets=[], extra_domains=["localhost:11434"])
+
+    lines = dict(tui.confirm_lines({"backend": "msb"}, profile, load_agents()))
+
+    assert "port 11434 on this machine, and nothing else on it" in lines["can reach"]
+    assert LOCAL_SERVICES_CONSEQUENCE not in lines["can reach"]
+
+
+def test_an_msb_session_that_named_no_port_still_says_every_port(config_dir: Path) -> None:
+    """The preset's own entries carry no port, so on msb it is `allow@host`: all of them."""
+    profile = Profile(agent="shell", network_presets=[LOCAL_SERVICES])
+
+    lines = dict(tui.confirm_lines({"backend": "msb"}, profile, load_agents()))
+
+    assert LOCAL_SERVICES_CONSEQUENCE in lines["can reach"]
+
+
+def test_an_srt_session_says_every_port_even_when_a_port_was_named(config_dir: Path) -> None:
+    """Seatbelt's loopback rule takes no port, so naming one narrows nothing here (SPEC §2.1)."""
+    profile = Profile(agent="shell", network_presets=[], extra_domains=["localhost:11434"])
+
+    lines = dict(tui.confirm_lines({"backend": "srt"}, profile, load_agents()))
+
+    assert LOCAL_SERVICES_CONSEQUENCE in lines["can reach"]
+
+
+def test_an_msb_session_that_named_several_ports_says_all_of_them(config_dir: Path) -> None:
+    profile = Profile(
+        agent="shell", network_presets=[], extra_domains=["localhost:11434", "127.0.0.1:5432"]
+    )
+
+    lines = dict(tui.confirm_lines({"backend": "msb"}, profile, load_agents()))
+
+    assert "ports 5432 and 11434 on this machine, and nothing else on it" in lines["can reach"]
+
+
 def test_the_confirm_names_the_only_writable_path_of_yours() -> None:
     isolated = dict(tui.confirm_lines({}, Profile(), load_agents()))
     shared = dict(tui.confirm_lines({}, Profile(shared_dir="/work/repo"), load_agents()))

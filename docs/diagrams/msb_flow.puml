@@ -29,8 +29,23 @@ activate Synth
 Synth -> Synth : run_dir/config: the ticked skills, the generated MCP\nwhitelist, the config the agent rewrites. COPIED, not linked:\na link to a host path is outside the mount (SPEC 4.3).\nNO TOKEN YET: everything below can still fail.
 Synth --> Backend : dir (host side), env {CLAUDE_CONFIG_DIR=/paddock-config},\nargs ~--mcp-config /paddock-config/.mcp.json ~--strict-mcp-config
 deactivate Synth
-Backend -> Msb : msb create ~--name paddock-<run>\n~--mount-dir <resolved workdir>:/work ~--workdir /work\n[~--mount-dir <run_dir>/config:/paddock-config-src:ro\n-e CLAUDE_CONFIG_DIR=/paddock-config]\n~--net-default deny [~--net-rule allow@dns\n~--net-rule allow@<domain>:tcp:443 per allowed domain]\n<image from the agent entry, else alpine>
+Backend -> Msb : msb create ~--name paddock-<run>\n~--mount-dir <resolved workdir>:/work ~--workdir /work\n[~--mount-dir <run_dir>/config:/paddock-config-src:ro\n-e CLAUDE_CONFIG_DIR=/paddock-config]\n[-e OPENAI_BASE_URL=http://host.microsandbox.internal:<port>/v1\n-e OLLAMA_HOST=http://host.microsandbox.internal:<port>]\n~--net-default deny\n[~--net-rule allow@dns, only if a remote domain was named]\n[~--net-rule allow@domain=<domain>:tcp:443 per remote domain]\n[~--net-rule allow@host:tcp:<port> per named local port,\nor allow@host when a loopback entry named none]\n<image from the agent entry, else alpine>
 activate Msb
+note right
+  The two -e endpoint variables are written only when the
+  profile's domains name exactly one local port (SPEC 2.2).
+  They are set here, on create, because that is what reaches
+  every later exec, the tab's shell included.
+
+  `domain=` disambiguates the target: a bare `allow@public`
+  is msb's GROUP `public`, so a profile with that word in
+  its extra-domains box got open egress on 443.
+
+  A loopback entry is a rule at the gateway, never at the
+  guest's own 127.0.0.1, and the gateway arrives at the
+  HOST's loopback: the server stays unpublished. A profile
+  whose only entries are local gets no allow@dns at all.
+end note
 Msb -> Guest : boot (175ms to usable, measured in the spike)
 activate Guest
 Msb --> Backend : created

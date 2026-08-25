@@ -199,9 +199,16 @@ def _host(domain: str) -> str:
 
     A bare IPv6 literal is all colons, so only a bracketed host or one with no colon at
     all can lose a trailing number: `::1` keeps its `1`, `[::1]:443` does not.
+
+    A suffix is a port only when it is one: decimal digits, in range. `isdecimal` rather
+    than `isdigit` because `isdigit` accepts characters `int` will not parse (`localhost:²`
+    said yes and then raised), and the range because 0 and 65536 are not ports anything
+    listens on. Anything else leaves the entry whole, which makes it an odd domain rather
+    than this machine, and an odd domain is the safe reading: it gets a domain rule that
+    resolves to nothing, where a loopback reading would get a rule aimed here (SPEC §2.2).
     """
     host, separator, port = domain.rpartition(":")
-    if not separator or not port.isdigit():
+    if not separator or not port.isdecimal() or not 0 < int(port) < 65536:
         return domain
     bracketed = host.startswith("[") and host.endswith("]")
     return host if bracketed or ":" not in host else domain

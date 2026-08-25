@@ -223,29 +223,31 @@ turned on serving to the local network at some point (LM Studio has a toggle,
 ollama has `OLLAMA_HOST=0.0.0.0`), that hands the model to everyone on the
 Wi-Fi and paddock does not need it. Turn it back off.
 
-**The recipe.** ollama on its usual port, as one example:
+**The recipe.** Nothing is installed in the guest, so the policy stays at one
+port. ollama on its usual port, as one example:
 
 ```sh
 # 1. your server, wherever it already listens
-ollama serve                                  # 11434
-# LM Studio: start the local server in the app # 1234
+ollama serve                                   # 11434
+# LM Studio: start the local server in the app  # 1234
 # llama.cpp: llama-server -m model.gguf --port 8080
 # vLLM:      vllm serve <model> --port 8000
 
-# 2. tell paddock the port, once, in an agent file
+# 2. tell paddock the port, once, in an agent file.
+#    The filename is the agent's key in the registry.
 mkdir -p ~/.config/paddock/agents
-cat > ~/.config/paddock/agents/local.json <<'JSON'
+cat > ~/.config/paddock/agents/local-inference.json <<'JSON'
 {
   "name": "Local inference",
-  "command": "aider --no-auto-commits",
-  "api_domains": ["localhost:11434"],
-  "image": "python:3.12-slim",
-  "install": "pip install --quiet aider-chat"
+  "command": "/bin/sh",
+  "image": "alpine",
+  "api_domains": ["localhost:11434"]
 }
 JSON
 
-# 3. launch it in a microVM: prefix+s, pick the agent, set Backend to msb.
-#    Save the answers with `s` and the next one is:
+# 3. prefix+s, pick "Local inference" in Agent, set Backend to msb, launch.
+#    `s` on the form saves those answers as a profile. Name it `local-model`
+#    and every later launch is one line:
 paddock launch local-model --backend msb
 ```
 
@@ -253,15 +255,45 @@ paddock launch local-model --backend msb
 declared the same way, and choosing that agent is what opens the port. For a
 one-off, type `localhost:11434` into the chooser's `Network` field instead.
 
-The guest boots knowing where the server is, in every tab:
+The tab comes up as a shell in the guest, knowing where the server is:
 
 ```sh
 OPENAI_BASE_URL=http://host.microsandbox.internal:11434/v1
 OLLAMA_HOST=http://host.microsandbox.internal:11434
 ```
 
+Alpine's `wget` is enough to talk to it, with nothing installed and nothing
+resolved:
+
+```sh
+wget -qO- --header='Content-Type: application/json' \
+  --post-data '{"model":"qwen3:8b","stream":false,
+                "messages":[{"role":"user","content":"hello"}]}' \
+  "$OPENAI_BASE_URL/chat/completions"
+```
+
 `OPENAI_BASE_URL` is the one nearly every client reads, and all four servers
 above answer that API. Clients that insist on a key take any string.
+
+**A client that installs itself is the wider variant.** Point the agent at a real
+CLI and the guest has to fetch it on the way up, which needs the package registry
+and the DNS to find it:
+
+```json
+{
+  "name": "Aider on the local model",
+  "command": "aider --no-auto-commits",
+  "image": "python:3.12-slim",
+  "install": "pip install --quiet aider-chat",
+  "api_domains": ["localhost:11434"]
+}
+```
+
+That launch needs the `pypi/uv` preset ticked as well, and the rules are set when
+the VM boots, so the session keeps that network for its whole life: pypi, and DNS
+for every name, not just the one port. The prompts still go nowhere but your own
+machine. If you want the install and the one-port policy, bake the client into an
+image and leave `install` blank, which is what `image` is for.
 
 **Verified live**, with a real 27B model answering a real prompt from inside the
 guest: the host's `/Users` is not there, `example.com` does not resolve, the
@@ -271,8 +303,8 @@ and `paddock gc` takes the VM away. The full transcript is in
 
 On the `srt` backend the same entry still works, but the grant is not scoped:
 Seatbelt's loopback rule takes no port, so it opens every service listening on
-this machine. The chooser says so on the confirm screen. If you want the narrow
-version, use `msb`. [SPEC §2.1 and §2.2](docs/SPEC.md#22-microsandbox-msb-registered-as-msb)
+this machine. The confirm screen says which of the two you are getting, in as
+many words, before anything launches. If you want the narrow version, use `msb`. [SPEC §2.1 and §2.2](docs/SPEC.md#22-microsandbox-msb-registered-as-msb)
 have the measurements behind both.
 
 ## Command line
