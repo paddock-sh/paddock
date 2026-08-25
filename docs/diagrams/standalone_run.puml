@@ -1,0 +1,82 @@
+@startuml standalone_run
+title paddock run: a session in the terminal it was typed in (SPEC section 11)
+
+skinparam shadowing false
+skinparam sequenceMessageAlign left
+
+legend top
+  No herdr anywhere. The process that asked becomes the sandbox, so what
+  would have been a pane is the terminal the user was already sitting in.
+endlegend
+
+actor User
+participant "cli.py" as CLI
+participant "tui.py\n(the chooser)" as TUI
+participant "standalone.py" as Standalone
+participant "sessions.py" as Sessions
+participant "backends/srt.py\nbackends/microsandbox.py" as Backend
+participant "the run dir\nlaunch.sh, shell.sh, run.sh" as RunDir
+participant "the sandbox\nsrt process / msb microVM" as Sandbox
+
+User -> CLI : paddock run [profile] [--backend]
+activate CLI
+
+alt no profile named
+  CLI -> TUI : choose(cwd)
+  TUI --> CLI : one plan: local | attach | new session
+  note right : no terminal to draw in is an error here,\nexactly as it is for `paddock`
+end
+
+alt the plan is a local tab
+  CLI --> User : "you already have a terminal", exit 0
+  note right : there is no herdr to open a tab in
+else the plan is a session to attach to
+  CLI -> Standalone : attach(session, shell)
+  Standalone -> Sessions : attach_standalone(session)
+  Sessions -> Backend : load_run(run_dir)
+  Backend --> Sessions : the run, its scripts rewritten if stale
+  note right : no pane id is registered, so what closing\nherdr's last tab means is left as it was
+else the plan is a new session
+  CLI -> Standalone : start(profile, backend, keep_alive)
+  Standalone -> Sessions : prepare_standalone(profile, backend)
+  Sessions -> Backend : prepare(profile)
+  Backend -> RunDir : settings / shim dir / config dir,\nlaunch.sh and shell.sh
+  Backend --> Sessions : the run, and a vm_handle if it has one
+
+  alt the run leaves nothing running (srt)
+    Sessions --> Standalone : run dir + workdir, no session
+    note right : ephemeral: no registry entry,\nthe run ends with the terminal
+  else the run leaves a microVM (msb)
+    Sessions -> Sessions : register the session,\nno pane ids
+    Sessions --> Standalone : run dir + workdir + session
+    Standalone -> RunDir : write run.sh:\nlaunch.sh, then `paddock collect <session>`,\nunder a trap for ctrl-c and HUP
+  end
+end
+
+Standalone -> Standalone : chdir(workdir)
+Standalone -> Sandbox : execv(/bin/sh, <run dir>/run.sh or launch.sh)
+deactivate CLI
+note right
+  The process is replaced here. The failure hold,
+  the pane log and the policy are the launch
+  script's, so they are the same as in a pane.
+end note
+
+activate Sandbox
+User -> Sandbox : works in the sandbox, then exits
+Sandbox -> CLI : run.sh only: `paddock collect <session>`
+deactivate Sandbox
+activate CLI
+CLI -> Sessions : forget(session)
+Sessions -> Backend : collect(run_dir, vm_handle)
+Backend -> Sandbox : msb rm -f <handle>
+CLI --> User : "collected <name>"
+deactivate CLI
+
+note over Sessions
+  A session with no panes survives reconciliation, so a
+  paddock in another terminal cannot collect a run that
+  is under way. Its VM is claimed, so a gc leaves it alone.
+end note
+
+@enduml

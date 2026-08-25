@@ -31,6 +31,10 @@ LAUNCH_SCRIPT = "launch.sh"
 # rather than a second kind of pane: a shell tab is held, logged and replayed like any other.
 SHELL_SCRIPT = "shell.sh"
 
+# The wrapper `paddock run` becomes when the run it starts has to be collected on the way
+# out (SPEC §11). It runs one of the scripts above and ends the session after it.
+RUN_SCRIPT = "run.sh"
+
 # A launch that fails does so at once. A non-zero exit later than this is the agent ending,
 # ctrl-c included, and holding the pane on that would hold it hostage.
 HOLD_WITHIN_SECONDS = 10
@@ -208,6 +212,48 @@ def _prompt() -> list[str]:
         "export PS1 PROMPT",
         "",
     ]
+
+
+def write_run_script(run_dir: Path, after: list[str], name: str = LAUNCH_SCRIPT) -> Path:
+    """Wrap one of the run's scripts so a run in the user's own terminal ends itself.
+
+    `paddock run` execs into the sandbox (SPEC §11), so there is no paddock process left to
+    notice the exit. This script is that process: it runs the launch script, then runs
+    `after`, then leaves with the launch script's own status.
+    """
+    script = run_dir / RUN_SCRIPT
+    script.write_text(run_script_text(run_dir, after, name))
+    script.chmod(0o700)
+    return script
+
+
+def run_script_text(run_dir: Path, after: list[str], name: str = LAUNCH_SCRIPT) -> str:
+    """The wrapper: one script, one command after it, and the first one's exit status.
+
+    The command runs on the way out however the run ended. Ctrl-c goes to the whole
+    foreground group, so the shell running this gets it too, and a sandbox left running
+    because the user pressed a key is exactly the leak this exists to stop. A trap covers
+    that and the terminal closing with it. Nothing covers being killed outright, which is
+    what `paddock collect <session>` is for.
+    """
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            "# Written by paddock for a run in the terminal it was started from.",
+            "paddock_after() {",
+            '  [ -n "$paddock_done" ] && return',
+            "  paddock_done=1",
+            f"  {shlex.join(after)}",
+            "}",
+            "trap paddock_after EXIT HUP INT TERM",
+            "",
+            f"/bin/sh {shlex.quote(str(run_dir / name))}",
+            "paddock_exit=$?",
+            "paddock_after",
+            'exit "$paddock_exit"',
+            "",
+        ]
+    )
 
 
 def launch_line(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:

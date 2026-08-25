@@ -24,6 +24,11 @@ class FakeRun:
     run_dir: Path
     vm_handle: str = ""
 
+    @property
+    def workdir(self) -> Path:
+        """Every backend's run has one, and a run in the user's own terminal starts in it."""
+        return self.run_dir / "work"
+
 
 class FakeBackend:
     """A backend that is not srt, so dispatch is tested on the name and not on one module.
@@ -1004,8 +1009,8 @@ class SweepingBackend(FakeBackend):
     own, so what these tests are really about is the ownership set sessions hands it.
     """
 
-    def __init__(self, running: list[str]) -> None:
-        super().__init__()
+    def __init__(self, running: list[str], vm_handle: str = "") -> None:
+        super().__init__(vm_handle=vm_handle)
         self.running = running
         self.swept: list[tuple[set[str], set[str]]] = []
 
@@ -1177,3 +1182,100 @@ def test_gc_leaves_a_run_dir_that_is_still_being_prepared(state_dir: Path) -> No
 
 def test_gc_with_no_runs_directory_at_all_sweeps_nothing(state_dir: Path) -> None:
     assert sessions.collect_run_dirs() == []
+
+
+# --- a run in the terminal that asked for it (SPEC §11) ---------------------
+
+
+def test_a_standalone_run_with_nothing_left_running_keeps_no_registry_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """srt dies with the terminal, so an entry offering to end it would never be used."""
+    fake = FakeBackend()
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+
+    here = sessions.prepare_standalone(Profile(name="p"), backend="fake")
+
+    assert sessions.list_sessions() == []
+    assert (here.run_dir, here.workdir, here.session) == (
+        Path("/state/runs/fake"),
+        Path("/state/runs/fake/work"),
+        None,
+    )
+    assert fake.prepared[0].name == "p"
+
+
+def test_a_standalone_run_with_a_vm_is_registered_with_no_panes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A microVM outlives the process, so something has to claim it and something must end it."""
+    monkeypatch.setitem(sessions.BACKENDS, "fake", FakeBackend(vm_handle="paddock-one"))
+
+    here = sessions.prepare_standalone(Profile(name="p"), backend="fake")
+
+    assert here.session is not None
+    assert [(one.vm_handle, one.pane_ids, one.keep_alive) for one in sessions.list_sessions()] == [
+        ("paddock-one", [], False)
+    ]
+
+
+def test_a_standalone_run_asked_to_stay_up_says_so_in_the_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sessions.BACKENDS, "fake", FakeBackend(vm_handle="paddock-one"))
+
+    sessions.prepare_standalone(Profile(name="p"), backend="fake", keep_alive=True)
+
+    assert sessions.list_sessions()[0].keep_alive is True
+
+
+def test_a_standalone_session_survives_a_reconcile_that_has_no_panes_for_it(
+    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """It never had a pane. A reconcile that read that as "the last one closed" would
+    take the terminal's own sandbox down while it was still being used."""
+    monkeypatch.setitem(sessions.BACKENDS, "fake", FakeBackend(vm_handle="paddock-one"))
+    sessions.prepare_standalone(Profile(name="p"), backend="fake")
+
+    assert sessions.reconcile() == []
+    assert len(sessions.list_sessions()) == 1
+
+
+def test_a_gc_leaves_the_sandbox_of_a_standalone_run_alone(
+    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The registry entry is what makes the sweep see a VM that is claimed, not orphaned."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    backend = SweepingBackend(["paddock-one"], vm_handle="paddock-one")
+    monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
+    sessions.prepare_standalone(Profile(name="p"), backend="fake")
+
+    assert sessions.collect_orphans() == Swept(removed=[], unowned=[])
+    assert backend.swept == [({"paddock-one"}, set())]
+
+
+def test_attaching_a_terminal_loads_the_run_and_registers_no_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A terminal is not a tab: what closing herdr's last tab means is left as it was."""
+    fake = FakeBackend(vm_handle="paddock-one")
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(name="p"), backend="fake")
+
+    here = sessions.attach_standalone(session)
+
+    assert fake.loaded == [Path("/state/runs/fake")]
+    assert (here.run_dir, here.workdir) == (Path("/state/runs/fake"), Path("/state/runs/fake/work"))
+    assert sessions.list_sessions()[0].pane_ids == []
+
+
+def test_collecting_one_session_ends_it_and_drops_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What the run's own script calls when the agent it started exits (SPEC §11)."""
+    fake = FakeBackend(vm_handle="paddock-one")
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    session = sessions.create_session(Profile(name="p"), backend="fake")
+
+    sessions.forget(session)
+
+    assert sessions.list_sessions() == []
+    assert fake.collected == [(Path("/state/runs/fake"), "paddock-one")]

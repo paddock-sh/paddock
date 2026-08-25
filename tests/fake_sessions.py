@@ -94,6 +94,12 @@ def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
 
 
+def forget(session: Session) -> None:
+    calls.append(("forget", session))
+    if session in registry:
+        registry.remove(session)
+
+
 def reconcile() -> list[Session]:
     calls.append(("reconcile",))
     return list(collects)
