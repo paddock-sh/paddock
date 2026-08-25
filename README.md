@@ -240,7 +240,7 @@ opened and no herdr is asked for anything:
 ```sh
 paddock run offline-shell       # a sandboxed shell, here, now
 paddock run claude-default      # or the agent, from a saved profile
-paddock run --backend msb offline-shell
+paddock run offline-shell --backend msb   # ... in a microVM instead
 paddock run                     # no profile: ask, then run the answer here
 ```
 
@@ -249,8 +249,8 @@ launch script. When it ends, the terminal is yours again. `paddock collect
 <session>` ends a session by hand, which a microVM run needs only if the terminal
 was killed outright.
 
-Bind it to a key and you have the popup, without paddock knowing anything about
-your terminal. tmux:
+Bind it to a key and you have a popup of your own, in whatever terminal you
+already use. tmux:
 
 ```tmux
 bind-key s display-popup -E -w 80% -h 70% paddock run
