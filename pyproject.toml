@@ -1,7 +1,7 @@
 [project]
 name = "paddock"
 version = "0.2.0"
-description = "Sandboxed agent sessions for herdr: per-pane tool, network, and filesystem permissions"
+description = "Sandboxed agent sessions in any terminal: per-session tool, network, and filesystem permissions"
 # 3.11 for tomllib: `paddock init` parses the config it is about to write, and a check
 # that a 3.10 could skip is no check at all (SPEC §1.1).
 requires-python = ">=3.11"
