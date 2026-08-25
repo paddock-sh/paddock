@@ -229,13 +229,13 @@ With a host server on `*:18080`, a default-network guest reaches nothing:
 ```
 [guest 127.0.0.1:18080]          Connection refused   # the guest's own loopback
 [gateway 172.16.0.81:18080]      Connection refused
-[host LAN 100.110.158.155:18080] Connection refused
+[host LAN 100.x.y.z:18080] Connection refused
 ```
 
 `--net host` alone does not change that. An explicit rule does:
 
 ```
-$ msb run --net-rule "allow@100.110.158.155" alpine -- wget ...
+$ msb run --net-rule "allow@100.x.y.z" alpine -- wget ...
 HOST-SERVICE-REACHED
 $ msb run --net private alpine -- wget ...
 HOST-SERVICE-REACHED
@@ -672,7 +672,7 @@ address. From a guest holding `allow@host`:
 
 ```
 $ ... http://host.microsandbox.internal:18100/     ->  <!DOCTYPE HTML> ...
-$ ... http://100.110.158.155:18100/                ->  can't connect to remote host: Connection refused
+$ ... http://100.x.y.z:18100/                ->  can't connect to remote host: Connection refused
 ```
 
 The grant does not carry the host's other addresses. A sandbox given the whole
