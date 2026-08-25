@@ -262,6 +262,11 @@ OPENAI_BASE_URL=http://host.microsandbox.internal:11434/v1
 OLLAMA_HOST=http://host.microsandbox.internal:11434
 ```
 
+Neither name means OpenAI is involved: OpenAI-compatible describes the request
+format these servers speak, and `OPENAI_BASE_URL` is the standard variable a
+client reads for where to send those requests. Pointed at a local port, it means
+no OpenAI account and nothing leaving this machine.
+
 Alpine's `wget` is enough to talk to it, with nothing installed and nothing
 resolved:
 
