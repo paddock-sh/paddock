@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>paddock: sandboxed sessions for coding agents</title>
-<meta name="description" content="paddock runs a coding agent inside a sandbox the operating system enforces. You choose the tools, the domains and the one writable directory before it starts. Seatbelt, bubblewrap, or a per-session microVM.">
+<meta name="description" content="paddock runs a coding agent inside a sandbox the operating system enforces: Seatbelt, bubblewrap, or a per-session microVM. You choose the tools, the domains and the one writable directory before it starts.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#10151d">
 <meta property="og:type" content="website">
@@ -17,7 +17,8 @@
 <meta name="twitter:description" content="The model is local. The blast radius should be too.">
 <meta name="twitter:image" content="https://paddock.desquaredp.com/logo.png">
 <link rel="canonical" href="https://paddock.desquaredp.com/">
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20fill='%2310151d'/%3E%3Cg%20fill='%236d95d6'%3E%3Crect%20x='4'%20y='8'%20width='3'%20height='18'/%3E%3Crect%20x='14.5'%20y='8'%20width='3'%20height='18'/%3E%3Crect%20x='25'%20y='8'%20width='3'%20height='18'/%3E%3Crect%20x='2'%20y='12'%20width='28'%20height='2.5'/%3E%3Crect%20x='2'%20y='19'%20width='28'%20height='2.5'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="icon" type="image/png" sizes="32x32" href="mark-32.png">
+<link rel="icon" type="image/png" sizes="64x64" href="mark.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..800&amp;display=swap">
@@ -142,7 +143,13 @@ a:hover { color: var(--blue-bright); }
   font-family: var(--mono); font-size: 0.73rem; letter-spacing: 0.08em;
   color: var(--faint);
 }
-.strip .wordmark { color: var(--bone); letter-spacing: 0.42em; font-weight: 600; }
+.strip .wordmark { display: inline-flex; align-items: center; gap: 0.72rem; color: var(--bone); letter-spacing: 0.42em; font-weight: 600; }
+/* The mark is a crop of logo.png, the deep blue horse's head. Same picture as the
+   poster and the colophon, read at a third zoom. It keeps the colophon's 1px rule
+   border, which is what separates it from the bar: the horse itself is 1.3:1 on
+   --ink, the sky behind it carries the silhouette, and the plate as a whole
+   measures 3.2:1, over the 3:1 WCAG asks of a graphic. */
+.strip .wordmark img { flex: none; width: 24px; height: 24px; border: 1px solid var(--rule); }
 .strip nav { display: flex; gap: 1.3rem; flex-wrap: wrap; }
 .strip nav a { color: var(--muted); text-decoration: none; padding-block: 0.55rem; margin-block: -0.55rem; }
 .strip nav a:hover { color: var(--bone); }
@@ -426,7 +433,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
 
   <div class="hold">
     <div class="strip">
-      <span class="wordmark">paddock</span>
+      <span class="wordmark"><img src="mark.png" width="64" height="64" alt="" decoding="async">paddock</span>
       <nav aria-label="Project links">
         <a href="https://github.com/desquaredp/paddock">GitHub</a>
         <a href="https://github.com/desquaredp/paddock#trust-model">Trust model</a>
@@ -470,17 +477,17 @@ pre.snip i { color: var(--faint); font-style: normal; }
     <section id="run" aria-labelledby="h1-run">
       <div class="head">
         <span class="no">&sect;&nbsp;01</span>
-        <h2 id="h1-run">One command, one screen, then it is running</h2>
+        <h2 id="h1-run">One command, one screen, then it runs</h2>
       </div>
 
       <p class="sub"><code>paddock run</code> starts a sandboxed session in the terminal you
-      are already in. There is no daemon, no multiplexer and no tab to open. It opens on the
-      profile you launched last, so the ordinary case is <code>L</code> and then enter.</p>
+      are already in. There is no daemon and no tab to open. It opens on the profile you
+      launched last, so the ordinary case is <code>L</code> and then enter.</p>
 
       <p class="sub">The confirm screen is not optional, and it does not shrink for a repeat
       launch. That is the whole promise of the tool: <b>the thing granting the permissions says
-      out loud what it granted</b>, with the domain groups expanded into the domains they open
-      and the paths written as they will be.</p>
+      out loud what it granted</b>. Domain groups are expanded into the domains they open, and
+      paths are written as they will be.</p>
 
       <figure class="screen">
         <div class="screen__tab"><span>chooser</span><span><b>paddock run</b></span></div>
@@ -571,7 +578,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
             and the sandbox is fully offline.</p>
             <p class="catch"><b>Hard, with one hole.</b> On <code>msb</code>, DNS is all or nothing. The
             gateway resolver answers for every name, not only the allowed ones, and the
-            connection is then refused. Names are a low bandwidth channel out.</p>
+            connection is then refused. Names are a low-bandwidth channel out.</p>
           </dd>
         </div>
         <div class="grant">
@@ -579,7 +586,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
           <dd>
             <p>Denied by default. A session gets an isolated scratch directory, or the one host
             directory you named, which is then the only thing on this machine it can change.</p>
-            <p class="catch"><b>No opt out.</b> There is deliberately no allow-everything row.
+            <p class="catch"><b>No opt-out.</b> There is deliberately no allow-everything row.
             A sandbox with no filesystem fence is an ordinary local tab, which the Open
             field already offers.</p>
           </dd>
@@ -597,8 +604,8 @@ pre.snip i { color: var(--faint); font-style: normal; }
           <dt>can see</dt>
           <dd>
             <p>The chosen agent's own login, and nothing else. Files it writes back to are
-            copies, so your real config is never touched, and no agent is handed another
-            agent's keys, your SSH keys or your cloud credentials.</p>
+            copies, so your real config is never touched. No agent is handed another agent's
+            keys, your SSH keys or your cloud credentials.</p>
           </dd>
         </div>
       </dl>
@@ -669,7 +676,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
 
       <p class="sub sub--after">The mechanism is an HTTP server on a host port,
       so every runtime is the same shape. paddock ships no default port and has no favourite
-      runtime: you name the port once, in an agent file or in the chooser's network field, and
+      runtime. You name the port once, in an agent file or in the chooser's network field, and
       the guest boots knowing where the server is in every tab.</p>
 
 <pre class="snip"><i># the agent file that opens the port, once</i>
