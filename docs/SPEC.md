@@ -1538,7 +1538,9 @@ Nothing covers a terminal killed outright. That leaves a registered session with
 a running VM, which `paddock collect <session>` ends. Collecting a session twice
 is not a crash: the second one says there is no session by that name and exits 1.
 `paddock gc` names every session it finds with no tabs, so a session left over
-this way is reported rather than silently kept.
+this way is reported rather than silently kept. It says which kind: a run in a
+terminal, or a session told to survive its last tab (§3.4). Both end the same
+way and a user reads the two for different reasons.
 
 **A session whose sandbox has gone ends at the door.** `ensure_live(run)` is on
 the backend contract: srt has nothing that can have gone and does nothing, msb

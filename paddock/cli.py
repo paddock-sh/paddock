@@ -175,7 +175,7 @@ def gc() -> int:
     for session in sessions.list_sessions():
         # Same rule, same reason: named rather than collected, and not counted as done.
         if not session.pane_ids:
-            print(no_tabs(session.name))
+            print(no_tabs(session))
     for path in sessions.collect_run_dirs():
         print(f"removed the orphaned run dir {path}")
         done += 1
@@ -199,16 +199,18 @@ def left_alone(handles: list[str]) -> str:
     )
 
 
-def no_tabs(name: str) -> str:
+def no_tabs(session: sessions.Session) -> str:
     """The one line gc says about a session with no tabs, and how to end it.
 
     Nothing collects one of these: reconciliation only ends a session it has just taken the
-    last tab from, so a run in somebody's terminal (SPEC §11) and a session told to keep
-    running both sit here on purpose. Silence would read as a gc that missed them.
+    last tab from. Silence would read as a gc that missed them, and there are two ways to
+    get here that a user acts on differently: a run in somebody's terminal (SPEC §11), and
+    a session told to survive its last tab (SPEC §3.4).
     """
+    why = "kept running on purpose" if session.keep_alive else "a session in a terminal"
     return (
-        f"paddock: leaving {name} alone: a session in a terminal, with no tabs. "
-        f"End it with: paddock collect {name}"
+        f"paddock: leaving {session.name} alone: {why}, with no tabs. "
+        f"End it with: paddock collect {session.name}"
     )
 
 

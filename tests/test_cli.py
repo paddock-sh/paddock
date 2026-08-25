@@ -1304,7 +1304,7 @@ def test_a_dry_run_of_a_local_tab_says_what_it_would_say(
 # --- gc says what it left alone --------------------------------------------
 
 
-def test_gc_names_a_session_with_no_tabs_instead_of_saying_nothing(
+def test_gc_names_a_session_running_in_a_terminal(
     fake_sessions, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Nothing collects one of these, so a silent gc reads as a gc that missed it."""
@@ -1314,6 +1314,19 @@ def test_gc_names_a_session_with_no_tabs_instead_of_saying_nothing(
 
     said = capsys.readouterr().out
     assert "leaving review alone: a session in a terminal, with no tabs" in said
+    assert "paddock collect review" in said
+
+
+def test_gc_says_something_else_about_a_session_kept_running_on_purpose(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both need the same command, and a user reads the two for different reasons."""
+    fake_sessions.registry.append(Session(name="review", pane_ids=[], keep_alive=True))
+
+    assert cli.main(["gc"]) == 0
+
+    said = capsys.readouterr().out
+    assert "leaving review alone: kept running on purpose, with no tabs" in said
     assert "paddock collect review" in said
 
 
