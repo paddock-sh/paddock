@@ -385,7 +385,8 @@ pre.snip i { color: var(--faint); font-style: normal; }
 .colophon__grid { display: grid; grid-template-columns: 118px repeat(auto-fit, minmax(178px, 1fr)); gap: 1.7rem 2rem; align-items: start; }
 @media (max-width: 640px) { .colophon__grid { grid-template-columns: minmax(0, 1fr); } }
 .colophon img { width: 108px; height: auto; border: 1px solid var(--rule); filter: grayscale(0.35) brightness(0.9); }
-.colophon h3 { margin: 0 0 0.55rem; font-size: 0.665rem; letter-spacing: 0.19em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.colophon h2 { font-family: var(--mono); margin: 0 0 0.55rem; font-size: 0.665rem; line-height: 1.5;
+  letter-spacing: 0.19em; text-transform: uppercase; color: var(--muted); font-weight: 500; max-width: none; }
 .colophon ul { list-style: none; margin: 0; padding: 0; line-height: 1.95; }
 .colophon p { margin: 0; line-height: 1.75; max-width: 36ch; }
 .colophon__end { margin-top: 2.3rem; padding-top: 1rem; border-top: 1px solid var(--hair); display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem; }
@@ -579,8 +580,8 @@ pre.snip i { color: var(--faint); font-style: normal; }
             <p>Denied by default. A session gets an isolated scratch directory, or the one host
             directory you named, which is then the only thing on this machine it can change.</p>
             <p class="catch"><b>No opt out.</b> There is deliberately no allow-everything row.
-            A sandbox with no filesystem fence is an ordinary tab, which is one field further
-            up the form.</p>
+            A sandbox with no filesystem fence is an ordinary local tab, which the Open
+            field already offers.</p>
           </dd>
         </div>
         <div class="grant">
@@ -734,10 +735,10 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
 
   <aside class="index" aria-label="Sections">
     <ol>
-      <li><a href="#run"><span class="n">01</span>The run</a></li>
-      <li><a href="#grants"><span class="n">02</span>The grants</a></li>
-      <li><a href="#local"><span class="n">03</span>Local models</a></li>
-      <li><a href="#beta"><span class="n">04</span>What it is not</a></li>
+      <li><a href="#run"><span class="n">01</span> The run</a></li>
+      <li><a href="#grants"><span class="n">02</span> The grants</a></li>
+      <li><a href="#local"><span class="n">03</span> Local models</a></li>
+      <li><a href="#beta"><span class="n">04</span> What it is not</a></li>
     </ol>
   </aside>
 </div>
@@ -747,7 +748,7 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
     <div class="colophon__grid">
       <img src="logo.webp" width="1000" height="1000" alt="" loading="lazy" decoding="async">
       <div>
-        <h3>Source</h3>
+        <h2>Source</h2>
         <ul>
           <li><a href="https://github.com/desquaredp/paddock">github.com/desquaredp/paddock</a></li>
           <li><a href="https://github.com/desquaredp/paddock/blob/main/LICENSE">MIT license</a></li>
@@ -756,7 +757,7 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
         </ul>
       </div>
       <div>
-        <h3>Install</h3>
+        <h2>Install</h2>
         <ul>
           <li>curl -fsSL paddock.desquaredp.com/install.sh | sh</li>
           <li>uv and Node.js are the prerequisites</li>
@@ -765,7 +766,7 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
         </ul>
       </div>
       <div>
-        <h3>Better with herdr</h3>
+        <h2>Better with herdr</h2>
         <p>paddock runs on its own. In <a href="https://herdr.dev">herdr</a> it also gets the
         chooser on <code>prefix+s</code>, sandboxed tabs and attachable sessions.
         <a href="https://github.com/desquaredp/paddock#the-chooser">How that works</a>.</p>
