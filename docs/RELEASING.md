@@ -113,13 +113,13 @@ and point the publish step at `https://test.pypi.org/legacy/` with the action's
   one-liner needs a public repo: the raw URL 404s while it is private.
 - **Social preview.** In *Settings* > *General* > *Social preview*, upload a
   1280x640 image. Without it, links to the repo show a grey placeholder.
-- **README on PyPI.** The README is the PyPI project page. Its image and doc
-  links are relative, so they break there. Make them absolute
-  `https://github.com/desquaredp/paddock/blob/main/...` URLs before the first
-  publish.
-- **README install line.** The README still says
-  `uv tool install git+https://github.com/desquaredp/paddock`. Swap it for the
-  one-liner above in the docs pass after the chooser epic lands, so this does not
-  fight that PR for the same lines.
-- **Herdr version.** The README and SPEC name the herdr version paddock is
+- **README on PyPI.** The README is the PyPI project page. Its logo and its links
+  into `docs/` (GUIDE, SPEC, ROADMAP) are relative, so they break there. Make
+  them absolute `https://github.com/desquaredp/paddock/blob/main/...` URLs before
+  the first publish.
+- **README install line.** Done: the README leads with the install one-liner and
+  keeps `uv tool install git+https://github.com/desquaredp/paddock` as the
+  alternative for people who already have uv. Once paddock is on PyPI, that
+  second line becomes `uv tool install paddock`.
+- **Herdr version.** `docs/GUIDE.md` and SPEC name the herdr version paddock is
   verified against. Check it still matches.
