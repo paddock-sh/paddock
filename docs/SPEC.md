@@ -606,6 +606,9 @@ exec`, the agent tab and any shell tab, has them:
 -e OLLAMA_HOST=http://host.microsandbox.internal:<port>
 ```
 
+The OpenAI in the name is a request format, not a service, so aiming the variable at a
+local port needs no OpenAI account and sends nothing off the machine.
+
 `OPENAI_BASE_URL` is the one that matters: it is what an OpenAI-shaped client reads,
 which is nearly all of them, and every server named above serves that API. `OLLAMA_HOST`
 is a courtesy for clients that read it instead, naming the same endpoint without the
