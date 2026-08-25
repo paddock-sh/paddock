@@ -17,6 +17,7 @@
 <meta name="twitter:description" content="The model is local. The blast radius should be too.">
 <meta name="twitter:image" content="https://paddock.desquaredp.com/logo.png">
 <link rel="canonical" href="https://paddock.desquaredp.com/">
+<link rel="icon" type="image/png" sizes="16x16" href="mark-16.png">
 <link rel="icon" type="image/png" sizes="32x32" href="mark-32.png">
 <link rel="icon" type="image/png" sizes="64x64" href="mark.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -144,11 +145,13 @@ a:hover { color: var(--blue-bright); }
   color: var(--faint);
 }
 .strip .wordmark { display: inline-flex; align-items: center; gap: 0.72rem; color: var(--bone); letter-spacing: 0.42em; font-weight: 600; }
-/* The mark is a crop of logo.png, the deep blue horse's head. Same picture as the
-   poster and the colophon, read at a third zoom. It keeps the colophon's 1px rule
-   border, which is what separates it from the bar: the horse itself is 1.3:1 on
-   --ink, the sky behind it carries the silhouette, and the plate as a whole
-   measures 3.2:1, over the 3:1 WCAG asks of a graphic. */
+/* The mark is logo.png's deep blue horse, the same picture as the poster and the
+   colophon read at a third zoom. The head is lifted whole, both ears down to the
+   top of the neck, and set on a square of the illustration's own sky (#b4b5b7)
+   so nothing is clipped by an edge at any size. A tighter crop lost an ear at
+   24px and turned to mush in a 16px tab. It keeps the colophon image's 1px rule
+   border, and the plate measures 5.2:1 against --ink, well over the 3:1 WCAG
+   asks of a non-text graphic. */
 .strip .wordmark img { flex: none; width: 24px; height: 24px; border: 1px solid var(--rule); }
 .strip nav { display: flex; gap: 1.3rem; flex-wrap: wrap; }
 .strip nav a { color: var(--muted); text-decoration: none; padding-block: 0.55rem; margin-block: -0.55rem; }
