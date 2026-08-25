@@ -48,7 +48,8 @@
   --bone:       #dfe3e6;   /* 14.2:1 on ink */
   --bone-dim:   #c2c5c7;   /* 10.6:1 */
   --muted:      #9ca2a3;   /*  7.1:1 */
-  --faint:      #868d94;   /*  5.5:1 */
+  --faint:      #8b929a;   /*  5.8:1 on ink, and 4.7:1 on slate and blue-deep,
+                               which the old #868d94 missed at 4.41 and 4.36 */
 
   --blue-deep:  #162849;
   --blue:       #31425f;
@@ -238,9 +239,10 @@ h1 .b { display: block; color: var(--bone); }
 .index a { display: block; padding: 0.4rem 0; color: var(--faint); text-decoration: none; transition: color 150ms var(--ease); }
 .index a:hover { color: var(--bone-dim); }
 .index a[aria-current="location"] { color: var(--bone); }
-.index .n { color: var(--rule); margin-right: 0.55rem; transition: color 150ms var(--ease); }
-.index a:hover .n { color: var(--blue); }
-.index a[aria-current="location"] .n { color: var(--blue-lift); }
+/* --rule is a border colour, 1.6:1 on ink. As text it was not there at all. */
+.index .n { color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 0.55rem; transition: color 150ms var(--ease); }
+.index a:hover .n { color: var(--blue-lift); }
+.index a[aria-current="location"] .n { color: var(--blue-bright); }
 
 section { position: relative; padding-block: var(--s-sec); }
 section + section { border-top: 1px solid var(--hair); }

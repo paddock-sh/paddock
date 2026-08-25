@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>paddock reference: commands, profiles, agents, network</title>
-<meta name="description" content="The paddock command line reference: every subcommand and flag, the profile and agent JSON fields, the network presets, the environment variables, and the chooser keys. Generated from the code on develop.">
+<meta name="description" content="The paddock command line reference: every subcommand and flag, the profile and agent JSON fields, the network presets, the environment variables, and the chooser keys.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#10151d">
 <meta property="og:type" content="website">
@@ -27,30 +27,44 @@
 /* ===========================================================================
    paddock reference. Same palette and shell as the landing page, but this one
    is a reference and not an argument: dense, monospace forward, and scannable.
-   Every value on this page was read out of the code on develop, not written
-   from memory.
+   Everything textual is measured at 4.5:1 or better on the ground it sits on,
+   and nothing dense is set below 14px.
    =========================================================================== */
 
 :root {
+  /* Grounds. Three the reader sees, two the table alternates between. */
   --ink:        #10151d;
   --ink-2:      #161c26;
   --term:       #0a0e14;
-  --rule:       #2e3a4a;
-  --hair:       #212a36;
+  --stripe:     #171e29;   /* zebra, 1.09 vs ink: felt, not seen */
+  --row-hot:    #1e2836;   /* row under the cursor, 1.23 vs ink */
 
-  --bone:       #dfe3e6;
-  --bone-dim:   #c2c5c7;
-  --muted:      #9ca2a3;
-  --faint:      #868d94;
+  /* Structure. Both were invisible before: 1.26 and 1.59 against the page.
+     A dense reference is read by its rules, so they have to be there. */
+  --hair:       #3b4a5e;   /* 2.03 on ink: row separators, fine borders */
+  --rule:       #556a86;   /* 3.31 on ink: header underlines, dividers */
+
+  /* Ink. Four tiers, each one measured on every ground it can land on. */
+  --bone:       #dfe3e6;   /* 14.2 on ink */
+  --bone-dim:   #c2c5c7;   /* 10.6 */
+  --muted:      #9ca2a3;   /*  7.1 */
+  --faint:      #8b929a;   /*  5.8 on ink, 4.7 on the hover row */
 
   --blue-deep:  #162849;
-  --blue:       #31425f;
-  --blue-lift:  #6d95d6;
-  --blue-bright:#8fb2e8;
-  --clay:       #dc9289;
+  --blue-lift:  #6d95d6;   /*  6.0 on ink */
+  --blue-bright:#8fb2e8;   /*  8.5 */
+  --clay:       #dc9289;   /*  7.4, refusals only */
 
   --display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", "Segoe UI Mono", "Roboto Mono", Consolas, monospace;
+
+  /* One mono scale, four steps. The page had fourteen sizes between 0.655rem
+     and 0.95rem, which is no hierarchy at all. Roles are told apart by weight,
+     colour and tracking instead, and nothing dense sits below 14px. */
+  --t-label: 0.75rem;      /* 12px, uppercase: th, caption, dt, tags */
+  --t-chrome: 0.8125rem;   /* 13px: margin index, colophon, top strip */
+  --t-dense: 0.875rem;     /* 14px: table cells, dd, notes, terminal blocks */
+  --t-mono-h: 0.9375rem;   /* 15px: h3 */
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --pad: clamp(1.1rem, 4.5vw, 3rem);
@@ -70,9 +84,22 @@ body {
   font-family: var(--display);
   font-size: clamp(1rem, 0.95rem + 0.22vw, 1.06rem);
   font-variation-settings: "opsz" 14;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  line-height: 1.62;
+  font-kerning: normal;
+  /* No overflow-x: hidden. It was hiding real overflow rather than fixing it;
+     anything wide now scrolls inside its own box. */
+}
+
+/* Every mono span reads the same wherever it sits. Before this, code inside a
+   note, the masthead or the colophon fell back to the browser's default
+   monospace at full size and clashed with the serif around it. */
+code, kbd, samp { font-family: var(--mono); font-variant-ligatures: none; }
+/* Mono runs large against a serif, so it steps down inside serif prose only.
+   Inside a block that is already mono it is the same face and stays at 1em,
+   which is what kept the colophon's code spans down at 11.4px. */
+.lede code, .masthead p code { font-size: 0.875em; }
+.lede code, td code, dd code, li code, .note code, .masthead p code, .colophon p code {
+  color: var(--blue-bright);
 }
 
 a { color: var(--blue-lift); text-decoration-thickness: 1px; text-underline-offset: 0.2em; transition: color 130ms var(--ease); }
@@ -96,15 +123,15 @@ a:hover { color: var(--blue-bright); }
   justify-content: space-between;
   padding-block: 1rem 0.9rem;
   border-bottom: 1px solid var(--hair);
-  font-family: var(--mono); font-size: 0.73rem; letter-spacing: 0.08em;
-  color: var(--faint);
+  font-family: var(--mono); font-size: var(--t-chrome); letter-spacing: 0.06em;
+  color: var(--muted);
 }
 .strip .wordmark { display: inline-flex; align-items: center; gap: 0.72rem; color: var(--bone); letter-spacing: 0.42em; font-weight: 600; text-decoration: none; }
 .strip .wordmark:hover { color: var(--bone); }
 /* The whole logo, never a crop: the four horses are the identity. */
 .strip .wordmark img { flex: none; width: 24px; height: 24px; border: 1px solid var(--rule); }
 .strip nav { display: flex; gap: 1.3rem; flex-wrap: wrap; }
-.strip nav a { color: var(--muted); text-decoration: none; padding-block: 0.55rem; margin-block: -0.55rem; }
+.strip nav a { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; min-height: 44px; margin-block: -0.7rem; }
 .strip nav a:hover { color: var(--bone); }
 .strip nav a[aria-current="page"] { color: var(--bone); }
 
@@ -119,28 +146,56 @@ a:hover { color: var(--blue-bright); }
   margin: 0 0 0.8rem; max-width: 18ch; text-wrap: balance;
 }
 .masthead p { margin: 0; max-width: 62ch; color: var(--bone-dim); text-wrap: pretty; }
-.masthead .stamp { font-family: var(--mono); font-size: 0.73rem; letter-spacing: 0.2em; text-transform: uppercase; color: var(--blue-lift); margin: 0 0 1rem; }
+.masthead .stamp { font-family: var(--mono); font-size: var(--t-label); font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; color: var(--blue-lift); margin: 0 0 1rem; }
 
 /* --------------------------------------------------------------- sections -- */
 
 .shell { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: clamp(1.5rem, 5vw, 3.5rem); align-items: start; }
 @media (max-width: 1000px) { .shell { grid-template-columns: minmax(0, 1fr); } }
 
-.index { position: sticky; top: 2.4rem; padding-top: var(--s-sec); font-family: var(--mono); font-size: 0.735rem; }
+.index { position: sticky; top: 2.4rem; padding-top: var(--s-sec); font-family: var(--mono); font-size: var(--t-chrome); }
 @media (max-width: 1000px) { .index { display: none; } }
 .index ol { list-style: none; margin: 0; padding: 0; }
-.index a { display: block; padding: 0.4rem 0; color: var(--faint); text-decoration: none; transition: color 150ms var(--ease); }
+.index a { display: block; padding: 0.42rem 0; color: var(--faint); text-decoration: none; transition: color 150ms var(--ease); }
 .index a:hover { color: var(--bone-dim); }
 .index a[aria-current="location"] { color: var(--bone); }
-.index .n { color: var(--rule); margin-right: 0.55rem; transition: color 150ms var(--ease); }
-.index a:hover .n { color: var(--blue); }
-.index a[aria-current="location"] .n { color: var(--blue-lift); }
+/* The numerals were --rule on --ink: 1.59:1, which is not a colour, it is an
+   absence. They are the thing you count sections by, so they get real ink. */
+.index .n { color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 0.55rem; transition: color 150ms var(--ease); }
+.index a:hover .n { color: var(--blue-lift); }
+.index a[aria-current="location"] .n { color: var(--blue-bright); }
+
+/* Below 1000px the margin index disappears, and a seven-section reference with
+   no way to jump is a scroll. This is the same list, laid on its side. */
+.jump { display: none; }
+@media (max-width: 1000px) {
+  .jump {
+    display: block; position: sticky; top: 0; z-index: 20;
+    /* Full bleed, with the gutter put back as padding so the first item lines
+       up with the body text instead of being clipped at the screen edge. */
+    width: 100%; padding-inline: var(--pad);
+    background: color-mix(in srgb, var(--ink) 94%, transparent);
+    backdrop-filter: blur(6px);
+    border-bottom: 1px solid var(--hair);
+  }
+  .jump ol {
+    display: flex; gap: 1.15rem; list-style: none; margin: 0; padding: 0;
+    overflow-x: auto; scrollbar-width: none;
+    font-family: var(--mono); font-size: var(--t-chrome); white-space: nowrap;
+  }
+  .jump ol::-webkit-scrollbar { display: none; }
+  /* 44px of thumb, not 31. */
+  .jump a { color: var(--faint); text-decoration: none; display: flex; align-items: center; min-height: 44px; }
+  .jump a[aria-current="location"] { color: var(--bone); box-shadow: 0 2px 0 var(--blue-lift); }
+  .jump .n { color: var(--faint); margin-right: 0.4rem; font-variant-numeric: tabular-nums; }
+  .jump a[aria-current="location"] .n { color: var(--blue-bright); }
+}
 
 section { padding-block: var(--s-sec); }
 section + section { border-top: 1px solid var(--hair); }
 
 .head { display: flex; align-items: baseline; gap: clamp(0.8rem, 2.5vw, 1.5rem); margin-bottom: 1rem; }
-.head .no { font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.2em; color: var(--blue-lift); padding-top: 0.35rem; white-space: nowrap; }
+.head .no { font-family: var(--mono); font-size: var(--t-label); font-weight: 600; letter-spacing: 0.18em; color: var(--blue-lift); padding-top: 0.4rem; white-space: nowrap; }
 h2 {
   font-family: var(--display);
   font-size: clamp(1.5rem, 1rem + 1.9vw, 2.3rem);
@@ -148,76 +203,129 @@ h2 {
   line-height: 1.06; letter-spacing: -0.017em; color: var(--bone); margin: 0;
   max-width: 24ch; text-wrap: balance;
 }
-h3 { font-family: var(--mono); font-size: 0.9rem; font-weight: 600; letter-spacing: 0.03em; color: var(--bone); margin: var(--s-3) 0 0.7rem; }
+/* A mono subhead, set apart from the label tier by weight and a rule rather
+   than by a tenth of a rem: the old 0.9rem sat too close to everything else. */
+h3 {
+  font-family: var(--mono); font-size: var(--t-mono-h); font-weight: 600;
+  letter-spacing: 0.02em; color: var(--bone);
+  margin: var(--s-3) 0 0.85rem; padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--hair);
+}
 h3:first-of-type { margin-top: var(--s-2); }
 .lede { max-width: 68ch; color: var(--bone-dim); margin: 0 0 var(--s-2); text-wrap: pretty; }
-.lede code, td code, dd code, li code { font-family: var(--mono); font-size: 0.87em; color: var(--blue-bright); }
 
 /* ------------------------------------------------------------ the tables -- */
 
-.wrap { overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.775rem; line-height: 1.55; }
-caption { text-align: left; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); padding-bottom: 0.55rem; }
-th { text-align: left; font-weight: 500; color: var(--faint); font-size: 0.665rem; letter-spacing: 0.17em; text-transform: uppercase; padding: 0 0.9rem 0.5rem 0; border-bottom: 1px solid var(--rule); white-space: nowrap; }
-td { padding: 0.5rem 0.9rem 0.5rem 0; border-bottom: 1px solid var(--hair); vertical-align: top; color: var(--bone-dim); }
+/* Each table scrolls in its own box, never the page. The box is focusable so a
+   keyboard can reach the scroll (WCAG 2.1.1), and the fade on the right edge
+   says there is more table off-screen. */
+.wrap {
+  overflow-x: auto; overscroll-behavior-x: contain;
+  scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
+  padding-bottom: 0.15rem;
+}
+.wrap:focus-visible { outline: 2px solid var(--blue-bright); outline-offset: 4px; }
+/* Says the table runs past the edge, and only when it does. */
+.wrap[data-scrolls] { border-right: 1px solid var(--rule); }
+.wrap[data-scrolls]::after {
+  content: "scrolls \2192"; display: block;
+  font-family: var(--mono); font-size: var(--t-label); letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--faint);
+  padding-top: 0.6rem; position: sticky; left: 0;
+}
+
+table {
+  width: 100%; border-collapse: collapse; table-layout: fixed;
+  font-family: var(--mono);
+  font-size: var(--t-dense);          /* 14px, up from 12.4px */
+  line-height: 1.65;                  /* light on dark wants the extra */
+  font-variant-numeric: tabular-nums;
+  font-variant-ligatures: none;
+}
+caption {
+  text-align: left; font-family: var(--mono);
+  font-size: var(--t-label); font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); padding-bottom: 0.7rem;
+}
+/* Column headers were the dimmest thing on the page at the smallest size, and
+   they are what you read the table by. Bigger, heavier, and two ink tiers up. */
+th {
+  text-align: left; font-weight: 600; color: var(--muted);
+  font-size: var(--t-label); letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 0 1.1rem 0.6rem 0; border-bottom: 1px solid var(--rule);
+  white-space: nowrap;
+}
+td {
+  padding: 0.66rem 1.1rem 0.66rem 0; border-bottom: 1px solid var(--hair);
+  vertical-align: top; color: var(--bone-dim); overflow-wrap: break-word;
+}
 td:last-child, th:last-child { padding-right: 0; }
-tbody tr:hover td { background: var(--ink-2); }
+/* Two cues for tracking a row across four columns, not one: a hairline that is
+   actually visible, and a stripe underneath it. */
+tbody tr:nth-child(even) td { background: var(--stripe); }
+tbody tr:hover td { background: var(--row-hot); }
 td b, th b { color: var(--bone); font-weight: 600; }
-td .k { color: var(--blue-bright); white-space: nowrap; }
+td .k { color: var(--blue-bright); font-weight: 500; white-space: nowrap; }
 td .d { color: var(--faint); }
 td .no { color: var(--clay); }
-/* Auto layout gives the widest column the room and strands the narrow ones, so
-   the two reference tables with a short middle column get told what to take. */
-.cols { table-layout: fixed; }
-.cols th:first-child, .cols td:first-child { width: 8.5rem; }
-.cols th:nth-child(2), .cols td:nth-child(2) { width: 30%; }
-.cols td { overflow-wrap: anywhere; }
+/* Fixed layout plus a per-table floor: auto layout handed the widest column the
+   room and crushed the descriptions. Below the floor the box scrolls. */
+.wrap table { min-width: var(--tbl-min, 32rem); }
 
 /* a terminal block, for real command output */
 pre.out {
-  margin: 0 0 var(--s-2); padding: 0.9rem 0.95rem; border: 1px solid var(--hair);
+  margin: 0 0 var(--s-2); padding: 1.05rem 1.1rem; border: 1px solid var(--hair);
   background: var(--term); overflow-x: auto; font-family: var(--mono);
-  font-size: clamp(0.68rem, 0.55rem + 0.42vw, 0.79rem); line-height: 1.6; color: var(--bone-dim);
+  font-size: var(--t-dense); line-height: 1.68; color: var(--bone-dim);
+  font-variant-ligatures: none; tab-size: 2;
   scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
 }
-pre.out b { color: var(--bone); font-weight: 400; }
+pre.out:focus-visible { outline: 2px solid var(--blue-bright); outline-offset: 2px; }
+pre.out b { color: var(--bone); font-weight: 600; }
 pre.out i { color: var(--faint); font-style: normal; }
-pre.out u { color: var(--blue-lift); text-decoration: none; }
+pre.out u { color: var(--blue-lift); text-decoration: none; font-weight: 500; }
 
 /* the two run modes, side by side */
 .modes { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border: 1px solid var(--hair); }
 @media (max-width: 820px) { .modes { grid-template-columns: minmax(0, 1fr); } }
-.mode { padding: 1.1rem 1.05rem 1.25rem; min-width: 0; }
+.mode { padding: 1.3rem 1.25rem 1.45rem; min-width: 0; }
 .mode + .mode { border-left: 1px solid var(--hair); }
 @media (max-width: 820px) { .mode + .mode { border-left: 0; border-top: 1px solid var(--hair); } }
-.mode h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
-.mode .tag { display: block; font-family: var(--mono); font-size: 0.665rem; letter-spacing: 0.17em; text-transform: uppercase; color: var(--faint); margin-bottom: 0.85rem; }
-.mode dl { margin: 0; font-family: var(--mono); font-size: 0.765rem; line-height: 1.6; }
-.mode dt { color: var(--faint); font-size: 0.655rem; letter-spacing: 0.17em; text-transform: uppercase; margin-top: 0.85rem; }
-.mode dt:first-of-type { margin-top: 0; }
-.mode dd { margin: 0.2rem 0 0; color: var(--bone-dim); }
-.mode pre { margin: 0.35rem 0 0; padding: 0.6rem 0.65rem; background: var(--term); border: 1px solid var(--hair);
-  overflow-x: auto; font-family: var(--mono); font-size: 0.72rem; line-height: 1.55; color: var(--bone-dim);
-  scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
-
-.note { margin: var(--s-2) 0 0; padding: 0.85rem 0.95rem; background: var(--ink-2); border: 1px solid var(--hair);
-  font-family: var(--mono); font-size: 0.755rem; line-height: 1.65; color: var(--muted); max-width: 82ch; }
-.note b { color: var(--bone); font-weight: 500; }
-
-@media (max-width: 700px) {
-  .strip { font-size: 0.8rem; }
-  table { font-size: 0.8rem; }
-  .note, .mode dl { font-size: 0.8rem; }
+.mode h3 { margin: 0 0 0.3rem; font-size: var(--t-mono-h); border-bottom: 0; padding-bottom: 0; }
+.mode .tag { display: block; font-family: var(--mono); font-size: var(--t-label); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 1.05rem; }
+.mode dl { margin: 0; font-family: var(--mono); font-size: var(--t-dense); line-height: 1.68; }
+/* The term rows were 10.5px, the smallest type on the page, carrying the labels
+   that tell you which answer you are reading. Now the label tier, with a rule. */
+.mode dt {
+  color: var(--muted); font-size: var(--t-label); font-weight: 600;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  margin-top: 1.25rem; padding-bottom: 0.35rem; border-bottom: 1px solid var(--hair);
 }
+.mode dt:first-of-type { margin-top: 0; }
+.mode dd { margin: 0.5rem 0 0; color: var(--bone-dim); overflow-wrap: break-word; }
+.mode dd .k { color: var(--blue-bright); font-weight: 500; }
+.mode pre { margin: 0.45rem 0 0; padding: 0.75rem 0.8rem; background: var(--term); border: 1px solid var(--hair);
+  overflow-x: auto; font-family: var(--mono); font-size: var(--t-dense); line-height: 1.65; color: var(--bone-dim);
+  font-variant-ligatures: none;
+  scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+.mode pre:focus-visible { outline: 2px solid var(--blue-bright); outline-offset: 2px; }
+
+/* Notes carry the caveats, so they were the wrong thing to make the dimmest
+   text on the page. Up one ink tier and up to the dense size. */
+.note { margin: var(--s-2) 0 0; padding: 1rem 1.15rem; background: var(--ink-2);
+  border: 1px solid var(--hair);
+  font-family: var(--mono); font-size: var(--t-dense); line-height: 1.72;
+  color: var(--bone-dim); max-width: 78ch; }
+.note b { color: var(--bone); font-weight: 600; }
 
 /* ---------------------------------------------------------------- colophon -- */
 
-.colophon { border-top: 1px solid var(--rule); padding-block: clamp(2.2rem, 5vw, 3rem) 2.6rem; font-family: var(--mono); font-size: 0.775rem; color: var(--faint); }
+.colophon { border-top: 1px solid var(--rule); padding-block: clamp(2.2rem, 5vw, 3rem) 2.6rem; font-family: var(--mono); font-size: var(--t-chrome); line-height: 1.7; color: var(--faint); }
 .colophon__grid { display: grid; grid-template-columns: 118px repeat(auto-fit, minmax(178px, 1fr)); gap: 1.7rem 2rem; align-items: start; }
 @media (max-width: 640px) { .colophon__grid { grid-template-columns: minmax(0, 1fr); } }
 .colophon img { width: 108px; height: auto; border: 1px solid var(--rule); }
-.colophon h2 { font-family: var(--mono); margin: 0 0 0.55rem; font-size: 0.665rem; line-height: 1.5;
-  letter-spacing: 0.19em; text-transform: uppercase; color: var(--muted); font-weight: 500; max-width: none; }
+.colophon h2 { font-family: var(--mono); margin: 0 0 0.7rem; font-size: var(--t-label); line-height: 1.5;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); font-weight: 600; max-width: none; }
 .colophon ul { list-style: none; margin: 0; padding: 0; line-height: 1.95; }
 .colophon p { margin: 0; line-height: 1.75; max-width: 36ch; }
 .colophon__end { margin-top: 2.1rem; padding-top: 1rem; border-top: 1px solid var(--hair); display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem; }
@@ -240,12 +348,22 @@ pre.out u { color: var(--blue-lift); text-decoration: none; }
 </div>
 
 <div class="hold masthead">
-  <p class="stamp">Reference &middot; v0.2.0</p>
-  <h1>Every command, field and key</h1>
-  <p>Read out of the code on <code>develop</code>: the help text is the parser's own output,
-  the fields are the dataclasses, the presets are the dict. Nothing here is written from
-  memory.</p>
+  <p class="stamp">v0.2.0</p>
+  <h1>Reference</h1>
+  <p>Every command, flag, profile field, and key binding.</p>
 </div>
+
+<nav class="jump" aria-label="Sections">
+  <ol>
+    <li><a href="#commands"><span class="n">01</span> Commands</a></li>
+    <li><a href="#modes"><span class="n">02</span> Run modes</a></li>
+    <li><a href="#keys"><span class="n">03</span> Keys</a></li>
+    <li><a href="#profile"><span class="n">04</span> Profile fields</a></li>
+    <li><a href="#agent"><span class="n">05</span> Agent fields</a></li>
+    <li><a href="#network"><span class="n">06</span> Network</a></li>
+    <li><a href="#env"><span class="n">07</span> Environment</a></li>
+  </ol>
+</nav>
 
 <div class="hold shell">
   <main id="ref">
@@ -286,11 +404,12 @@ options:
   -h, --help            show this help message and exit
   --version, -V         print the version and exit</pre>
 
-      <div class="wrap">
-        <table class="cols">
+      <div class="wrap" tabindex="0" role="region" aria-label="Flags, per subcommand">
+        <table style="--tbl-min:46rem">
+          <colgroup><col style="width:9rem"><col style="width:26%"><col></colgroup>
           <caption>Flags, per subcommand</caption>
           <thead>
-            <tr><th>Command</th><th>Positional</th><th>Flags</th></tr>
+            <tr><th scope="col">Command</th><th scope="col">Positional</th><th scope="col">Flags</th></tr>
           </thead>
           <tbody>
             <tr>
@@ -405,12 +524,13 @@ paddock run</pre></dd>
         <h2 id="h-keys">Chooser keys</h2>
       </div>
 
-      <p class="lede">What <code>?</code> shows, verbatim.</p>
+      <p class="lede">What <code>?</code> shows in the chooser.</p>
 
-      <div class="wrap">
-        <table>
+      <div class="wrap" tabindex="0" role="region" aria-label="Chooser keys">
+        <table style="--tbl-min:30rem">
+          <colgroup><col style="width:12rem"><col></colgroup>
           <caption>The keys</caption>
-          <thead><tr><th>Key</th><th>What it does</th></tr></thead>
+          <thead><tr><th scope="col">Key</th><th scope="col">What it does</th></tr></thead>
           <tbody>
             <tr><td><span class="k">up down, k j</span></td><td>move between fields, or between items</td></tr>
             <tr><td><span class="k">enter</span></td><td>open the field, take the item, press the button</td></tr>
@@ -445,10 +565,11 @@ paddock run</pre></dd>
       <code>name</code>. A field of the wrong type rejects the whole file rather than half
       applying it.</p>
 
-      <div class="wrap">
-        <table>
-          <caption>profiles.py, class Profile</caption>
-          <thead><tr><th>Field</th><th>Type</th><th>Default</th><th>What it decides</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Profile fields">
+        <table style="--tbl-min:50rem">
+          <colgroup><col style="width:12rem"><col style="width:6.5rem"><col style="width:13rem"><col></colgroup>
+          <caption>Fields, types and defaults</caption>
+          <thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">Default</th><th scope="col">What it decides</th></tr></thead>
           <tbody>
             <tr><td><span class="k">name</span></td><td>str</td><td><code>"custom"</code></td><td>Profile name. No empty string, no <code>/</code>, no leading dot</td></tr>
             <tr><td><span class="k">agent</span></td><td>str</td><td><code>"claude"</code></td><td>Key into the agent registry</td></tr>
@@ -459,16 +580,17 @@ paddock run</pre></dd>
             <tr><td><span class="k">shared_dir</span></td><td>str</td><td><code>""</code></td><td>The one host directory, read-write. Empty means an isolated scratch workdir instead</td></tr>
             <tr><td><span class="k">skills</span></td><td>list[str]</td><td><code>[]</code></td><td>Skills that exist inside the sandbox at all. <code>"*"</code> is every installed one</td></tr>
             <tr><td><span class="k">mcp</span></td><td>list[str]</td><td><code>[]</code></td><td>MCP servers written into the generated <code>.mcp.json</code></td></tr>
-            <tr><td><span class="k">deny_read</span></td><td>list[str]</td><td><code>["~/.ssh","~/.aws",<br>"~/.gnupg","~/.config/gh"]</code></td><td>Denied both ways on srt</td></tr>
+            <tr><td><span class="k">deny_read</span></td><td>list[str]</td><td><code>["~/.ssh",<wbr>"~/.aws",<wbr>"~/.gnupg",<wbr>"~/.config/gh"]</code></td><td>Denied both ways on srt</td></tr>
             <tr><td><span class="k">extra_allow_write</span></td><td>list[str]</td><td><code>[]</code></td><td>Writable paths beyond the workdir, the run dir and <code>/tmp</code></td></tr>
           </tbody>
         </table>
       </div>
 
       <h3>Built in</h3>
-      <div class="wrap">
-        <table>
-          <thead><tr><th>Profile</th><th>Agent</th><th>Tools</th><th>Network</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Built-in profiles">
+        <table style="--tbl-min:46rem">
+          <colgroup><col style="width:11rem"><col style="width:6.5rem"><col><col style="width:15rem"></colgroup>
+          <thead><tr><th scope="col">Profile</th><th scope="col">Agent</th><th scope="col">Tools</th><th scope="col">Network</th></tr></thead>
           <tbody>
             <tr><td><span class="k">claude-default</span></td><td>claude</td><td>git rg fd jq curl node npm npx uv python3</td><td>anthropic, github, npm, pypi/uv</td></tr>
             <tr><td><span class="k">offline-shell</span></td><td>shell</td><td>git rg fd jq</td><td><span class="d">none</span></td></tr>
@@ -487,10 +609,11 @@ paddock run</pre></dd>
       <p class="lede">One JSON file per agent, in <code>~/.config/paddock/agents/</code>. An
       entry with no <code>command</code> is unusable and is skipped.</p>
 
-      <div class="wrap">
-        <table>
-          <caption>agents.py, class AgentSpec</caption>
-          <thead><tr><th>Field</th><th>Type</th><th>What it decides</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Agent fields">
+        <table style="--tbl-min:44rem">
+          <colgroup><col style="width:12rem"><col style="width:6.5rem"><col></colgroup>
+          <caption>Fields and what they decide</caption>
+          <thead><tr><th scope="col">Field</th><th scope="col">Type</th><th scope="col">What it decides</th></tr></thead>
           <tbody>
             <tr><td><span class="k">name</span></td><td>str</td><td>Display name. Falls back to the filename stem</td></tr>
             <tr><td><span class="k">command</span></td><td>str</td><td>The executable run inside the sandbox, with its flags</td></tr>
@@ -505,9 +628,10 @@ paddock run</pre></dd>
       </div>
 
       <h3>Built in</h3>
-      <div class="wrap">
-        <table>
-          <thead><tr><th>Key</th><th>Command</th><th>API domains</th><th>Needs</th><th>Image and install</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Built-in agents">
+        <table style="--tbl-min:56rem">
+          <colgroup><col style="width:7.5rem"><col style="width:9rem"><col><col style="width:5.5rem"><col style="width:15rem"></colgroup>
+          <thead><tr><th scope="col">Key</th><th scope="col">Command</th><th scope="col">API domains</th><th scope="col">Needs</th><th scope="col">Image and install</th></tr></thead>
           <tbody>
             <tr><td><span class="k">claude</span></td><td>claude</td><td>api.anthropic.com, *.anthropic.com</td><td><span class="d">none</span></td><td>node:22-slim<br><span class="d">npm install -g @anthropic-ai/claude-code@2.1.239</span></td></tr>
             <tr><td><span class="k">codex</span></td><td>codex</td><td>api.openai.com, chatgpt.com, auth.openai.com</td><td>node</td><td><span class="d">none</span></td></tr>
@@ -548,10 +672,11 @@ paddock run</pre></dd>
         <h2 id="h-network">Network presets</h2>
       </div>
 
-      <div class="wrap">
-        <table>
-          <caption>profiles.py, NETWORK_PRESETS</caption>
-          <thead><tr><th>Preset</th><th>What it opens</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Network presets">
+        <table style="--tbl-min:38rem">
+          <colgroup><col style="width:14rem"><col></colgroup>
+          <caption>Presets and the domains they open</caption>
+          <thead><tr><th scope="col">Preset</th><th scope="col">What it opens</th></tr></thead>
           <tbody>
             <tr><td><span class="k">anthropic</span></td><td>api.anthropic.com, *.anthropic.com</td></tr>
             <tr><td><span class="k">openai</span></td><td>api.openai.com, chatgpt.com, auth.openai.com</td></tr>
@@ -562,7 +687,7 @@ paddock run</pre></dd>
             <tr><td><span class="k">crates.io</span></td><td>crates.io, *.crates.io, static.crates.io</td></tr>
             <tr><td><span class="k">homebrew</span></td><td>formulae.brew.sh, *.brew.sh, ghcr.io, pkg-containers.githubusercontent.com</td></tr>
             <tr><td><span class="k">local services (localhost)</span></td><td>localhost, 127.0.0.1. Portless, so it opens <b>every service listening on this machine's loopback, whatever port</b></td></tr>
-            <tr><td><span class="k">everything</span></td><td>Empty on purpose: the backend reads the key, not a list. <b>msb only</b>, as <code>--net-default allow</code>. srt refuses it and says to use msb</td></tr>
+            <tr><td><span class="k">everything</span></td><td>Every domain, on any port. <b>msb only</b>, as <code>--net-default allow</code>. srt refuses it and says to use msb</td></tr>
           </tbody>
         </table>
       </div>
@@ -580,9 +705,10 @@ paddock run</pre></dd>
       </div>
 
       <h3>What paddock reads</h3>
-      <div class="wrap">
-        <table>
-          <thead><tr><th>Variable</th><th>Default</th><th>What it moves</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Environment variables paddock reads">
+        <table style="--tbl-min:46rem">
+          <colgroup><col style="width:15rem"><col style="width:12rem"><col></colgroup>
+          <thead><tr><th scope="col">Variable</th><th scope="col">Default</th><th scope="col">What it moves</th></tr></thead>
           <tbody>
             <tr><td><span class="k">PADDOCK_CONFIG_DIR</span></td><td><code>~/.config/paddock</code></td><td>Where <code>profiles/</code> and <code>agents/</code> live</td></tr>
             <tr><td><span class="k">PADDOCK_STATE_DIR</span></td><td><code>~/.local/state/paddock</code></td><td>Run dirs, the session registry and the logs</td></tr>
@@ -595,14 +721,15 @@ paddock run</pre></dd>
           </tbody>
         </table>
       </div>
-      <p class="note"><b>An empty value falls back to the default.</b> The three path variables
-      use <code>or</code> rather than a lookup default, so <code>PADDOCK_STATE_DIR=</code>
-      cannot resolve to the current directory.</p>
+      <p class="note"><b>An empty value falls back to the default.</b> Setting
+      <code>PADDOCK_STATE_DIR=</code> gives you <code>~/.local/state/paddock</code>, never the
+      current directory.</p>
 
       <h3>What the sandbox is given</h3>
-      <div class="wrap">
-        <table>
-          <thead><tr><th>Variable</th><th>Set when</th><th>Value</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Environment variables given to the sandbox">
+        <table style="--tbl-min:46rem">
+          <colgroup><col style="width:14rem"><col style="width:12.5rem"><col></colgroup>
+          <thead><tr><th scope="col">Variable</th><th scope="col">Set when</th><th scope="col">Value</th></tr></thead>
           <tbody>
             <tr><td><span class="k">CLAUDE_CONFIG_DIR</span></td><td>agent is <code>claude</code></td><td>The synthesized config dir: the run dir's <code>config/</code> on srt, <code>/paddock-config</code> in an msb guest. It is the only agent that can be redirected today</td></tr>
             <tr><td><span class="k">DISABLE_AUTOUPDATER</span></td><td>agent is <code>claude</code></td><td><code>1</code></td></tr>
@@ -619,9 +746,10 @@ paddock run</pre></dd>
       proxy variables srt needs.</p>
 
       <h3>The install script</h3>
-      <div class="wrap">
-        <table>
-          <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
+      <div class="wrap" tabindex="0" role="region" aria-label="Install script variables">
+        <table style="--tbl-min:34rem">
+          <colgroup><col style="width:13rem"><col></colgroup>
+          <thead><tr><th scope="col">Variable</th><th scope="col">What it does</th></tr></thead>
           <tbody>
             <tr><td><span class="k">PADDOCK_REF</span></td><td>Install that branch or tag instead of the default branch</td></tr>
             <tr><td><span class="k">PADDOCK_YES</span></td><td><code>1</code> answers yes to the prompts, for unattended installs</td></tr>
@@ -667,9 +795,9 @@ paddock run</pre></dd>
         </ul>
       </div>
       <div>
-        <h2>About this page</h2>
-        <p>Generated from the code on <code>develop</code> at v0.2.0. If a flag here disagrees
-        with <code>paddock --help</code>, the command is right and this page is stale.</p>
+        <h2>Version</h2>
+        <p>Covers paddock v0.2.0. If a flag here disagrees with <code>paddock --help</code>,
+        trust the command.</p>
       </div>
     </div>
     <div class="colophon__end">
@@ -679,24 +807,87 @@ paddock run</pre></dd>
 </footer>
 
 <script>
-/* Mark the section the reader is in, on the margin index. */
+/* Mark the section the reader is in, on the margin index and on the narrow
+   jump bar. Exactly one at a time: the old version set aria-current on every
+   intersecting section, so two numbers lit up at once and neither meant
+   anything. Whichever section covers the reading line wins. */
 (function () {
-  var links = document.querySelectorAll('.index a');
-  if (!links.length || !window.IntersectionObserver) { return; }
-  var by = {};
-  links.forEach(function (a) { by[a.getAttribute('href').slice(1)] = a; });
-  var seen = new IntersectionObserver(function (entries) {
-    entries.forEach(function (e) {
-      var a = by[e.target.id];
-      if (!a) { return; }
-      if (e.isIntersecting) { a.setAttribute('aria-current', 'location'); }
-      else { a.removeAttribute('aria-current'); }
-    });
-  }, { rootMargin: '-45% 0px -50% 0px' });
-  Object.keys(by).forEach(function (id) {
-    var el = document.getElementById(id);
-    if (el) { seen.observe(el); }
+  var links = document.querySelectorAll('.index a, .jump a');
+  if (!links.length) { return; }
+  var groups = {};
+  links.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    (groups[id] = groups[id] || []).push(a);
   });
+  var ids = Object.keys(groups);
+  var sections = ids.map(function (id) { return document.getElementById(id); });
+  var current = null;
+
+  function mark() {
+    var line = window.innerHeight * 0.35;
+    var pick = null, firstSeen = null;
+    for (var i = 0; i < sections.length; i++) {
+      var el = sections[i];
+      if (!el) { continue; }
+      var box = el.getBoundingClientRect();
+      if (box.top <= line) { pick = ids[i]; }
+      if (firstSeen === null && box.bottom > 0) { firstSeen = ids[i]; }
+    }
+    /* Still up in the masthead: point at the section about to be read rather
+       than at nothing, so the index never looks switched off. */
+    if (!pick) { pick = firstSeen; }
+    if (pick === current) { return; }
+    if (current) {
+      groups[current].forEach(function (a) { a.removeAttribute('aria-current'); });
+    }
+    current = pick;
+    if (current) {
+      groups[current].forEach(function (a) { a.setAttribute('aria-current', 'location'); });
+      /* Keep the live item in view on the narrow bar. The rail is scrolled
+         directly rather than through scrollIntoView, which would also be
+         entitled to move the page. */
+      var live = document.querySelector('.jump a[aria-current="location"]');
+      var rail = live && live.closest('ol');
+      if (rail && rail.clientWidth < rail.scrollWidth) {
+        var mid = live.offsetLeft + live.offsetWidth / 2 - rail.clientWidth / 2;
+        rail.scrollLeft = Math.max(0, mid);
+      }
+    }
+  }
+
+  var queued = false;
+  function onScroll() {
+    if (queued) { return; }
+    queued = true;
+    requestAnimationFrame(function () { queued = false; mark(); });
+  }
+  addEventListener('scroll', onScroll, { passive: true });
+  addEventListener('resize', onScroll, { passive: true });
+  mark();
+})();
+
+/* A table that runs past its box says so, and only while it does. The box is
+   already focusable so the scroll is reachable from the keyboard. */
+(function () {
+  var wraps = [].slice.call(document.querySelectorAll('.wrap'));
+  if (!wraps.length) { return; }
+  function measure() {
+    wraps.forEach(function (w) {
+      if (w.scrollWidth - w.clientWidth > 2) {
+        w.setAttribute('data-scrolls', '');
+        w.setAttribute('tabindex', '0');
+        w.setAttribute('role', 'region');
+      } else {
+        /* It fits, so it is not a scroll box: no tab stop, no landmark. */
+        w.removeAttribute('data-scrolls');
+        w.removeAttribute('tabindex');
+        w.removeAttribute('role');
+      }
+    });
+  }
+  measure();
+  addEventListener('resize', measure, { passive: true });
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(measure); }
 })();
 </script>
 </body>
