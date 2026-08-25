@@ -39,7 +39,7 @@ from paddock.backends import (
     new_run_dir,
     write_launch_script,
 )
-from paddock.profiles import Profile
+from paddock.profiles import Profile, loopback_port, names_loopback
 from paddock.synth_config import SynthConfig
 
 logger = log.get_logger(__name__)
@@ -76,6 +76,18 @@ BOOT_TIMEOUT = "110s"
 
 # Sandbox names have to be unique on the host, not just in this registry.
 HANDLE_PREFIX = "paddock-"
+
+# What a rule aims at to mean this machine. The target is the sandbox's own gateway and
+# nothing else: measured on msb 0.6.13, a guest holding `allow@host` reaches a host server
+# through the gateway and is refused at the host's LAN address for the same server. The
+# gateway connects onward from the host itself, so it arrives at the host's loopback: a
+# server bound to 127.0.0.1 is reachable without being published to anything (SPEC §2.2).
+HOST_GROUP = "host"
+
+# The name the guest resolves to its own gateway. msb writes it into the guest's /etc/hosts
+# at boot, so it needs no DNS rule and no per-sandbox address: every sandbox gets a
+# different /30, and this one string is correct in all of them.
+HOST_ALIAS = "host.microsandbox.internal"
 
 # msb has hung once with no timeout (see the spike). Nothing here takes a minute, except a
 # first image pull, and a popup that never returns is worse than one that says why.
@@ -137,6 +149,17 @@ def net_rules(domains: list[str], everything: bool = False) -> list[str]:
     A rule names a host, a protocol and a port, so this is https to those hosts and
     nothing else. No domains at all means no network, and no DNS to resolve it with.
 
+    **A loopback domain is not one of those hosts.** The guest has its own kernel, so
+    `allow@127.0.0.1` would name the guest's own loopback and reach nothing. What the
+    profile meant is this machine, which msb spells as the `host` group. The rule carries
+    the port the entry named, so `localhost:8080` is one port on one address, and a bare
+    `localhost` is every port on it, which is the same width srt gives that tick and the
+    reason to name a port instead (SPEC §2.1, §2.2).
+
+    A profile with only loopback in it gets no `allow@dns` either. The gateway is a name
+    in the guest's own /etc/hosts, so nothing has to be resolved, and DNS is the one hole
+    in this policy: it answers for every name, not only the allowed ones.
+
     `everything` is the profile asking for no allowlist at all (SPEC §2.1), which msb
     expresses as a default rather than a rule: `--net-default allow` with nothing after
     it, so every host, every port and DNS with it. srt has no form of this at all and
@@ -145,12 +168,42 @@ def net_rules(domains: list[str], everything: bool = False) -> list[str]:
     if everything:
         return ["--net-default", "allow"]
     rules = ["--net-default", "deny"]
-    if not domains:
-        return rules
-    rules += ["--net-rule", "allow@dns"]
-    for domain in domains:
-        rules += ["--net-rule", f"allow@{domain}:tcp:443"]
+    remote = [domain for domain in domains if not names_loopback(domain)]
+    local = {loopback_port(domain) for domain in domains if names_loopback(domain)}
+    if remote:
+        rules += ["--net-rule", "allow@dns"]
+        for domain in remote:
+            rules += ["--net-rule", f"allow@{domain}:tcp:443"]
+    if None in local:
+        # One entry asked for the whole machine, so the ports named alongside it are
+        # already inside the grant and a rule apiece would say nothing extra.
+        rules += ["--net-rule", f"allow@{HOST_GROUP}"]
+    else:
+        for port in sorted(port for port in local if port is not None):
+            rules += ["--net-rule", f"allow@{HOST_GROUP}:tcp:{port}"]
     return rules
+
+
+def inference_env(domains: list[str]) -> dict[str, str]:
+    """Where the local inference server is, for a guest whose profile opened its port.
+
+    A server on a host port is the whole mechanism: ollama, LM Studio, llama.cpp's server
+    and vLLM are one shape, and paddock knows the port because the profile named it. So
+    `OPENAI_BASE_URL` is what this sets, the variable an OpenAI-shaped client reads, which
+    is nearly all of them. `OLLAMA_HOST` is a courtesy for clients that read that instead;
+    it names the same endpoint without the `/v1` suffix those APIs do not use.
+
+    Exactly one local port, or nothing. Two open ports are a server and something else,
+    a dev server or a database, and paddock has no way to tell which one answers prompts,
+    so it names neither rather than guessing wrong. A profile that opened the whole machine
+    named no port at all and gets no endpoint either: the rules let it through, and what
+    to call is left to whoever ticked that box.
+    """
+    ports = {port for port in map(loopback_port, domains) if port is not None}
+    if len(ports) != 1:
+        return {}
+    endpoint = f"http://{HOST_ALIAS}:{ports.pop()}"
+    return {"OPENAI_BASE_URL": f"{endpoint}/v1", "OLLAMA_HOST": endpoint}
 
 
 def create_argv(
@@ -167,6 +220,10 @@ def create_argv(
     (`copy_config_argv`), so nothing it writes there reaches the host. `-e` names that copy,
     and reaches every later exec, including the shell a tab attaches to, which is why the
     guest needs nothing from the host tab.
+
+    A local inference endpoint arrives the same way, and for the same reason: the tab that
+    attaches later is a shell in the guest, not a shell on the host, so what it knows about
+    the server has to have been set at boot.
     """
     argv = [
         find_msb(),
@@ -183,6 +240,8 @@ def create_argv(
         argv += ["--mount-dir", f"{synth.dir.resolve()}:{GUEST_CONFIG_SRC}:ro"]
         for name, value in synth.env.items():
             argv += ["-e", f"{name}={value}"]
+    for name, value in inference_env(domains).items():
+        argv += ["-e", f"{name}={value}"]
     return argv + [*net_rules(domains, everything), image]
 
 

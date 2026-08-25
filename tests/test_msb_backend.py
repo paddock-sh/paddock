@@ -14,7 +14,7 @@ from paddock.agents import AgentSpec
 from paddock.backends import RunNotFound, SandboxGone, Swept
 from paddock.backends import microsandbox as msb
 from paddock.backends.microsandbox import GUEST_CONFIG_SRC
-from paddock.profiles import NETWORK_ALL, Profile
+from paddock.profiles import LOCAL_SERVICES, NETWORK_ALL, Profile
 from paddock.synth_config import SynthConfig
 from tests.conftest import FakeClient, launch_command
 
@@ -174,6 +174,174 @@ def test_the_ordinary_case_is_untouched_by_the_allow_all_flag(
     ]
     assert msb.net_rules([]) == ["--net-default", "deny"]
     assert msb.net_rules([], everything=True) == ["--net-default", "allow"]
+
+
+# --- a local server, which is a host rule here ------------------------------
+
+
+def test_a_named_local_port_becomes_a_port_scoped_rule_at_the_gateway(
+    which: dict[str, str], tmp_path: Path
+) -> None:
+    """The guest's own loopback is not the host's, so the rule aims at msb's `host` group.
+
+    Measured on 0.6.13: the group is the gateway alone, and the gateway arrives at the
+    host's loopback, so a 127.0.0.1-bound server is reachable and the host's LAN address
+    is not (SPEC §2.2).
+    """
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, ["localhost:8080"], NO_CONFIG)
+
+    assert flag(argv, "--net-rule") == ["allow@host:tcp:8080"]
+    assert flag(argv, "--net-default") == ["deny"]
+
+
+def test_the_port_is_whatever_the_profile_named(which: dict[str, str]) -> None:
+    """No port is paddock's own. A server on 1234 is reached by saying 1234."""
+    assert msb.net_rules(["127.0.0.1:1234"]) == [
+        "--net-default", "deny", "--net-rule", "allow@host:tcp:1234"
+    ]
+
+
+def test_two_named_local_ports_are_two_rules(which: dict[str, str]) -> None:
+    """An inference server and a database are two grants, each as narrow as it was written."""
+    assert msb.net_rules(["localhost:5432", "127.0.0.1:8080"]) == [
+        "--net-default", "deny",
+        "--net-rule", "allow@host:tcp:5432",
+        "--net-rule", "allow@host:tcp:8080",
+    ]
+
+
+def test_a_loopback_entry_with_no_port_opens_every_port_on_this_machine(
+    which: dict[str, str],
+) -> None:
+    """The preset's own spelling names no port, so the grant is the width srt gives it.
+
+    That is the reason to name a port instead, and the reason the preset is never ticked
+    by default (SPEC §2.1, §2.2).
+    """
+    assert msb.net_rules(["127.0.0.1", "localhost"]) == [
+        "--net-default", "deny", "--net-rule", "allow@host"
+    ]
+
+
+def test_a_named_port_folds_into_a_grant_that_already_covers_it(which: dict[str, str]) -> None:
+    """Ticking the preset and naming a port is the wider of the two, said once."""
+    assert msb.net_rules(["localhost", "localhost:8080"]) == [
+        "--net-default", "deny", "--net-rule", "allow@host"
+    ]
+
+
+def test_a_local_only_profile_resolves_no_names_at_all(which: dict[str, str]) -> None:
+    """No `allow@dns`: the gateway is a name msb writes into the guest's own /etc/hosts,
+    so nothing has to be resolved, and a name lookup is a channel out (SPEC §2.2)."""
+    assert "allow@dns" not in msb.net_rules(["localhost:8080"])
+
+
+def test_a_loopback_domain_is_never_also_allowed_as_a_remote_host(which: dict[str, str]) -> None:
+    """The old spelling was `allow@127.0.0.1:tcp:443`, which named the guest's own loopback."""
+    rules = msb.net_rules(["127.0.0.1:8080", "github.com"])
+
+    assert rules == [
+        "--net-default", "deny",
+        "--net-rule", "allow@dns",
+        "--net-rule", "allow@github.com:tcp:443",
+        "--net-rule", "allow@host:tcp:8080",
+    ]
+
+
+def test_allow_all_still_writes_no_rule_when_the_profile_also_names_loopback(
+    which: dict[str, str],
+) -> None:
+    assert msb.net_rules(["localhost:8080"], everything=True) == ["--net-default", "allow"]
+
+
+# --- the endpoint the guest is given ---------------------------------------
+
+
+def test_opening_one_local_port_hands_the_guest_the_endpoint(
+    which: dict[str, str], tmp_path: Path
+) -> None:
+    """`OPENAI_BASE_URL` is what a client reads, and the alias is a courtesy beside it."""
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, ["localhost:8080"], NO_CONFIG)
+
+    assert flag(argv, "-e") == [
+        "OPENAI_BASE_URL=http://host.microsandbox.internal:8080/v1",
+        "OLLAMA_HOST=http://host.microsandbox.internal:8080",
+    ]
+
+
+def test_the_endpoint_is_a_name_and_not_an_address(which: dict[str, str]) -> None:
+    """Every sandbox gets its own /30 and its own gateway, so no address is knowable here.
+
+    msb writes the alias into the guest's /etc/hosts at boot, which is what makes a fixed
+    string correct for every sandbox.
+    """
+    assert msb.inference_env(["127.0.0.1:1234"]) == {
+        "OPENAI_BASE_URL": f"http://{msb.HOST_ALIAS}:1234/v1",
+        "OLLAMA_HOST": f"http://{msb.HOST_ALIAS}:1234",
+    }
+
+
+def test_a_profile_that_opened_no_local_port_is_told_about_no_endpoint(
+    which: dict[str, str], tmp_path: Path
+) -> None:
+    """Naming an endpoint the rules refuse would be a lie the guest cannot see through."""
+    argv = msb.create_argv("paddock-demo", "alpine", tmp_path, ["github.com"], NO_CONFIG)
+
+    assert flag(argv, "-e") == []
+    assert msb.inference_env([]) == {}
+
+
+def test_two_local_ports_name_no_endpoint_at_all(which: dict[str, str]) -> None:
+    """One of them answers prompts and paddock cannot tell which, so it points at neither."""
+    assert msb.inference_env(["127.0.0.1:5432", "localhost:8080"]) == {}
+
+
+def test_the_whole_machine_grant_names_no_endpoint(which: dict[str, str]) -> None:
+    """The preset alone named no port, so there is no endpoint to hand on."""
+    assert msb.inference_env(["localhost", "127.0.0.1"]) == {}
+
+
+def test_an_agents_own_api_domains_configure_the_port_end_to_end(
+    which: dict[str, str], msb_calls: list[list[str]], config_dir: Path
+) -> None:
+    """Where the port comes from: one entry in the agent's registry file, and nothing else.
+
+    A local-model agent declares the server it calls the same way any agent declares its
+    API. The rule and the endpoint both follow from that one string (SPEC §2.2, §5).
+    """
+    agents = config_dir / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "local.json").write_text(
+        json.dumps({"command": "sh", "image": "alpine", "api_domains": ["localhost:1234"]})
+    )
+
+    msb.prepare(Profile(agent="local", network_presets=[]))
+
+    argv = create_call(msb_calls)
+    assert flag(argv, "--net-rule") == ["allow@host:tcp:1234"]
+    assert "OPENAI_BASE_URL=http://host.microsandbox.internal:1234/v1" in flag(argv, "-e")
+
+
+def test_the_preset_carries_the_whole_machine_grant_through_a_prepared_session(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """End to end from the ticked box: the preset, and the rule it becomes on this backend."""
+    msb.prepare(Profile(agent="shell", network_presets=[LOCAL_SERVICES]))
+
+    argv = create_call(msb_calls)
+    assert flag(argv, "--net-rule") == ["allow@host"]
+    assert flag(argv, "-e") == []
+
+
+def test_no_inference_port_is_baked_into_paddock(which: dict[str, str]) -> None:
+    """The port is configuration, so no module may carry one of its own.
+
+    11434 is the port of one popular server. If it appears in the package, something has
+    been written for that server rather than for a server on a port the profile named.
+    """
+    sources = Path(msb.__file__).parent.parent.rglob("*.py")
+
+    assert [path.name for path in sources if "11434" in path.read_text()] == []
 
 
 def test_a_profile_that_opens_every_domain_boots_a_vm_that_can_reach_anything(

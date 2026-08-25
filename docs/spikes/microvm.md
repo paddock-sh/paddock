@@ -218,6 +218,12 @@ a target is an IP, a CIDR, a domain, a `*.example.com` suffix, or a group
 
 **Not by default, and that is the correct default. It needs an explicit rule.**
 
+> **Superseded in part.** The conclusion below, that the host must be named by
+> its LAN address and a loopback-bound server rebound to `0.0.0.0`, is wrong. A
+> rule aimed at the `host` group reaches the host's own loopback, and it can
+> carry a port. See
+> [Appendix: reaching a local inference server](#appendix-reaching-a-local-inference-server).
+
 With a host server on `*:18080`, a default-network guest reaches nothing:
 
 ```
@@ -613,6 +619,137 @@ error: sandbox not found: nosuchvm      # exit 1
 ```
 
 `probevm` and `/tmp/msbprobe` were removed afterwards.
+
+---
+
+## Appendix: reaching a local inference server
+
+Run against `msb` 0.6.13 on 2026-08-24, while the contained-local-model MVP was
+built. **This appendix corrects
+[question 4](#can-the-guest-reach-host-services), which measured the wrong thing.**
+
+The question there was whether a *default-network* guest reaches a host server.
+It does not, and the conclusion drawn was that the host has to be named by its
+LAN address and the server bound to `0.0.0.0`. Both are wrong once there is an
+explicit rule, and for a local model server the second would have been the
+opposite of the point: exposing the model to the network in order to reach it
+from a sandbox.
+
+### The host group reaches the host's own loopback
+
+Host server on `127.0.0.1:11434`, nothing rebound, nothing published:
+
+```
+$ lsof -nP -iTCP -sTCP:LISTEN | grep 11434
+ollama  97484 desquaredp  3u  IPv4  TCP 127.0.0.1:11434 (LISTEN)
+
+$ msb create --name probe-lm --net-default deny --net-rule "allow@host:tcp:11434" alpine
+$ msb exec probe-lm -- /bin/sh -c 'wget -q -O - http://host.microsandbox.internal:11434/api/tags'
+{"models":[{"name":"qwen3.8-uncensored-vision:latest", ...
+```
+
+The gateway connects onward from the host process, so it arrives at the host's
+loopback. A server bound to `127.0.0.1` is reachable from the guest without
+being reachable from anything else.
+
+### The rule is per port, and portless means every port
+
+Two guests, two rules, one extra host server on `127.0.0.1:18099`:
+
+| Guest rule | `:11434` | `:18099` |
+| --- | --- | --- |
+| `allow@host:tcp:11434` | answers | `can't connect to remote host (172.16.2.213): Connection refused` |
+| `allow@host` | answers | answers |
+
+So `allow@host:tcp:<port>` is the narrow grant paddock writes for a loopback
+entry that names a port, and `allow@host` is what the `local services` preset
+means on this backend: every port on this machine, the same width srt gives it.
+
+### The host group is the gateway alone
+
+Third host server, this one on `0.0.0.0:18100`, reachable at the host's LAN
+address. From a guest holding `allow@host`:
+
+```
+$ ... http://host.microsandbox.internal:18100/     ->  <!DOCTYPE HTML> ...
+$ ... http://100.110.158.155:18100/                ->  can't connect to remote host: Connection refused
+```
+
+The grant does not carry the host's other addresses. A sandbox given the whole
+host group still cannot reach the LAN.
+
+### The name is stable, the address is not
+
+```
+$ msb exec probe-lm -- /bin/sh -c 'cat /etc/hosts; ip route'
+172.16.2.213    host.microsandbox.internal
+fd42:6d73:62:b5::1      host.microsandbox.internal
+default via 172.16.2.213 dev eth0
+```
+
+msb writes the alias at boot, pointing at that sandbox's own gateway. Each
+sandbox gets its own `/30`, so the address differed between runs (`172.16.2.213`,
+then `172.16.2.225`) and the name did not. That is why paddock writes the name
+into `OPENAI_BASE_URL` and never an address. It also means a loopback-only
+profile needs no `allow@dns`: nothing has to be resolved.
+
+### Live gate
+
+Booted through paddock's own `prepare()`, with the port coming from an agent
+registry entry and nothing else, against the real `qwen3.8-uncensored` (27.3B)
+on this machine. Throwaway config and state dirs, so no real profile was touched.
+
+```
+== configuration ==
+agent entry api_domains: ['localhost:11434']
+resolved domains:       ['localhost:11434']
+net rules:              ['--net-default', 'deny', '--net-rule', 'allow@host:tcp:11434']
+endpoint env:           {'OPENAI_BASE_URL': 'http://host.microsandbox.internal:11434/v1',
+                         'OLLAMA_HOST': 'http://host.microsandbox.internal:11434'}
+
+== booted ==
+vm: paddock-20260824-175210-yn2xdzrp
+
+== 1. the guest was told where the server is ==
+http://host.microsandbox.internal:11434/v1
+http://host.microsandbox.internal:11434
+
+== 2. chat round trip, from inside the guest ==
+{"id":"chatcmpl-946","object":"chat.completion","model":"qwen3.8-uncensored",
+ "choices":[{"message":{"role":"assistant","content":"A hypervisor is software that
+ creates and manages virtual machines by abstracting the underlying hardware."}}],
+ "usage":{"prompt_tokens":63,"completion_tokens":50,"total_tokens":113}}
+
+== 3. /Users is not there ==
+ls: /Users: No such file or directory
+bin dev etc home lib media mnt opt proc root run sbin srv sys tmp usr var work
+
+== 4. example.com is refused ==
+wget: bad address 'example.com'          # http, and https the same
+
+== 5. the host's ssh keys are unreachable ==
+ls: /Users/desquaredp/.ssh: No such file or directory
+ls: /root/.ssh: No such file or directory        HOME=/root
+find / -name 'id_*' -o -name 'known_hosts'  ->  nothing
+
+== 6. the host's other loopback ports are refused ==
+wget: can't connect to remote host (172.16.2.225): Connection refused   # :18099
+
+== 7. gc collects it ==
+swept: ['paddock-20260824-175210-yn2xdzrp'] left alone: ['paddock-20260824-175206-22un83z_']
+gate VM still listed: False
+```
+
+The VM left alone belonged to another paddock context running at the same time,
+which is the scoped sweep of SPEC §3.4 working: a sandbox is only this state
+dir's to remove.
+
+### State of the machine after these probes
+
+- `probe-lm`, `probe-lm2` and the gate VM were removed. The two host test servers
+  on 18099 and 18100 were stopped.
+- **The inference server's binding was never changed.** It was on `127.0.0.1:11434`
+  before and after, which is the whole point of the finding.
 
 ---
 

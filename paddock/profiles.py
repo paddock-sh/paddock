@@ -54,8 +54,11 @@ NETWORK_PRESETS: dict[str, list[str]] = {
         "ghcr.io",
         "pkg-containers.githubusercontent.com",
     ],
-    # A local model server, a dev server, a database on this machine. Never ticked by
-    # default: what it opens is every loopback port, not the one port anyone meant.
+    # A local inference server, a dev server, a database on this machine. Never ticked by
+    # default: its entries name no port, so what it opens is every port on this machine's
+    # loopback. Naming one, `localhost:8080` in the extra-domains box or in an agent's
+    # own `api_domains`, is the narrower way in, and on msb it is a rule for that one
+    # port (SPEC §2.1, §2.2).
     LOCAL_SERVICES: ["localhost", "127.0.0.1"],
     # No allowlist at all. Empty on purpose: the backend reads the key, not the value.
     NETWORK_ALL: [],
@@ -98,10 +101,12 @@ class Profile:
     def opens_local_services(self) -> bool:
         """Whether the resolved domains name loopback, which is what grants it (SPEC §2.1).
 
-        The preset is the usual way in, but a typed-in domain and a local-model agent's
-        own `api_domains` are the same declaration, so all three are read the same.
+        The preset is the usual way in, but a typed-in domain and an agent's own
+        `api_domains` are the same declaration, so all three are read the same. A `:port`
+        suffix does not change the answer here: whether a backend can act on the port is
+        the backend's question, not this one (SPEC §2.1, §2.2).
         """
-        return any(_host(domain) in LOOPBACK_HOSTS for domain in self.allowed_domains())
+        return any(names_loopback(domain) for domain in self.allowed_domains())
 
     def opens_every_domain(self) -> bool:
         """Whether the profile asks for no allowlist at all (SPEC §2.1).
@@ -124,6 +129,28 @@ class Profile:
     def opens_every_skill(self) -> bool:
         """Whether the config dir gets every skill the agent has, rather than a list (§4.3)."""
         return EVERYTHING in self.skills
+
+
+def names_loopback(domain: str) -> bool:
+    """Whether this entry names this machine, under any spelling and with or without a port."""
+    return _host(domain) in LOOPBACK_HOSTS
+
+
+def loopback_port(domain: str) -> int | None:
+    """The one port a loopback entry scopes itself to, or None when it scopes itself to none.
+
+    `localhost:8080` is one port on this machine and nothing else. A bare `localhost` is
+    the machine and every port on it: there is no port to default to, because paddock has
+    no idea what is listening, and inventing one would be a rule for a service nobody
+    named. So None here means "every port", not "no port": a caller that cannot scope
+    (srt, §2.1) ignores this entirely, and one that can (msb, §2.2) writes what it gets.
+
+    None for a domain that is not loopback at all, which has no local port by definition.
+    """
+    host = _host(domain)
+    if host not in LOOPBACK_HOSTS or host == domain:
+        return None
+    return int(domain.rpartition(":")[2])
 
 
 def profile_dir() -> Path:

@@ -14,6 +14,8 @@ from paddock.profiles import (
     Profile,
     builtin_profiles,
     load_profiles,
+    loopback_port,
+    names_loopback,
     profile_dir,
     save_profile,
 )
@@ -129,15 +131,43 @@ def test_a_domain_that_merely_looks_like_loopback_does_not_open_it(domain: str) 
     assert Profile(network_presets=[], extra_domains=[domain]).opens_local_services() is False
 
 
-def test_an_agent_that_names_loopback_opens_it_for_its_profile(config_dir: Path) -> None:
-    """A local-model agent declares 127.0.0.1 as its API. That declaration is the choice."""
+@pytest.mark.parametrize("domain", ["localhost", "127.0.0.1", "::1", "[::1]"])
+def test_loopback_with_no_port_of_its_own_scopes_to_no_port(domain: str) -> None:
+    """The preset's entries carry no port, and paddock does not invent one for them.
+
+    None is every port, not no port: a backend that can scope reads it as the whole
+    machine, which is what the tick said (SPEC §2.2).
+    """
+    assert loopback_port(domain) is None
+    assert names_loopback(domain) is True
+
+
+@pytest.mark.parametrize(
+    ("domain", "port"),
+    [("localhost:8000", 8000), ("127.0.0.1:5432", 5432), ("[::1]:1234", 1234)],
+)
+def test_a_loopback_domain_with_a_port_is_scoped_to_that_port(domain: str, port: int) -> None:
+    """Naming the port is the whole configuration: the server's port, wherever it is typed."""
+    assert loopback_port(domain) == port
+
+
+@pytest.mark.parametrize("domain", ["example.com", "api.anthropic.com:443", "my.localhost.dev"])
+def test_a_domain_that_is_not_loopback_has_no_local_port(domain: str) -> None:
+    assert loopback_port(domain) is None
+    assert names_loopback(domain) is False
+
+
+def test_an_agent_that_names_a_local_port_opens_it_for_its_profile(config_dir: Path) -> None:
+    """A local-inference agent declares the server it calls. That declaration is the choice."""
     agents = config_dir / "agents"
     agents.mkdir(parents=True, exist_ok=True)
-    (agents / "ollama.json").write_text(
-        json.dumps({"command": "ollama", "api_domains": ["localhost", "127.0.0.1"]})
+    (agents / "local.json").write_text(
+        json.dumps({"command": "aider", "api_domains": ["localhost:8080"]})
     )
+    profile = Profile(agent="local", network_presets=[])
 
-    assert Profile(agent="ollama", network_presets=[]).opens_local_services() is True
+    assert profile.opens_local_services() is True
+    assert [loopback_port(domain) for domain in profile.allowed_domains()] == [8080]
 
 
 def test_save_then_load_round_trips_every_field(config_dir: Path) -> None:
