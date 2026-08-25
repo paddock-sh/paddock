@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "install.sh"
-REPO = "git+https://github.com/desquaredp/paddock"
+REPO = "git+https://github.com/paddock-sh/paddock"
 
 
 @pytest.fixture

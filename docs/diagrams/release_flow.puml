@@ -4,7 +4,7 @@ title Cutting a release, and how a user installs (docs/RELEASING.md)
 skinparam shadowing false
 
 actor Maintainer
-participant "github.com/desquaredp/paddock" as Repo
+participant "github.com/paddock-sh/paddock" as Repo
 participant ".github/workflows/release.yml" as Actions
 participant "GitHub release vX.Y.Z" as Release
 database PyPI
@@ -40,7 +40,7 @@ note right of Install
   as the user. The script is short so it
   can be read before it is run.
 end note
-Install -> Uv: uv tool install --force\ngit+https://github.com/desquaredp/paddock
+Install -> Uv: uv tool install --force\ngit+https://github.com/paddock-sh/paddock
 Uv -> Repo: clone the default branch\n(PADDOCK_REF picks another)
 Install -> User: next: paddock init, then prefix+c
 deactivate Install

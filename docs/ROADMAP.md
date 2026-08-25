@@ -42,7 +42,7 @@ stubbed in the code until it is built.
 ## Ecosystem
 
 - **herdr plugin packaging.** A `herdr-plugin.toml` manifest, so paddock installs
-  with `herdr plugin install desquaredp/paddock` and can be listed in the
+  with `herdr plugin install paddock-sh/paddock` and can be listed in the
   marketplace, instead of the keybinding `paddock init` writes.
 - **Layer-2 permissions for Claude Code.** Generate the `permissions.allow` and
   `permissions.deny` block that goes with `--settings`, so the agent's own

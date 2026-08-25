@@ -38,13 +38,13 @@ command line, herdr integration, and how to take it all off again.
 **Install paddock**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/desquaredp/paddock/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/paddock-sh/paddock/main/install.sh | sh
 ```
 
 Or, if you already have uv and would rather see the command:
 
 ```sh
-uv tool install git+https://github.com/desquaredp/paddock
+uv tool install git+https://github.com/paddock-sh/paddock
 ```
 
 If the shell then says `paddock: command not found`, the tool directory is not on
