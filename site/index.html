@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>paddock: sandboxed sessions for coding agents</title>
+<meta name="description" content="paddock runs a coding agent inside a sandbox the operating system enforces. You choose the tools, the domains and the one writable directory before it starts. Seatbelt, bubblewrap, or a per-session microVM.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#10151d">
+<meta property="og:type" content="website">
+<meta property="og:title" content="paddock: sandboxed sessions for coding agents">
+<meta property="og:description" content="The model is local. The blast radius should be too. OS-enforced sandboxes or a per-session microVM, with permissions you pick before the agent starts.">
+<meta property="og:url" content="https://paddock.desquaredp.com/">
+<meta property="og:image" content="https://paddock.desquaredp.com/logo.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="paddock: sandboxed sessions for coding agents">
+<meta name="twitter:description" content="The model is local. The blast radius should be too.">
+<meta name="twitter:image" content="https://paddock.desquaredp.com/logo.png">
+<link rel="canonical" href="https://paddock.desquaredp.com/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20fill='%2310151d'/%3E%3Cg%20fill='%236d95d6'%3E%3Crect%20x='4'%20y='8'%20width='3'%20height='18'/%3E%3Crect%20x='14.5'%20y='8'%20width='3'%20height='18'/%3E%3Crect%20x='25'%20y='8'%20width='3'%20height='18'/%3E%3Crect%20x='2'%20y='12'%20width='28'%20height='2.5'/%3E%3Crect%20x='2'%20y='19'%20width='28'%20height='2.5'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..800&amp;display=swap">
+<style>
+/* ===========================================================================
+   paddock. A broadside, not a landing page.
+
+   Palette: sampled straight out of site/logo.png. The illustration lives on
+   hue 212 to 220 almost end to end, so every surface here is that one hue at a
+   different lightness. #162849 and #31425f are the horse's rug; #1f2837 and
+   #24303f are the fence; #c2c5c7 and #9ca2a3 are the grey horse. Contrast was
+   measured against WCAG AA for every pair actually used.
+
+   Structure: a poster, then a fenced document. The fence is a real two-rail
+   spine down the left of everything below the fold, not a divider graphic.
+   =========================================================================== */
+
+:root {
+  --ink:        #10151d;
+  --ink-2:      #161c26;
+  --slate:      #1f2837;
+  --slate-2:    #24303f;
+  --term:       #0a0e14;
+  --rule:       #2e3a4a;
+  --hair:       #212a36;
+
+  --bone:       #dfe3e6;   /* 14.2:1 on ink */
+  --bone-dim:   #c2c5c7;   /* 10.6:1 */
+  --muted:      #9ca2a3;   /*  7.1:1 */
+  --faint:      #868d94;   /*  5.5:1 */
+
+  --blue-deep:  #162849;
+  --blue:       #31425f;
+  --blue-lift:  #6d95d6;   /*  6.0:1 on ink */
+  --blue-bright:#8fb2e8;   /*  8.5:1 */
+  --clay:       #dc9289;   /*  7.4:1, refusals only */
+
+  --display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", "Segoe UI Mono", "Roboto Mono", Consolas, monospace;
+
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --pad: clamp(1.1rem, 4.5vw, 3rem);
+  --measure: 60ch;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--bone-dim);
+  font-family: var(--display);
+  font-size: clamp(1rem, 0.95rem + 0.22vw, 1.1rem);
+  font-variation-settings: "opsz" 14;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+a { color: var(--blue-lift); text-decoration-thickness: 1px; text-underline-offset: 0.2em; transition: color 130ms var(--ease); }
+a:hover { color: var(--blue-bright); }
+:focus-visible { outline: 2px solid var(--blue-bright); outline-offset: 3px; }
+
+.skip { position: absolute; left: -9999px; top: 0; z-index: 40; background: var(--blue-deep); color: var(--bone); padding: 0.6rem 1rem; font-family: var(--mono); font-size: 0.8rem; }
+.skip:focus { left: 0.6rem; top: 0.6rem; }
+
+.hold { width: min(100% - (var(--pad) * 2), 1180px); margin-inline: auto; }
+
+/* ---------------------------------------------------------------- poster -- */
+
+.poster {
+  position: relative;
+  isolation: isolate;
+  min-height: min(94svh, 940px);
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.art { position: absolute; inset: 0 0 0 auto; width: min(72%, 940px); isolation: isolate; z-index: -2; }
+.art img {
+  position: absolute; right: -10%; top: 50%; translate: 0 -50%;
+  width: 122%; height: auto;
+  filter: grayscale(1) contrast(1.14) brightness(0.74);
+  opacity: 0.66;
+}
+.art::after { content: ""; position: absolute; inset: 0; background: var(--blue); mix-blend-mode: color; opacity: 0.92; }
+
+.scrim { position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    linear-gradient(96deg, var(--ink) 6%, rgba(16,21,29,0.94) 32%, rgba(16,21,29,0.42) 66%, rgba(16,21,29,0.72) 100%),
+    repeating-linear-gradient(0deg, rgba(143,178,232,0.05) 0 1px, transparent 1px 3px);
+}
+@media (max-width: 900px) {
+  .art { inset: 0; width: 100%; }
+  .art img { right: -22%; width: 150%; }
+  .scrim { background:
+    linear-gradient(178deg, rgba(16,21,29,0.80) 0%, rgba(16,21,29,0.62) 34%, rgba(16,21,29,0.94) 78%, var(--ink) 100%),
+    repeating-linear-gradient(0deg, rgba(143,178,232,0.05) 0 1px, transparent 1px 3px); }
+}
+
+.strip {
+  display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; align-items: baseline;
+  justify-content: space-between;
+  padding-block: 1rem 0.9rem;
+  border-bottom: 1px solid var(--hair);
+  font-family: var(--mono); font-size: 0.73rem; letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.strip .wordmark { color: var(--bone); letter-spacing: 0.42em; font-weight: 600; }
+.strip nav { display: flex; gap: 1.3rem; flex-wrap: wrap; }
+.strip nav a { color: var(--faint); text-decoration: none; }
+.strip nav a:hover { color: var(--bone); }
+
+.poster__body { flex: 1; display: flex; flex-direction: column; justify-content: center; padding-block: clamp(2.6rem, 8vh, 5.5rem) clamp(1.6rem, 4vh, 2.6rem); }
+
+.kicker {
+  font-family: var(--mono); font-size: 0.73rem; letter-spacing: 0.26em;
+  text-transform: uppercase; color: var(--blue-lift);
+  margin: 0 0 clamp(1rem, 3vw, 1.9rem);
+  display: flex; align-items: center; gap: 0.85rem;
+}
+.kicker::after { content: ""; flex: 0 1 12rem; height: 1px; background: linear-gradient(90deg, var(--blue), transparent); }
+
+h1 {
+  font-family: var(--display);
+  font-size: clamp(2.5rem, 0.7rem + 7.6vw, 6.1rem);
+  font-weight: 700;
+  font-variation-settings: "opsz" 144;
+  line-height: 0.94;
+  letter-spacing: -0.028em;
+  margin: 0 0 clamp(1.3rem, 3.5vw, 2.1rem);
+  max-width: 15ch;
+}
+h1 .a { display: block; color: var(--muted); font-weight: 400; }
+h1 .b { display: block; color: var(--bone); }
+
+.deck { max-width: 46ch; margin: 0 0 clamp(1.9rem, 5vw, 3rem); font-size: clamp(1.04rem, 0.98rem + 0.4vw, 1.26rem); color: var(--bone-dim); }
+.deck p { margin: 0 0 0.85rem; }
+.deck p:last-child { margin: 0; }
+.deck b { color: var(--bone); font-weight: 600; }
+
+/* the command is the poster's headline object */
+.cmd {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  border-top: 1px solid var(--blue); border-bottom: 1px solid var(--blue);
+  background: linear-gradient(90deg, rgba(22,40,73,0.92), rgba(22,40,73,0.34));
+  backdrop-filter: blur(2px);
+}
+.cmd code {
+  font-family: var(--mono);
+  font-size: clamp(0.72rem, 0.4rem + 1.15vw, 1.05rem);
+  color: var(--bone); white-space: nowrap; overflow-x: auto;
+  padding: clamp(0.85rem, 2.2vw, 1.25rem) clamp(0.7rem, 2vw, 1.15rem);
+  scrollbar-width: thin;
+}
+.cmd code .s { color: var(--blue-lift); user-select: none; }
+.cmd button {
+  font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--muted); background: transparent; border: 0; border-left: 1px solid var(--blue);
+  padding-inline: clamp(0.8rem, 2.6vw, 1.5rem); cursor: pointer; white-space: nowrap;
+  transition: color 130ms var(--ease), background-color 130ms var(--ease);
+}
+.cmd button:hover { color: var(--bone); background: rgba(49,66,95,0.5); }
+.cmd button[data-on] { color: var(--blue-bright); }
+
+.facts { display: flex; flex-wrap: wrap; gap: 0.35rem 1.5rem; margin: 0.95rem 0 0; padding: 0; list-style: none;
+  font-family: var(--mono); font-size: 0.74rem; color: var(--faint); }
+.facts b { color: var(--bone-dim); font-weight: 500; }
+
+/* -------------------------------------------------------------- the fence -- */
+
+.doc { position: relative; padding-left: clamp(1.35rem, 4.5vw, 3.6rem); }
+.doc::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 9px;
+  border-left: 1px solid var(--rule); border-right: 1px solid var(--rule);
+  background: repeating-linear-gradient(180deg, transparent 0 46px, var(--rule) 46px 48px);
+  opacity: 0.75;
+}
+
+section { padding-block: clamp(3.2rem, 9vw, 6rem); }
+section + section { border-top: 1px solid var(--hair); }
+
+.head { display: flex; align-items: baseline; gap: clamp(0.8rem, 2.5vw, 1.6rem); margin-bottom: 1.35rem; }
+.head .no {
+  font-family: var(--mono); font-size: 0.74rem; letter-spacing: 0.2em; color: var(--blue-lift);
+  padding-top: 0.4rem; white-space: nowrap;
+}
+h2 {
+  font-family: var(--display);
+  font-size: clamp(1.65rem, 0.9rem + 2.9vw, 2.95rem);
+  font-weight: 700; font-variation-settings: "opsz" 100;
+  line-height: 1.04; letter-spacing: -0.019em; color: var(--bone); margin: 0;
+  max-width: 22ch;
+}
+.sub { max-width: var(--measure); font-size: clamp(1.02rem, 0.97rem + 0.3vw, 1.16rem); color: var(--bone-dim); margin: 0 0 1.15rem; }
+.sub:last-child { margin-bottom: 0; }
+.sub b { color: var(--bone); font-weight: 600; }
+p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color: var(--blue-bright); }
+
+/* ------------------------------------------------------------- the screens -- */
+
+.screen { margin: 1.9rem 0 0; border: 1px solid var(--rule); background: var(--term); }
+.screen__tab {
+  display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  padding: 0.55rem 0.85rem; border-bottom: 1px solid var(--hair);
+  font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--faint);
+}
+.screen__tab b { color: var(--blue-lift); font-weight: 500; }
+.screen pre {
+  margin: 0; padding: 1rem 0.85rem; overflow-x: auto;
+  font-family: var(--mono);
+  font-size: clamp(0.555rem, 0.25rem + 1.45vw, 0.8rem);
+  line-height: 1.55; color: var(--bone-dim); scrollbar-width: thin;
+}
+.screen pre b { color: var(--bone); font-weight: 400; }
+.screen pre i { color: var(--faint); font-style: normal; }
+.screen pre u { color: var(--blue-lift); text-decoration: none; }
+.screen__key { padding: 0.5rem 0.85rem; border-block: 1px solid var(--hair); background: var(--ink-2);
+  font-family: var(--mono); font-size: 0.7rem; color: var(--faint); }
+.screen__key b { color: var(--blue-lift); font-weight: 500; }
+.screen figcaption { padding: 0.65rem 0.85rem; border-top: 1px solid var(--hair);
+  font-family: var(--mono); font-size: 0.7rem; line-height: 1.6; color: var(--faint); }
+.screen figcaption code { color: var(--muted); }
+
+/* --------------------------------------------------------- the policy rows -- */
+
+.grants { margin: 2rem 0 0; border-top: 1px solid var(--rule); }
+.grant {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 0.35rem clamp(1rem, 3vw, 2.2rem);
+  padding: 1.15rem 0 1.25rem;
+  border-bottom: 1px solid var(--hair);
+}
+@media (max-width: 640px) { .grant { grid-template-columns: minmax(0, 1fr); } }
+.grant dt {
+  font-family: var(--mono); font-size: 0.8rem; letter-spacing: 0.05em;
+  color: var(--blue-lift); padding-top: 0.22rem;
+}
+.grant dd { margin: 0; max-width: 58ch; }
+.grant dd > p { margin: 0; color: var(--bone); font-size: 1.02rem; }
+.grant .catch {
+  margin-top: 0.6rem; font-family: var(--mono); font-size: 0.755rem; line-height: 1.65;
+  color: var(--muted); border-left: 2px solid var(--clay); padding-left: 0.7rem;
+}
+.grant .catch b { color: var(--clay); font-weight: 500; }
+
+/* ------------------------------------------------------------- spec sheet -- */
+
+.sheet { margin-top: clamp(2rem, 5vw, 3rem); display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border: 1px solid var(--hair); }
+@media (max-width: 720px) { .sheet { grid-template-columns: minmax(0, 1fr); } }
+.spec { padding: 1.2rem 1.15rem 1.35rem; }
+.spec + .spec { border-left: 1px solid var(--hair); }
+@media (max-width: 720px) { .spec + .spec { border-left: 0; border-top: 1px solid var(--hair); } }
+.spec h3 { margin: 0 0 0.9rem; font-family: var(--mono); font-size: 1rem; color: var(--bone); font-weight: 600; letter-spacing: 0.04em; }
+.spec h3 span { color: var(--faint); font-weight: 400; font-size: 0.78rem; letter-spacing: 0.09em; text-transform: uppercase; margin-left: 0.55rem; }
+.spec dl { margin: 0; font-family: var(--mono); font-size: 0.78rem; line-height: 1.62; }
+.spec dt { color: var(--faint); font-size: 0.665rem; letter-spacing: 0.17em; text-transform: uppercase; margin-top: 0.9rem; }
+.spec dt:first-of-type { margin-top: 0; }
+.spec dd { margin: 0.18rem 0 0; color: var(--bone-dim); }
+.spec dd b { color: var(--bone); font-weight: 600; }
+
+/* --------------------------------------------------------- the one crossing -- */
+
+.cross { margin-top: 2.1rem; display: grid; grid-template-columns: minmax(0,1fr) minmax(122px, 0.8fr) minmax(0,1fr); align-items: center; }
+@media (max-width: 780px) { .cross { grid-template-columns: minmax(0, 1fr); gap: 0.55rem; } }
+.box { border: 1px solid var(--rule); background: var(--slate); padding: 1rem 0.95rem 1.1rem; }
+.box--guest { border-color: var(--blue); background: linear-gradient(158deg, var(--blue-deep), var(--slate) 80%); }
+.box h3 { margin: 0; font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.19em; text-transform: uppercase; color: var(--faint); font-weight: 500; }
+.box .name { display: block; margin-top: 0.3rem; font-family: var(--display); font-size: 1.1rem; font-weight: 700; color: var(--bone); line-height: 1.22; }
+.box ul { list-style: none; margin: 0.65rem 0 0; padding: 0; font-family: var(--mono); font-size: 0.735rem; line-height: 1.72; color: var(--muted); }
+
+.wires { padding: 0.7rem clamp(0.35rem, 1.5vw, 0.9rem); font-family: var(--mono); font-size: 0.695rem; }
+.wire { position: relative; padding-block: 0.48rem; text-align: center; }
+.wire::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px dashed var(--rule); }
+.wire span { position: relative; z-index: 1; background: var(--ink); padding-inline: 0.35rem; }
+.wire--no span { color: var(--clay); text-decoration: line-through; text-decoration-color: rgba(220,146,137,0.55); }
+.wire--go::before { border-top: 2px solid var(--blue-lift); }
+.wire--go span { color: var(--blue-bright); }
+@media (max-width: 780px) { .wire { text-align: left; } .wire span { padding-left: 0; } }
+
+/* ------------------------------------------------------------- quotes etc -- */
+
+pre.snip {
+  margin: 1.7rem 0 0; padding: 0.95rem; border: 1px solid var(--hair); border-left: 2px solid var(--blue);
+  background: var(--term); overflow-x: auto; font-family: var(--mono);
+  font-size: clamp(0.685rem, 0.55rem + 0.45vw, 0.79rem); line-height: 1.75; color: var(--bone-dim); scrollbar-width: thin;
+}
+pre.snip i { color: var(--faint); font-style: normal; }
+
+.measured { margin: 1.7rem 0 0; padding: 0.85rem 0 0.85rem 1.05rem; border-left: 2px solid var(--clay);
+  font-family: var(--mono); font-size: clamp(0.69rem, 0.55rem + 0.45vw, 0.78rem); line-height: 1.7; color: var(--bone-dim); }
+.measured b { color: var(--clay); font-weight: 500; }
+.measured cite { display: block; margin-top: 0.5rem; font-style: normal; color: var(--faint); }
+
+.notyet { list-style: none; margin: 2rem 0 0; padding: 0; counter-reset: n; }
+.notyet li {
+  display: grid; grid-template-columns: 2.6rem minmax(0, 1fr); gap: 0 0.75rem;
+  padding: 1rem 0 1.05rem; border-top: 1px solid var(--hair); max-width: 66ch;
+}
+.notyet li:last-child { border-bottom: 1px solid var(--hair); }
+.notyet li::before {
+  counter-increment: n; content: counter(n, decimal-leading-zero);
+  font-family: var(--mono); font-size: 0.78rem; color: var(--blue-lift); padding-top: 0.24rem;
+}
+.notyet b { display: block; color: var(--bone); font-weight: 600; margin-bottom: 0.15rem; }
+.notyet span { color: var(--muted); }
+
+/* ---------------------------------------------------------------- colophon -- */
+
+.colophon { border-top: 1px solid var(--rule); padding-block: clamp(2.4rem, 6vw, 3.6rem) 3rem; font-family: var(--mono); font-size: 0.775rem; color: var(--faint); }
+.colophon__grid { display: grid; grid-template-columns: 118px repeat(auto-fit, minmax(178px, 1fr)); gap: 1.7rem 2rem; align-items: start; }
+@media (max-width: 640px) { .colophon__grid { grid-template-columns: minmax(0, 1fr); } }
+.colophon img { width: 108px; height: auto; border: 1px solid var(--rule); filter: grayscale(0.35) brightness(0.9); }
+.colophon h3 { margin: 0 0 0.55rem; font-size: 0.665rem; letter-spacing: 0.19em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.colophon ul { list-style: none; margin: 0; padding: 0; line-height: 1.95; }
+.colophon p { margin: 0; line-height: 1.75; max-width: 36ch; }
+.colophon__end { margin-top: 2.3rem; padding-top: 1rem; border-top: 1px solid var(--hair); display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem; }
+
+/* ------------------------------------------------------------------ motion -- */
+
+@media (prefers-reduced-motion: no-preference) {
+  .up { opacity: 0; transform: translateY(16px); animation: up 780ms var(--ease) forwards; }
+  .d1 { animation-delay: 60ms; } .d2 { animation-delay: 150ms; }
+  .d3 { animation-delay: 240ms; } .d4 { animation-delay: 330ms; }
+  .art img { opacity: 0; animation: fade 1500ms var(--ease) 120ms forwards; }
+  .strip .wordmark { animation: split 620ms steps(3, end) 1 both; }
+}
+@keyframes up { to { opacity: 1; transform: none; } }
+@keyframes fade { to { opacity: 0.66; } }
+@keyframes split {
+  0%   { text-shadow: 2px 0 var(--clay), -2px 0 var(--blue-lift); }
+  60%  { text-shadow: -1px 0 var(--blue-lift), 1px 0 var(--clay); }
+  100% { text-shadow: none; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#doc">Skip to the documentation</a>
+
+<div class="poster">
+  <div class="art"><img src="logo.webp" width="1000" height="1000" alt="Four horses standing at a wooden fence, drawn over a field of binary digits." fetchpriority="high"></div>
+  <div class="scrim" aria-hidden="true"></div>
+
+  <div class="hold">
+    <div class="strip">
+      <span class="wordmark">paddock</span>
+      <nav aria-label="Project links">
+        <a href="https://github.com/desquaredp/paddock">GitHub</a>
+        <a href="https://github.com/desquaredp/paddock#trust-model">Trust model</a>
+        <a href="https://github.com/desquaredp/paddock/blob/main/docs/SPEC.md">Spec</a>
+        <a href="https://github.com/desquaredp/paddock/blob/main/docs/ROADMAP.md">Roadmap</a>
+      </nav>
+    </div>
+  </div>
+
+  <div class="hold poster__body">
+    <p class="kicker up d1">Sandboxed sessions for coding agents</p>
+
+    <h1 class="up d1"><span class="a">The model is local.</span><span class="b">The blast radius should be too.</span></h1>
+
+    <div class="deck up d2">
+      <p>A local or uncensored model does what the prompt says. The agent wrapped around
+      it starts with your whole disk and your whole network.</p>
+      <p><b>paddock is the fence.</b> It runs the agent inside a sandbox the operating system
+      enforces, and you settle the tools, the domains and the one writable directory before
+      the first token.</p>
+    </div>
+
+    <div class="cmd up d3">
+      <code id="cmd"><span class="s">$ </span>curl -fsSL https://paddock.desquaredp.com/install.sh | sh</code>
+      <button id="copy" type="button" aria-label="Copy the install command">Copy</button>
+    </div>
+    <ul class="facts up d4">
+      <li><b>v0.2.0</b> beta</li>
+      <li><b>MIT</b> licensed</li>
+      <li><b>No</b> telemetry</li>
+      <li>Needs <b>uv</b> and <b>Node.js</b></li>
+      <li><b>herdr</b> optional</li>
+    </ul>
+  </div>
+</div>
+
+<div class="hold">
+  <main class="doc" id="doc">
+
+    <!-- ============================================================ 01 ==== -->
+    <section aria-labelledby="h1-run">
+      <div class="head">
+        <span class="no">&sect;&nbsp;01</span>
+        <h2 id="h1-run">One command, one screen, then it is running</h2>
+      </div>
+
+      <p class="sub"><code>paddock run</code> starts a sandboxed session in the terminal you
+      are already in. There is no daemon, no multiplexer and no tab to open. It opens on the
+      profile you launched last, so the ordinary case is <code>L</code> and then enter.</p>
+
+      <p class="sub">The confirm screen is not optional, and it does not shrink for a repeat
+      launch. That is the whole promise of the tool: <b>the thing granting the permissions says
+      out loud what it granted</b>, with the domain groups expanded into the domains they open
+      and the paths written as they will be.</p>
+
+      <figure class="screen">
+        <div class="screen__tab"><span>chooser</span><span><b>paddock run</b></span></div>
+<pre><u>$ paddock run</u>
+
+<b>paddock   local-model</b>                                          <i>in ~/dev/agentlab</i>
+
+    1 Open       New sandbox
+    2 Profile    local-model
+<u>  &gt; 3</u><b> Backend    msb (a microVM, full isolation)</b>
+    4 Agent      Local inference (aider --no-auto-commits)
+    5 Tools      none
+    6 Network    only Local inference's own API                       <i>(1 domain)</i>
+    7 Files      ~/dev/agentlab
+    8 Skills     none for this agent
+    9 Advanced   name, save as profile, keep running, MCP
+
+<i>  What runs the sandbox. srt wraps the process in the OS policy and starts at</i>
+<i>  once. msb boots a microVM, which is slower to start and shares less with this</i>
+<i>  machine.</i>
+
+    [ Launch ]        [ Cancel ]
+
+<i>enter edit   ^v move   1-9 jump   L launch   s save   esc cancel   ? keys</i></pre>
+        <div class="screen__key"><b>L</b> opens the last screen before anything happens</div>
+<pre><b>Launch this sandbox?</b>
+
+  session      local-model-4a7f
+  backend      msb (a microVM, full isolation)
+  agent        Local inference (aider --no-auto-commits)
+  profile      local-model, unchanged
+  can write    <b>everything in the guest, which goes when it does, and</b>
+               <b>~/dev/agentlab, mounted at /work</b>
+  can read     <b>the guest's own filesystem. Your disk is not in there at all, so</b>
+               <b>none of it has to be denied</b>
+  can reach    <b>1 domain: localhost:11434</b>
+  can run      <b>whatever the python:3.12-slim image ships, plus local itself</b>
+  can see      <b>its own Local inference login. No other agent's keys. No skills.</b>
+
+  <u>&gt; [ Launch ]</u>      [ ← Back to the form ]      [ Cancel ]
+
+<i>enter choose   &lt;&gt; move   ^v scroll   s save   esc back (keeps your answers)</i>
+
+<u>paddock: pulling the python:3.12-slim image</u>
+<u>paddock: installing local in the guest</u>
+<u>paddock: the first start takes about 40 seconds</u>
+<u>paddock: session local-model-4a7f</u></pre>
+        <figcaption>Static mock, drawn at the 80 column width the screens are designed to.
+        Every paddock line is the literal string the code composes, taken from
+        <code>tui.py</code> and <code>screen.py</code>. Standalone <code>paddock run</code> and
+        the port-scoped local rule are open pull requests, not yet on main.</figcaption>
+      </figure>
+
+      <p class="sub" style="margin-top:1.6rem">Inside <a href="https://herdr.dev">herdr</a> the
+      same chooser opens on <code>prefix+s</code> and adds what a multiplexer is for: sandboxed
+      tabs, named sessions, and a second tab attached to a session already running. Outside it,
+      one terminal is one session and <code>paddock run</code> is the whole of it.</p>
+    </section>
+
+    <!-- ============================================================ 02 ==== -->
+    <section aria-labelledby="h2-grants">
+      <div class="head">
+        <span class="no">&sect;&nbsp;02</span>
+        <h2 id="h2-grants">Every grant is decided before the first token</h2>
+      </div>
+
+      <p class="sub">Nothing here is a runtime prompt the agent can talk its way past. Writes
+      and domains are settled in the kernel sandbox, and the config directory is rebuilt per
+      session so unticked skills and MCP servers are not there to find. These are the confirm
+      screen's own five lines.</p>
+
+      <dl class="grants">
+        <div class="grant">
+          <dt>can run</dt>
+          <dd>
+            <p>Only the binaries you tick are on the sandbox <code>PATH</code>, plus whatever
+            the chosen agent cannot start without, which is named alongside it.</p>
+            <p class="catch"><b>Soft.</b> An absolute path still reaches any binary on the host.
+            On srt this is convenience and the docs say so. On msb there is no host binary to
+            reach.</p>
+          </dd>
+        </div>
+        <div class="grant">
+          <dt>can reach</dt>
+          <dd>
+            <p>A domain allowlist, by group or by name. Everything else is refused by the OS.
+            Tick nothing and only the chosen agent's own API stays open; pick the shell agent
+            and the sandbox is fully offline.</p>
+            <p class="catch"><b>Hard, with one hole.</b> On msb, DNS is all or nothing. The
+            gateway resolver answers for every name, not only the allowed ones, and the
+            connection is then refused. Names are a low bandwidth channel out.</p>
+          </dd>
+        </div>
+        <div class="grant">
+          <dt>can write</dt>
+          <dd>
+            <p>Denied by default. A session gets an isolated scratch directory, or the one host
+            directory you named, which is then the only thing on this machine it can change.</p>
+            <p class="catch"><b>No opt out.</b> There is deliberately no allow-everything row.
+            A sandbox with no filesystem fence is an ordinary tab, which is one field further
+            up the form.</p>
+          </dd>
+        </div>
+        <div class="grant">
+          <dt>can read</dt>
+          <dd>
+            <p>Your disk, minus the credential directories paddock denies by default:
+            <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>,
+            <code>~/.config/gh</code>. On a microVM none of it has to be denied, because none
+            of it is in there.</p>
+          </dd>
+        </div>
+        <div class="grant">
+          <dt>can see</dt>
+          <dd>
+            <p>The chosen agent's own login, and nothing else. Files it writes back to are
+            copies, so your real config is never touched, and no agent is handed another
+            agent's keys, your SSH keys or your cloud credentials.</p>
+          </dd>
+        </div>
+      </dl>
+
+      <p class="sub" style="margin-top:2rem">Two backends enforce that policy, and they differ
+      in kind rather than in spelling. The chooser refuses an answer the backend cannot express
+      rather than quietly narrowing it.</p>
+
+      <div class="sheet">
+        <div class="spec">
+          <h3>srt <span>policy sandbox</span></h3>
+          <dl>
+            <dt>Start</dt><dd><b>Instant.</b> Milliseconds, which is what makes a chooser on a keybinding workable.</dd>
+            <dt>Boundary</dt><dd>Seatbelt on macOS, bubblewrap on Linux, through Anthropic's sandbox-runtime.</dd>
+            <dt>Shares</dt><dd>This machine's kernel and filesystem, minus what the policy refuses.</dd>
+          </dl>
+        </div>
+        <div class="spec">
+          <h3>msb <span>microVM</span></h3>
+          <dl>
+            <dt>Start</dt><dd><b>175ms</b> measured from create to a usable VM. A first agent session is about <b>40s</b>, because the agent is installed in the guest.</dd>
+            <dt>Boundary</dt><dd>A libkrun microVM with a kernel and a filesystem of its own. No server, no daemon, no privileged step.</dd>
+            <dt>Shares</dt><dd>Only the directory you mounted. Your disk is not in there at all.</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ 03 ==== -->
+    <section aria-labelledby="h3-local">
+      <div class="head">
+        <span class="no">&sect;&nbsp;03</span>
+        <h2 id="h3-local">The agent in the VM, the model on your GPU, one port between them</h2>
+      </div>
+
+      <p class="sub">On the msb backend, naming a local port writes exactly one network rule:
+      reach this machine, on that port. <b>Not another port on this machine, not the internet,
+      not even DNS.</b> No API key leaves, no prompt leaves, and the sandbox's entire network
+      policy is a single line.</p>
+
+      <div class="cross">
+        <div class="box">
+          <h3>Host</h3>
+          <span class="name">Your GPU, your server</span>
+          <ul>
+            <li>ollama, LM Studio,</li>
+            <li>llama.cpp, vLLM</li>
+            <li>127.0.0.1:11434</li>
+            <li>never published</li>
+          </ul>
+        </div>
+        <div class="wires" aria-hidden="true">
+          <div class="wire wire--no"><span>example.com</span></div>
+          <div class="wire wire--go"><span>allow@host:tcp:11434</span></div>
+          <div class="wire wire--no"><span>~/.ssh, /Users</span></div>
+        </div>
+        <div class="box box--guest">
+          <h3>Guest</h3>
+          <span class="name">The agent, in a microVM</span>
+          <ul>
+            <li>a kernel of its own</li>
+            <li>/work, and nothing else</li>
+            <li>OPENAI_BASE_URL set</li>
+            <li>gone when the session ends</li>
+          </ul>
+        </div>
+      </div>
+
+      <p class="sub" style="margin-top:1.8rem">The mechanism is an HTTP server on a host port,
+      so every runtime is the same shape. paddock ships no default port and has no favourite
+      runtime: you name the port once, in an agent file or in the chooser's network field, and
+      the guest boots knowing where the server is in every tab.</p>
+
+<pre class="snip"><i># the agent file that opens the port, once</i>
+"api_domains": ["localhost:11434"]
+
+<i># what the guest boots with, in every tab</i>
+OPENAI_BASE_URL=http://host.microsandbox.internal:11434/v1
+OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
+
+      <p class="sub" style="margin-top:1.6rem"><b>Leave your server on loopback</b>, which is
+      where all of them start. The microVM's gateway connects onward from the host, so
+      <code>127.0.0.1</code> is the address the request arrives at, and your server is never
+      published to your network to make this work. If you once switched on serving to the local
+      network, that hands the model to everyone on the Wi-Fi and paddock does not need it.</p>
+
+      <blockquote class="measured">
+        A second server, on another port of the same host, from inside the same guest:<br>
+        <b>wget: can't connect to remote host (172.16.2.213): Connection refused</b>
+        <cite>Measured against msb 0.6.13, alongside a real 27B model answering a prompt from
+        inside the guest, with the host's /Users absent and example.com not resolving.</cite>
+      </blockquote>
+
+      <p class="sub" style="margin-top:1.6rem">On srt the same agent file still works, but the
+      grant is not scoped. Seatbelt's loopback rule takes no port, so it opens every service
+      listening on this machine, and the confirm screen says so in as many words. For the
+      narrow version, use msb.</p>
+    </section>
+
+    <!-- ============================================================ 04 ==== -->
+    <section aria-labelledby="h4-not">
+      <div class="head">
+        <span class="no">&sect;&nbsp;04</span>
+        <h2 id="h4-not">What it is not, yet</h2>
+      </div>
+
+      <p class="sub">paddock has had no outside security review. It is a v0.2.0 beta with one
+      author, and a tool that hands out permissions has to be honest about its own.</p>
+
+      <ul class="notyet">
+        <li><div><b>Nobody independent has tried to break it.</b>
+          <span>Read the trust model before you point it at anything valuable.</span></div></li>
+        <li><div><b>Verified on macOS, on Apple Silicon.</b>
+          <span>The Linux path runs through bubblewrap and the test suite passes on Linux in CI,
+          but every live sandbox check written down in the docs was run on macOS.</span></div></li>
+        <li><div><b>Three enforcement layers, and only two are hard.</b>
+          <span>The kernel sandbox and the synthesized config directory are enforced outside the
+          agent. The generated agent config is the agent enforcing a rule on itself: useful
+          friction, not a boundary.</span></div></li>
+        <li><div><b>The tool list is a soft allowlist.</b>
+          <span>It shapes what the agent finds and defaults to. It does not stop a determined
+          caller with an absolute path. Hard per-binary blocking is on the roadmap.</span></div></li>
+        <li><div><b>Collection is lazy.</b>
+          <span>Nothing runs in the background watching for a closed tab, so a finished session
+          is collected at the next paddock command. Until then a microVM is still up and still
+          holding memory. <code>paddock gc</code> forces it.</span></div></li>
+      </ul>
+
+      <p class="sub" style="margin-top:1.8rem"><a href="https://github.com/desquaredp/paddock#trust-model">Read
+      the trust model</a>. It covers what each layer does and does not stop, the known bypasses
+      included.</p>
+    </section>
+  </main>
+</div>
+
+<footer class="colophon">
+  <div class="hold">
+    <div class="colophon__grid">
+      <img src="logo.webp" width="1000" height="1000" alt="">
+      <div>
+        <h3>Source</h3>
+        <ul>
+          <li><a href="https://github.com/desquaredp/paddock">github.com/desquaredp/paddock</a></li>
+          <li><a href="https://github.com/desquaredp/paddock/blob/main/LICENSE">MIT license</a></li>
+          <li><a href="https://github.com/desquaredp/paddock/blob/main/docs/SPEC.md">docs/SPEC.md</a></li>
+          <li><a href="https://github.com/desquaredp/paddock/blob/main/docs/ROADMAP.md">docs/ROADMAP.md</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Install</h3>
+        <ul>
+          <li>curl -fsSL paddock.desquaredp.com/install.sh | sh</li>
+          <li>uv and Node.js are the prerequisites</li>
+          <li>microVM sessions also need msb</li>
+          <li><a href="https://github.com/desquaredp/paddock#install">Full install notes</a></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Better with herdr</h3>
+        <p>paddock runs on its own. In <a href="https://herdr.dev">herdr</a> it also gets the
+        chooser on <code>prefix+s</code>, sandboxed tabs and attachable sessions.
+        <a href="https://github.com/desquaredp/paddock#the-chooser">How that works</a>.</p>
+      </div>
+    </div>
+    <div class="colophon__end">
+      <span>No trackers. No analytics. No cookies. One page, one font request.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  var b = document.getElementById('copy'), c = document.getElementById('cmd');
+  if (!b || !c || !navigator.clipboard) { if (b) { b.hidden = true; } return; }
+  b.addEventListener('click', function () {
+    navigator.clipboard.writeText(c.textContent.replace(/^\$\s*/, '')).then(function () {
+      b.textContent = 'Copied';
+      b.setAttribute('data-on', '');
+      window.setTimeout(function () { b.textContent = 'Copy'; b.removeAttribute('data-on'); }, 1800);
+    });
+  });
+})();
+</script>
+</body>
+</html>
