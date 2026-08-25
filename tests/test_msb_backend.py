@@ -992,6 +992,21 @@ def test_a_vm_that_is_gone_opens_no_tab_and_says_so(
     assert client.commands == []
 
 
+def test_ensure_live_is_the_check_both_ways_in_share(
+    which: dict[str, str],
+    msb_calls: list[list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tab and a terminal ask the same question, so neither joins a VM that has gone."""
+    run = msb.prepare(SHELL)
+
+    assert msb.ensure_live(run) is None
+
+    stub_msb(monkeypatch, [])
+    with pytest.raises(SandboxGone, match=run.vm_handle):
+        msb.ensure_live(run)
+
+
 # --- collecting the session ------------------------------------------------
 
 

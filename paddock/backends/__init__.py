@@ -13,6 +13,7 @@ same shape whichever sandbox was behind it: srt's `srt -c ...` and msb's `msb ex
 
 from __future__ import annotations
 
+import os
 import shlex
 import tempfile
 import time
@@ -30,6 +31,14 @@ LAUNCH_SCRIPT = "launch.sh"
 # The same run entered as a plain shell instead of as the agent (SPEC §3.2). A second script
 # rather than a second kind of pane: a shell tab is held, logged and replayed like any other.
 SHELL_SCRIPT = "shell.sh"
+
+# The wrapper `paddock run` becomes when the run it starts has to be collected on the way
+# out (SPEC §11). It runs the launch script and ends the session after it.
+RUN_SCRIPT = "run.sh"
+
+# The pid of the `paddock run` that became this run. A run in somebody's terminal keeps no
+# registry entry on every backend, so this is what tells a sweep it is not over (SPEC §11).
+PID_FILE = "standalone.pid"
 
 # A launch that fails does so at once. A non-zero exit later than this is the agent ending,
 # ctrl-c included, and holding the pane on that would hold it hostage.
@@ -208,6 +217,90 @@ def _prompt() -> list[str]:
         "export PS1 PROMPT",
         "",
     ]
+
+
+def write_run_script(run_dir: Path, after: list[str]) -> Path:
+    """Wrap one of the run's scripts so a run in the user's own terminal ends itself.
+
+    `paddock run` execs into the sandbox (SPEC §11), so there is no paddock process left to
+    notice the exit. This script is that process: it runs the launch script, then runs
+    `after`, then leaves with the launch script's own status.
+    """
+    script = run_dir / RUN_SCRIPT
+    script.write_text(run_script_text(run_dir, after))
+    script.chmod(0o700)
+    return script
+
+
+def run_script_text(run_dir: Path, after: list[str]) -> str:
+    """The wrapper: one script, one command after it, and the first one's exit status.
+
+    The command runs on the way out however the run ended. Ctrl-c goes to the whole
+    foreground group, so the shell running this gets it too, and a sandbox left running
+    because the user pressed a key is exactly the leak this exists to stop. A trap covers
+    that and the terminal closing with it. Nothing covers being killed outright, which is
+    what `paddock collect <session>` is for.
+
+    The trap is dropped before the command runs, so a second ctrl-c cannot interrupt the
+    collection the first one started. A child inherits an ignored signal across exec, so
+    that covers the command itself and not only the shell waiting for it.
+    """
+    return "\n".join(
+        [
+            "#!/bin/sh",
+            "# Written by paddock for a run in the terminal it was started from.",
+            "paddock_after() {",
+            '  [ -n "$paddock_done" ] && return',
+            "  paddock_done=1",
+            "  trap '' INT HUP TERM",
+            f"  {shlex.join(after)}",
+            "}",
+            "trap paddock_after EXIT HUP INT TERM",
+            "",
+            f"/bin/sh {shlex.quote(str(run_dir / LAUNCH_SCRIPT))}",
+            "paddock_exit=$?",
+            "paddock_after",
+            'exit "$paddock_exit"',
+            "",
+        ]
+    )
+
+
+def write_pid_marker(run_dir: Path) -> Path:
+    """Name the process that is about to become this run (SPEC §11).
+
+    Written before the exec, and `execv` keeps the pid, so the number in here is the
+    process sitting in the sandbox for as long as it is sitting there.
+    """
+    path = run_dir / PID_FILE
+    path.write_text(f"{os.getpid()}\n")
+    return path
+
+
+def run_is_live(run_dir: Path) -> bool:
+    """Whether a terminal is still in this run, by the pid it left behind (SPEC §11).
+
+    A run that keeps no registry entry has nothing else to say so, and a sweep that
+    removed its shim dir would take the tools out from under a live sandbox.
+
+    A pid this user may not signal belongs to somebody else and counts as alive: refusing
+    to remove a directory costs a directory, and removing a live run costs the session.
+    A pid the system has since given to something else is covered by the grace period a
+    sweep already leaves, which is longer than the gap between the two.
+    """
+    try:
+        pid = int((run_dir / PID_FILE).read_text().strip())
+    except (OSError, ValueError):
+        return False  # no marker, or one nothing wrote a number in: not a live run
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def launch_line(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:

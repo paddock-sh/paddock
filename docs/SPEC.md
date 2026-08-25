@@ -1396,7 +1396,8 @@ should be small, and mostly plain functions over a `Profile`:
 | `paddock/tui.py` | The chooser's fields, words and rules: answers in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
 | `paddock/screen.py` | The screens: the form, a list, a checklist, a box, the confirm and the one a failed launch ends on, over prompt_toolkit | Done |
 | `paddock/recent.py` | What the form opens on: the profile each workspace launched last | Done |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `gc`, `logs`, `init` | Done |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `run [profile]`, `attach <session>`, `collect <session>`, `profiles`, `gc`, `logs`, `init` | Done |
+| `paddock/standalone.py` | `paddock run`: prepare a session and exec it in the current terminal, with no herdr (§11) | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 | `paddock/log.py` | Where paddock logs, at what level, and what never reaches the file (§9) | Done |
 
@@ -1574,3 +1575,83 @@ layer can call every other one, every bug belongs to everybody.
 breaks this, naming the file and the import it objected to. It also holds the
 list of backend modules `sessions` may reach, so adding a backend is one line
 there and not a search: `paddock.backends.microsandbox` was that line.
+
+---
+
+## 11. Standalone mode: `paddock run`
+
+**The destination is the terminal you are in.** `paddock run <profile>` prepares
+the run exactly as a launch does, the same settings, shim dir, synthesized config
+and launch script, and then execs `/bin/sh <run_dir>/launch.sh` in place instead
+of asking herdr for a tab. It is the same script a pane is sent (§1.3), so the
+pane log, the failure hold and the policy are the same here as they are there.
+The process becomes the sandbox, and the terminal is the pane.
+
+`paddock run` with no profile opens the chooser (§3.1) in the terminal, and does
+whatever the plan says in place:
+
+| The chooser said | Standalone does |
+| --- | --- |
+| New sandbox session | Prepare it and exec its launch script |
+| Attach to a session | Exec that run's launch script, or its shell script |
+| Local tab | Prints "you already have a terminal" and exits 0 |
+
+With no terminal to draw in, `paddock run` needs a profile named on the command
+line, or `--attach <session>` to join one that is running, exactly as `paddock`
+itself needs `paddock launch`. With either named, no terminal is needed at all:
+the exec inherits whatever stdio there is, and a non-interactive agent is a
+reasonable thing to run under a redirect. `--dry-run` prints what it would exec
+and prepares nothing.
+
+**A terminal is not a tab.** Nothing registers a pane id, so nothing here changes
+what closing herdr's last tab means. A standalone run of a session herdr owns
+does not hold it open, and does not end it.
+
+**srt runs are ephemeral.** Nothing outlives the process, so there is no registry
+entry: the session ends when the terminal does, and an entry nothing would ever
+collect is a session for ever.
+
+**What speaks for a run with no registry entry is a pid file.** Every standalone
+run writes its own pid to `<run_dir>/standalone.pid` before the exec, and `execv`
+keeps the pid, so the number in there is the process sitting in the sandbox.
+`collect_run_dirs` (§8) leaves a run dir alone while that pid answers to
+`kill(pid, 0)`; a pid this user may not signal counts as alive, because refusing
+to remove a directory costs a directory and removing a live run costs the shim
+dir out from under it. A pid the system has since reused is covered by the grace
+period the sweep already leaves.
+
+**msb runs must not leak a VM.** A microVM outlives the process that booted it,
+so a standalone msb run is registered like any other session, with no pane ids.
+That does two things: a `paddock gc` elsewhere sees the sandbox claimed and
+leaves it alone, and there is something to end. Ending it is the run's own job,
+because no paddock process is left by then: paddock writes a `run.sh` beside the
+launch script that runs the launch script and then calls `paddock collect
+<session>`, under a `trap` so that ctrl-c and a closed terminal collect too.
+A session told to keep running (§3.4) gets no wrapper, because staying up is what
+was asked for.
+
+The trap is dropped before the collection runs, so a second ctrl-c cannot
+interrupt the first one's work: an ignored signal is inherited across `exec`, so
+that covers the `paddock collect` itself and not only the shell waiting for it.
+
+Nothing covers a terminal killed outright. That leaves a registered session with
+a running VM, which `paddock collect <session>` ends. Collecting a session twice
+is not a crash: the second one says there is no session by that name and exits 1.
+`paddock gc` names every session it finds with no tabs, so a session left over
+this way is reported rather than silently kept. It says which kind: a run in a
+terminal, or a session told to survive its last tab (§3.4). Both end the same
+way and a user reads the two for different reasons.
+
+**A session whose sandbox has gone ends at the door.** `ensure_live(run)` is on
+the backend contract: srt has nothing that can have gone and does nothing, msb
+asks `msb ls`. Both ways in call it, `open_pane` for a tab and
+`attach_standalone` for a terminal, so neither leaves a dead session in the
+registry offering something that cannot open (§3.4).
+
+**Zero-pane sessions survive reconciliation.** `reconcile` (§3.4) already keeps a
+session whose pane list has not changed, and a standalone one never had a pane, so
+a `paddock` invocation in another terminal cannot collect a run that is under way.
+
+**herdr stays out of it.** `standalone.py` never imports `herdr_client`, and
+`tests/test_architecture.py` fails on the edge if it ever does. Sessions, tabs
+and the attach UX live in herdr; this is one session in one terminal.

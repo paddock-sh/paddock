@@ -501,6 +501,16 @@ def load_run(run_dir: Path) -> Run:
     return run
 
 
+def ensure_live(run: Run) -> None:
+    """Refuse before anything joins a VM that is not there any more (SPEC §3.4).
+
+    Asked by both ways in: a tab, which would otherwise be left dead in herdr, and a
+    terminal, which would otherwise exec into an `msb` that fails a moment later.
+    """
+    if not vm_is_running(run.vm_handle):
+        raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
+
+
 def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = False) -> str:
     """Open a tab and exec a shell into the session's VM. Returns the pane id.
 
@@ -521,8 +531,7 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = 
             f"the session in {run.run_dir} was prepared before paddock could open a shell "
             "in it, so start a new session to get one"
         )
-    if not vm_is_running(run.vm_handle):
-        raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
+    ensure_live(run)
     pane_id = herdr_client.create_tab(run.workdir, label=label)
     line = launch_line(run.run_dir, SHELL_SCRIPT if shell else LAUNCH_SCRIPT)
     herdr_client.run_in_pane(pane_id, line)

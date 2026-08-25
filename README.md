@@ -315,6 +315,8 @@ The popup is the usual way in. The same jobs work without questions:
 paddock launch claude-default   # start a session from a saved profile
 paddock attach review           # put a new tab on a running session
 paddock attach review --shell   # ... or a plain shell inside its sandbox
+paddock run claude-default      # run one in this terminal instead (see "Without herdr")
+paddock collect review          # end one session now, sandbox and all
 paddock profiles                # list saved profiles
 paddock gc                      # collect sessions whose tabs are all closed, and
                                 # sweep sandboxes and run dirs nothing claims
@@ -338,6 +340,56 @@ A launch on the `msb` backend takes about **40 seconds** before its first tab:
 it pulls the guest image and installs the agent inside the guest. The chooser
 draws a screen saying so, and the command line prints the same lines before it
 blocks. `srt` starts at once.
+
+## Without herdr
+
+`paddock run` puts the sandbox in the terminal you are already in. No tab is
+opened and no herdr is asked for anything:
+
+```sh
+paddock run offline-shell       # a sandboxed shell, here, now
+paddock run claude-default      # or the agent, from a saved profile
+paddock run offline-shell --backend msb   # ... in a microVM instead
+paddock run                     # no profile: ask, then run the answer here
+```
+
+The run is the same one a tab would have got: same profile, same policy, same
+launch script. When it ends, the terminal is yours again. `paddock run --attach
+<session>` joins one that is already running, and `--dry-run` prints what it
+would start without starting it.
+
+`paddock collect <session>` ends a session by hand, which a microVM run needs
+only if the terminal was killed outright. It ends the sandbox, so any herdr tabs
+on that session are left with nothing behind them: close those in herdr.
+
+Bind it to a key and you have a popup of your own, in whatever terminal you
+already use. tmux:
+
+```tmux
+bind-key s display-popup -E -w 80% -h 70% paddock run
+```
+
+WezTerm, in `~/.wezterm.lua`:
+
+```lua
+config.keys = {
+  {
+    key = "s",
+    mods = "LEADER",
+    action = wezterm.action.SpawnCommandInNewTab { args = { "paddock", "run" } },
+  },
+}
+```
+
+kitty, in `kitty.conf`:
+
+```conf
+map ctrl+shift+s launch --type=overlay paddock run
+```
+
+Sessions, tabs and the attach UX are herdr's: this mode is one session in one
+terminal, and [docs/SPEC.md §11](docs/SPEC.md#11-standalone-mode-paddock-run)
+says exactly what it does and does not keep.
 
 ## Install
 

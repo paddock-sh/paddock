@@ -94,6 +94,21 @@ def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
 
 
+def backend_for(name: str):
+    calls.append(("backend_for", name))
+    if name not in ("srt", "msb"):
+        raise ValueError(
+            f"session backend {name!r} is not in this paddock: it has msb, srt"
+        )
+    return None
+
+
+def forget(session: Session) -> None:
+    calls.append(("forget", session))
+    if session in registry:
+        registry.remove(session)
+
+
 def reconcile() -> list[Session]:
     calls.append(("reconcile",))
     return list(collects)
