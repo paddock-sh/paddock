@@ -16,6 +16,10 @@ PRESENTATION = ["paddock.tui", "paddock.screen", "paddock.cli"]
 # The one door to a running sandbox. Presentation goes through it; backends sit behind it.
 DOOR = "paddock.sessions"
 
+# `paddock run`: the same session in the terminal it was typed in (SPEC §11). It is paddock
+# without herdr, so the one thing it may never reach is the module that shells out to herdr.
+STANDALONE = "paddock.standalone"
+
 # The backend modules `sessions` is allowed to reach. A new backend adds a line here.
 # In the order the import graph reports them, which is sorted by name.
 BACKENDS = ["paddock.backends.microsandbox", "paddock.backends.srt"]
@@ -81,7 +85,7 @@ def test_the_modules_this_test_names_are_all_there() -> None:
     """A renamed module must break this test, not quietly stop being checked."""
     present = set(modules())
 
-    for name in [*PRESENTATION, DOOR, *BACKENDS, *LEAVES]:
+    for name in [*PRESENTATION, DOOR, STANDALONE, *BACKENDS, *LEAVES]:
         assert name in present, name
 
 
@@ -120,6 +124,28 @@ def test_sessions_reaches_backends_only_through_its_own_list() -> None:
     ]
 
     assert reached == BACKENDS
+
+
+def test_the_standalone_run_reaches_no_herdr() -> None:
+    """`paddock run` is paddock without herdr, and an import is how that would creep back."""
+    broken = [
+        f"{importer} imports {imported}"
+        for importer, imported in edges()
+        if importer == STANDALONE and imported.startswith("paddock.herdr_client")
+    ]
+
+    assert broken == []
+
+
+def test_the_standalone_run_reaches_no_backend() -> None:
+    """It runs the session in this terminal. What a run dir holds stays sessions' business."""
+    reached = [
+        imported
+        for importer, imported in edges()
+        if importer == STANDALONE and imported.startswith("paddock.backends")
+    ]
+
+    assert reached == []
 
 
 def test_the_shared_leaves_import_no_layer() -> None:

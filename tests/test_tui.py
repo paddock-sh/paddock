@@ -712,6 +712,44 @@ def test_a_sandbox_without_the_local_grant_does_not_claim_it() -> None:
     assert LOCAL_SERVICES_CONSEQUENCE not in lines["can reach"]
 
 
+def test_an_msb_session_that_named_a_port_says_that_port(config_dir: Path) -> None:
+    """msb scopes the grant to the port, so the line that says otherwise is wrong there."""
+    profile = Profile(agent="shell", network_presets=[], extra_domains=["localhost:11434"])
+
+    lines = dict(tui.confirm_lines({"backend": "msb"}, profile, load_agents()))
+
+    assert "port 11434 on this machine, and nothing else on it" in lines["can reach"]
+    assert LOCAL_SERVICES_CONSEQUENCE not in lines["can reach"]
+
+
+def test_an_msb_session_that_named_no_port_still_says_every_port(config_dir: Path) -> None:
+    """The preset's own entries carry no port, so on msb it is `allow@host`: all of them."""
+    profile = Profile(agent="shell", network_presets=[LOCAL_SERVICES])
+
+    lines = dict(tui.confirm_lines({"backend": "msb"}, profile, load_agents()))
+
+    assert LOCAL_SERVICES_CONSEQUENCE in lines["can reach"]
+
+
+def test_an_srt_session_says_every_port_even_when_a_port_was_named(config_dir: Path) -> None:
+    """Seatbelt's loopback rule takes no port, so naming one narrows nothing here (SPEC §2.1)."""
+    profile = Profile(agent="shell", network_presets=[], extra_domains=["localhost:11434"])
+
+    lines = dict(tui.confirm_lines({"backend": "srt"}, profile, load_agents()))
+
+    assert LOCAL_SERVICES_CONSEQUENCE in lines["can reach"]
+
+
+def test_an_msb_session_that_named_several_ports_says_all_of_them(config_dir: Path) -> None:
+    profile = Profile(
+        agent="shell", network_presets=[], extra_domains=["localhost:11434", "127.0.0.1:5432"]
+    )
+
+    lines = dict(tui.confirm_lines({"backend": "msb"}, profile, load_agents()))
+
+    assert "ports 5432 and 11434 on this machine, and nothing else on it" in lines["can reach"]
+
+
 def test_the_confirm_names_the_only_writable_path_of_yours() -> None:
     isolated = dict(tui.confirm_lines({}, Profile(), load_agents()))
     shared = dict(tui.confirm_lines({}, Profile(shared_dir="/work/repo"), load_agents()))
@@ -1420,6 +1458,174 @@ def test_a_refused_agent_cannot_be_chosen_off_the_list(
     plan = press(f"{AGENT}{DOWN * 3}\r{ESC}{GO}", lambda: tui.choose(tmp_path))
 
     assert plan.profile.agent == "claude"  # opencode was on the cursor and was not taken
+
+
+# --- msb and an agent with no image, which a profile can name together ------
+
+
+def image_less_agent(config_dir: Path, key: str = "ollama") -> None:
+    """A user agent entry with no image, which is what the chooser writes for a typed command.
+
+    msb boots an image and runs the agent inside it, so one of these has nothing to run in.
+    """
+    (config_dir / "agents").mkdir(parents=True, exist_ok=True)
+    (config_dir / "agents" / f"{key}.json").write_text(json.dumps({"name": key, "command": key}))
+
+
+def backend_row(rows: list[tuple[str, str, str, str]]) -> tuple[str, str, str, str]:
+    return next(row for row in rows if row[0] == "Backend")
+
+
+def test_a_profile_that_names_msb_and_an_image_less_agent_opens_refused(
+    config_dir: Path,
+) -> None:
+    """The reported case. Both field editors refuse this pair and a profile opens neither.
+
+    So the form itself has to say it, on the backend row: the agent is what the user came
+    for, and the backend is the half the sentence offers to change.
+    """
+    image_less_agent(config_dir)
+    base = Profile(name="local-llm", agent="ollama")
+    answers = {"profile": "local-llm", "backend": "msb"}
+
+    row = backend_row(tui.form_rows(answers, base, load_agents(), []))
+
+    assert "ollama has no image" in row[2]
+    assert row[3] == tui.REFUSED_NOTE
+    assert "ollama has no image" in tui.launch_refusal(answers, base, load_agents())
+
+
+def test_the_other_backend_clears_the_refusal(config_dir: Path) -> None:
+    """srt runs the host's own binary, so it needs no image and asks for none."""
+    image_less_agent(config_dir)
+    base = Profile(name="local-llm", agent="ollama")
+
+    assert tui.launch_refusal({"backend": "msb"}, base, load_agents())
+    assert tui.launch_refusal({"backend": "srt"}, base, load_agents()) == ""
+    assert backend_row(tui.form_rows({"backend": "srt"}, base, load_agents(), []))[3] == ""
+
+
+def test_an_agent_with_an_image_clears_the_refusal(config_dir: Path) -> None:
+    """The other side of the same pair: change the agent instead of the backend."""
+    image_less_agent(config_dir)
+    base = Profile(name="local-llm", agent="ollama")
+    answers = {"backend": "msb"}
+
+    assert tui.launch_refusal(answers, base, load_agents())
+    assert tui.launch_refusal({**answers, "agent": "claude"}, base, load_agents()) == ""
+
+
+def test_the_shell_agent_is_never_refused_for_having_no_image() -> None:
+    """msb boots it in the default image rather than refusing it for having none (SPEC §2.2)."""
+    assert tui.no_image("shell", load_agents()) == ""
+    assert tui.launch_refusal({"backend": "msb"}, Profile(agent="shell"), load_agents()) == ""
+
+
+def test_a_command_typed_into_the_agent_field_has_no_image_either() -> None:
+    """It is saved as a name and a command, so msb has nothing to boot it in either."""
+    assert "has no image" in tui.no_image("something-new", load_agents())
+    assert tui.no_image("", load_agents()) == ""  # nothing chosen yet is not a refusal
+
+
+def test_the_backend_list_refuses_msb_while_the_agent_has_no_image(
+    monkeypatch: pytest.MonkeyPatch, config_dir: Path
+) -> None:
+    """The half of the mutual refusal the Agent list has always had, on the other field."""
+    monkeypatch.setattr(shutil, "which", {"msb": "/opt/bin/msb"}.get)
+    image_less_agent(config_dir)
+
+    refusals = {key: why for key, _, why in tui.backend_choices(
+        no_image=tui.no_image("ollama", load_agents())
+    )}
+
+    assert refusals["srt"] == ""
+    assert "ollama has no image" in refusals["msb"]
+
+
+def test_a_machine_with_no_msb_at_all_says_that_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A microVM this host cannot run is a bigger fact than which image it would want."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    rows = tui.backend_choices(no_image="ollama has no image")
+
+    assert rows[1][2].startswith("msb is not installed")
+
+
+def test_launch_does_nothing_while_the_backend_cannot_run_the_agent(
+    press, fake_sessions, config_dir: Path, tmp_path: Path
+) -> None:
+    """L on the unresolved pair says why and stays on the form, so no plan is handed back.
+
+    Cancelled from the form rather than escaped out of: a launch that got as far as the
+    confirm would take the same escape as a Back, and this has to tell the two apart.
+    """
+    image_less_agent(config_dir)
+    save_profile(Profile(name="local-llm", agent="ollama"))
+    answers = {"profile": "local-llm", "backend": "msb"}
+
+    assert press(f"L{DOWN * 20}\r", lambda: tui.choose(tmp_path, answers)) is None
+
+
+def test_changing_the_backend_lets_the_same_answers_launch(
+    press, fake_sessions, monkeypatch: pytest.MonkeyPatch, config_dir: Path, tmp_path: Path
+) -> None:
+    """A refusal that cannot be resolved from the form would be a dead end."""
+    monkeypatch.setattr(shutil, "which", {"msb": "/opt/bin/msb"}.get)
+    image_less_agent(config_dir)
+    save_profile(Profile(name="local-llm", agent="ollama"))
+    answers = {"profile": "local-llm", "backend": "msb"}
+
+    plan = press(f"L{BACKEND}{UP}\r{GO}", lambda: tui.choose(tmp_path, answers))
+
+    assert (plan.backend, plan.profile.agent) == ("srt", "ollama")
+
+
+def test_changing_the_agent_lets_the_same_answers_launch(
+    press, fake_sessions, which: dict[str, str], config_dir: Path, tmp_path: Path
+) -> None:
+    image_less_agent(config_dir)
+    save_profile(Profile(name="local-llm", agent="ollama"))
+    answers = {"profile": "local-llm", "backend": "msb"}
+
+    plan = press(f"L{AGENT}/claude\r\r{GO}", lambda: tui.choose(tmp_path, answers))
+
+    assert (plan.backend, plan.profile.agent) == ("msb", "claude")
+
+
+def test_a_profile_that_names_srt_and_every_domain_opens_refused(config_dir: Path) -> None:
+    """The same gap on the other pair, and the same fix: srt has no allow-all (SPEC §2.1).
+
+    The Backend and Network editors refuse each other already, and a saved profile that
+    names both opens neither, so it used to reach the launch and be refused by srt.
+    """
+    base = Profile(name="wide", network_presets=[NETWORK_ALL])
+    answers = {"profile": "wide", "backend": "srt"}
+
+    row = backend_row(tui.form_rows(answers, base, load_agents(), []))
+
+    assert row[2] == tui.NO_ALLOW_ALL_ON_SRT
+    assert row[3] == tui.REFUSED_NOTE
+    assert tui.launch_refusal(answers, base, load_agents()) == tui.NO_ALLOW_ALL_ON_SRT
+
+
+def test_launch_does_nothing_while_srt_cannot_enforce_the_network(
+    press, fake_sessions, config_dir: Path, tmp_path: Path
+) -> None:
+    save_profile(Profile(name="wide", network_presets=[NETWORK_ALL]))
+    answers = {"profile": "wide", "backend": "srt"}
+
+    assert press(f"L{DOWN * 20}\r", lambda: tui.choose(tmp_path, answers)) is None
+
+
+def test_a_local_tab_is_refused_for_nothing_whatever_the_backend_says(
+    config_dir: Path,
+) -> None:
+    """It has no sandbox at all, so there is no backend to refuse anything (SPEC §3.2)."""
+    image_less_agent(config_dir)
+    base = Profile(name="local-llm", agent="ollama")
+
+    assert tui.launch_refusal({"open": tui.LOCAL, "backend": "msb"}, base, load_agents()) == ""
+    assert tui.launch_refusal({"open": "s1", "backend": "msb"}, base, load_agents()) == ""
 
 
 # --- the warning an msb install earns ---------------------------------------

@@ -438,6 +438,36 @@ def test_s_saves_the_answers_as_a_profile() -> None:
     assert what == screen.SAVE
 
 
+REFUSED = "ollama has no image, so a microVM has nothing to run it in: srt runs it"
+
+
+def test_a_refused_form_says_why_instead_of_launching() -> None:
+    """The reason takes the key line, the way a refused row on a list does."""
+    assert screen.form_footer(8, error=REFUSED) == REFUSED
+    assert drive(f"L{ESC}{ESC}", lambda: screen.form("p", "", FIELDS, refused=REFUSED)) is None
+    assert REFUSED in drawn(f"L{ESC}{ESC}", lambda: screen.form("p", "", FIELDS, refused=REFUSED))
+
+
+def test_enter_on_the_launch_button_is_refused_the_same_way() -> None:
+    """Two keys mean launch, so a refusal that only caught one of them caught neither."""
+    keys = DOWN * len(FIELDS) + f"\r{ESC}{ESC}"
+
+    assert drive(keys, lambda: screen.form("p", "", FIELDS, refused=REFUSED)) is None
+
+
+def test_a_refused_form_still_opens_its_fields_and_saves_its_answers() -> None:
+    """The way out of a refusal is to change one of the answers, which is done from here."""
+    assert drive("3\r", lambda: screen.form("p", "", FIELDS, refused=REFUSED)) == (screen.OPEN, 2)
+    assert drive("s", lambda: screen.form("p", "", FIELDS, refused=REFUSED)) == (screen.SAVE, 0)
+
+
+def test_the_launch_refusal_goes_when_the_cursor_moves_on() -> None:
+    """The last line drawn is the key line again, not the reason for a key press two ago."""
+    shown = drawn(f"L{DOWN}{ESC}{ESC}", lambda: screen.form("p", "", FIELDS, refused=REFUSED))
+
+    assert not shown.rstrip().endswith(REFUSED)
+
+
 def test_the_buttons_are_the_last_two_places_the_cursor_goes() -> None:
     to_launch = DOWN * len(FIELDS)
     launch = drive(f"{to_launch}\r", lambda: screen.form("p", "", FIELDS))

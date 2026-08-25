@@ -261,6 +261,21 @@ def test_a_typed_in_loopback_domain_grants_it_too(tmp_path: Path) -> None:
     assert settings["network"]["allowLocalBinding"] is True
 
 
+def test_naming_a_port_changes_nothing_here(tmp_path: Path) -> None:
+    """srt's loopback grant takes no port, so `localhost:8080` is the same whole-loopback
+    grant `localhost` is. The port is carried into the allowlist and is enforced only for
+    traffic that reaches the proxy, which loopback never does (SPEC §2.1)."""
+    scoped = Profile(network_presets=[], extra_domains=["localhost:8080"])
+    whole = Profile(network_presets=[], extra_domains=["localhost"])
+
+    settings = srt.build_settings(scoped, CLAUDE, tmp_path / "work", NO_REDIRECT)
+    plain = srt.build_settings(whole, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+    assert settings["network"]["allowLocalBinding"] == plain["network"]["allowLocalBinding"]
+    assert settings["filesystem"] == plain["filesystem"]
+
+
 def test_an_agent_that_names_loopback_grants_it_for_its_profile(
     config_dir: Path, tmp_path: Path
 ) -> None:
@@ -779,6 +794,39 @@ def test_prepare_fails_before_anything_when_srt_is_missing(
 def test_prepare_rejects_a_profile_naming_an_unknown_agent(which: dict[str, str]) -> None:
     with pytest.raises(ValueError, match="unknown agent"):
         srt.prepare(Profile(agent="nope"))
+
+
+@pytest.mark.parametrize(
+    "profile", [Profile(agent="nope"), Profile(network_presets=[NETWORK_ALL])]
+)
+def test_the_refusal_says_exactly_what_prepare_would_have_raised(
+    which: dict[str, str], fake_home: Path, profile: Profile
+) -> None:
+    """A caller asks this in front of the line it prints about what is starting.
+
+    The two have to agree word for word, or a launch refused up front and one refused on
+    the way in would give the same user two different reasons for the same thing.
+    """
+    with pytest.raises((ValueError, srt.UnsupportedPolicy)) as raised:
+        srt.prepare(profile)
+
+    assert srt.refusal(profile) == str(raised.value)
+
+
+def test_a_profile_this_backend_can_run_is_refused_for_nothing(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    assert srt.refusal(Profile()) == ""
+
+
+def test_asking_why_a_launch_would_be_refused_writes_nothing(
+    which: dict[str, str], state_dir: Path, client: FakeClient
+) -> None:
+    """It is asked before every launch, so it may not write a run dir or open a tab."""
+    assert srt.refusal(Profile(network_presets=[NETWORK_ALL]))
+
+    assert client.tabs == []
+    assert not (state_dir / "runs").exists()
 
 
 # --- the launch script -----------------------------------------------------
@@ -1550,3 +1598,10 @@ def test_a_link_out_is_dropped_even_beside_the_agents_own_login(tmp_path: Path) 
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
 
     assert settings["filesystem"]["allowRead"] == [str(credentials)]
+
+
+def test_an_srt_run_is_always_live(which: dict[str, str]) -> None:
+    """Nothing outlives the process here, so there is never a sandbox to have gone."""
+    run = srt.prepare(Profile(name="p", tools=["git"]))
+
+    assert srt.ensure_live(run) is None

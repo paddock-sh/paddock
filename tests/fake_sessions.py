@@ -94,6 +94,35 @@ def remove_pane(pane_id: str) -> None:
     calls.append(("remove_pane", pane_id))
 
 
+def backend_for(name: str):
+    calls.append(("backend_for", name))
+    if name not in ("srt", "msb"):
+        raise ValueError(
+            f"session backend {name!r} is not in this paddock: it has msb, srt"
+        )
+    return None
+
+
+def refusal(profile: Profile, backend: str = "srt") -> str:
+    """The real answer, from the real backends, and not recorded as a call.
+
+    It is a question about a profile and a backend name, so there is no session behaviour
+    to stand in for: what the CLI is tested on is whether it asks before it announces, and
+    that only means anything if the answer is the true one. Nothing is appended to `calls`
+    because nothing was done: a caller asserting on what a command did should not have to
+    filter out what it merely asked.
+    """
+    from paddock import sessions as real
+
+    return real.refusal(profile, backend)
+
+
+def forget(session: Session) -> None:
+    calls.append(("forget", session))
+    if session in registry:
+        registry.remove(session)
+
+
 def reconcile() -> list[Session]:
     calls.append(("reconcile",))
     return list(collects)

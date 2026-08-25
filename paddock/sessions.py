@@ -18,13 +18,24 @@ import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
+from typing import Any, NoReturn
 
 from paddock import herdr_client, log, state_dir, synth_config
-from paddock.backends import SandboxGone, Swept, microsandbox, srt
+from paddock.backends import (
+    LAUNCH_SCRIPT,
+    SHELL_SCRIPT,
+    SandboxGone,
+    Swept,
+    microsandbox,
+    run_is_live,
+    srt,
+    write_pid_marker,
+    write_run_script,
+)
 from paddock.profiles import Profile
 
 REGISTRY_FILE = "sessions.json"
@@ -68,6 +79,20 @@ class Session:
         self._unknown: dict[str, object] = {}
 
 
+@dataclass
+class Standalone:
+    """A run the terminal becomes, rather than one paddock opens a tab on (SPEC §11).
+
+    `script` is what to exec and `workdir` where to exec it, both settled here so that the
+    command line only has to become them. `session` is the registry entry to collect when
+    the run ends, and None when the run leaves nothing behind for anybody to collect.
+    """
+
+    script: Path
+    workdir: Path
+    session: Session | None = None
+
+
 def backend_for(name: str) -> ModuleType:
     """The module that runs sessions on this backend. An unknown name is a message, not a crash."""
     module = BACKENDS.get(name)
@@ -76,6 +101,25 @@ def backend_for(name: str) -> ModuleType:
             f"session backend {name!r} is not in this paddock: it has {', '.join(sorted(BACKENDS))}"
         )
     return module
+
+
+def refusal(profile: Profile, backend: str = DEFAULT_BACKEND) -> str:
+    """Why this launch will be refused before its backend does any work, or nothing.
+
+    The one door to what each backend refuses out of hand: an unknown backend name, an
+    agent no registry answers to, a policy the backend cannot enforce, an agent with no
+    image to boot. Every one of them is answered from what is already in memory, so asking
+    costs nothing and leaves nothing behind.
+
+    It is asked in front of the line a slow launch prints about what it is starting. That
+    line is a promise about a wait, and a launch that says it is pulling a guest image and
+    then refuses the agent it was going to run in it made a promise it never kept.
+    """
+    try:
+        module = backend_for(backend)
+    except ValueError as error:
+        return str(error)
+    return str(module.refusal(profile))
 
 
 def registry_path() -> Path:
@@ -120,43 +164,78 @@ def create_session(
     """Register a session and get its run ready on disk. Opens no pane."""
     with _locked():
         live = list_sessions()
-        # Both are references a caller can pass to get_session, so neither may be reused.
-        taken = {session.name for session in live} | {session.session_id for session in live}
-        name = name.strip() if name else _generate_name(profile.name, taken)
-        if not name:
-            raise ValueError("a session name cannot be empty")
-        if name in taken:
-            raise ValueError(f"a live session already answers to {name!r}")
-
-        # Prepared before the session is registered, so a failed setup leaves no dead entry.
-        run = backend_for(backend).prepare(profile)
-        session = Session(
-            session_id=_generate_id(taken),
-            name=name,
-            profile_name=profile.name,
-            agent=profile.agent,
-            created_at=datetime.now(UTC).isoformat(timespec="seconds"),
-            run_dir=str(run.run_dir),
-            keep_alive=False,
-            pane_ids=[],
-            backend=backend,
-            # Only a backend with a VM names one, so this is blank for the rest.
-            vm_handle=getattr(run, "vm_handle", ""),
-        )
+        session, _ = _prepared(profile, name, backend, live)
         _save(live + [session])
-        logger.info(
-            "session created %s",
-            log.context(
-                session=session.session_id,
-                name=session.name,
-                backend=backend,
-                profile=profile.name,
-                agent=profile.agent,
-                run_dir=session.run_dir,
-                vm=session.vm_handle,
-            ),
-        )
+        _say_created(session, profile)
         return session
+
+
+def prepare_standalone(
+    profile: Profile,
+    name: str | None = None,
+    backend: str = DEFAULT_BACKEND,
+    keep_alive: bool = False,
+) -> Standalone:
+    """Get a run ready for the terminal that asked for it: no tab and no pane id (SPEC §11).
+
+    A backend whose sandbox outlives the process is registered, for two reasons: a sweep in
+    another terminal has to see the sandbox claimed, and something has to be able to end it.
+    A backend that leaves nothing running gets no entry at all, because the run is over when
+    the process is, and an entry nothing would ever collect is a session for ever.
+
+    Either way the run dir is marked with this process's pid, which is what a sweep reads
+    to tell a run somebody is still sitting in from one nothing is left to remove.
+    """
+    with _locked():
+        live = list_sessions()
+        session, run = _prepared(profile, name, backend, live)
+        run_dir = Path(session.run_dir)
+        write_pid_marker(run_dir)
+        script = run_dir / LAUNCH_SCRIPT
+        if not session.vm_handle:
+            logger.info(
+                "standalone run %s",
+                log.context(backend=backend, profile=profile.name, run_dir=session.run_dir),
+            )
+            return Standalone(script, Path(run.workdir))
+        session.keep_alive = keep_alive
+        _save(live + [session])
+        _say_created(session, profile)
+        return Standalone(script, Path(run.workdir), session)
+
+
+def wrap_standalone(here: Standalone, after: list[str]) -> Standalone:
+    """Put a wrapper round the run that runs `after` when it exits (SPEC §11).
+
+    The caller says what to run, because what ends a session is a `paddock` command line
+    and how to spell that is the command line's business, not the registry's.
+    """
+    return replace(here, script=write_run_script(here.script.parent, after))
+
+
+def attach_standalone(session: Session, shell: bool = False) -> Standalone:
+    """Put the terminal that asked inside a session that is already running (SPEC §11).
+
+    No tab and no pane id, so what closing the last herdr tab means is left exactly as it
+    was: a terminal that joins a session does not hold it open, and does not end it either.
+
+    A session whose sandbox has gone ends here rather than exec'ing this terminal into a
+    command that fails a moment later, which is what `attach` does with a tab.
+    """
+    backend = backend_for(session.backend)
+    run = backend.load_run(Path(session.run_dir))
+    try:
+        backend.ensure_live(run)
+    except SandboxGone as error:
+        _end_of(session, error)
+    logger.info(
+        "standalone attach %s",
+        log.context(
+            session=session.session_id, name=session.name, backend=session.backend, shell=shell
+        ),
+    )
+    script = Path(session.run_dir) / (SHELL_SCRIPT if shell else LAUNCH_SCRIPT)
+    return Standalone(script, Path(run.workdir))
 
 
 def pane_label(name: str, shell: bool = False) -> str:
@@ -181,10 +260,7 @@ def attach(session: Session, cwd: Path | None = None, shell: bool = False) -> st
             run, label=pane_label(session.name, shell), cwd=cwd, shell=shell
         )
     except SandboxGone as error:
-        # There is nothing left to attach to, so the session ends here rather than
-        # sitting in the registry offering tabs that cannot open (SPEC §3.4).
-        _forget(session)
-        raise SandboxGone(f"session {session.name!r} is over: {error}") from error
+        _end_of(session, error)
     session.pane_ids.append(pane_id)
     _record(session)
     logger.info(
@@ -212,7 +288,7 @@ def launch(
         # create_session has already booted whatever the backend runs. A session that
         # never got its first tab must not keep that running, or sit in the registry.
         # BaseException, so ctrl-c between the boot and the tab tears the VM down too.
-        _forget(session)
+        forget(session)
         # And the directory it prepared goes with it: no tab ever opened, so nothing in
         # there is anyone's work, and a run dir nothing removes is a run dir for ever.
         remove_run_dir(Path(session.run_dir))
@@ -282,6 +358,10 @@ def collect_run_dirs() -> list[Path]:
     A dir whose workdir holds anything is left where it is, however old, because that is
     somebody's work and no `paddock gc` is worth losing it. So this only ever removes the
     settings, the shim dir and the empty scratch dir of a session that produced nothing.
+
+    A run in somebody's terminal claims nothing in the registry on every backend, so it
+    says so with a pid file instead (SPEC §11). Taking that one away would pull the shim
+    dir out from under a sandbox that is still running.
     """
     runs = state_dir() / RUNS
     claimed = {Path(session.run_dir) for session in list_sessions()}
@@ -289,6 +369,8 @@ def collect_run_dirs() -> list[Path]:
     for path in sorted(runs.glob("*")):
         if not path.is_dir() or path in claimed or _holds_work(path):
             continue
+        if run_is_live(path):
+            continue  # a terminal is still sitting in it
         if time.time() - path.stat().st_mtime < RUN_DIR_GRACE_SECONDS:
             continue  # young enough to be a launch that has not registered its session yet
         remove_run_dir(path)
@@ -391,6 +473,17 @@ def launch_local(cwd: Path | None = None) -> str:
     return pane_id
 
 
+def forget(session: Session) -> None:
+    """Take a session out of the registry and end it. Doing it twice is not an error."""
+    with _locked():
+        live = list_sessions()
+        kept = [other for other in live if other.session_id != session.session_id]
+        if len(kept) == len(live):
+            return  # another path collected it already
+        _save(kept)
+    _collect(session)
+
+
 def _collect(session: Session) -> None:
     """End a session nobody is attached to any more (SPEC §3.4).
 
@@ -418,15 +511,59 @@ def _collect(session: Session) -> None:
     backend.collect(Path(session.run_dir), session.vm_handle)
 
 
-def _forget(session: Session) -> None:
-    """Take a session out of the registry and end it. Doing it twice is not an error."""
-    with _locked():
-        live = list_sessions()
-        kept = [other for other in live if other.session_id != session.session_id]
-        if len(kept) == len(live):
-            return  # another path collected it already
-        _save(kept)
-    _collect(session)
+def _end_of(session: Session, error: SandboxGone) -> NoReturn:
+    """There is nothing left to join, so the session ends here rather than sitting in the
+    registry offering tabs and terminals that cannot open (SPEC §3.4)."""
+    forget(session)
+    raise SandboxGone(f"session {session.name!r} is over: {error}") from error
+
+
+def _prepared(
+    profile: Profile, name: str | None, backend: str, live: list[Session]
+) -> tuple[Session, Any]:
+    """The run on disk and the record for it, registered by neither. Both callers hold the lock.
+
+    Prepared before anything is registered, so a failed setup leaves no dead entry, and
+    a run nothing registers is still a complete run: `paddock run` becomes one directly.
+    """
+    # Both are references a caller can pass to get_session, so neither may be reused.
+    taken = {session.name for session in live} | {session.session_id for session in live}
+    name = name.strip() if name else _generate_name(profile.name, taken)
+    if not name:
+        raise ValueError("a session name cannot be empty")
+    if name in taken:
+        raise ValueError(f"a live session already answers to {name!r}")
+
+    run = backend_for(backend).prepare(profile)
+    session = Session(
+        session_id=_generate_id(taken),
+        name=name,
+        profile_name=profile.name,
+        agent=profile.agent,
+        created_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        run_dir=str(run.run_dir),
+        keep_alive=False,
+        pane_ids=[],
+        backend=backend,
+        # Only a backend with a VM names one, so this is blank for the rest.
+        vm_handle=getattr(run, "vm_handle", ""),
+    )
+    return session, run
+
+
+def _say_created(session: Session, profile: Profile) -> None:
+    logger.info(
+        "session created %s",
+        log.context(
+            session=session.session_id,
+            name=session.name,
+            backend=session.backend,
+            profile=profile.name,
+            agent=profile.agent,
+            run_dir=session.run_dir,
+            vm=session.vm_handle,
+        ),
+    )
 
 
 def _describe(session: Session) -> str:

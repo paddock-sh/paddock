@@ -29,6 +29,8 @@ from paddock.profiles import (
     TOOL_CANDIDATES,
     Profile,
     load_profiles,
+    loopback_port,
+    names_loopback,
     save_profile,
 )
 
@@ -72,6 +74,11 @@ ALL_GRANTED = {
 NO_ALLOW_ALL_ON_SRT = (
     "srt cannot run without a domain allowlist; use the msb backend or list domains"
 )
+
+# What the Backend row keeps at its right edge while the backend cannot run these answers.
+# The reason is the row's hint, which is a sentence and belongs under the cursor; this is
+# the word that says so without the cursor having to be there.
+REFUSED_NOTE = "(refused)"
 
 # The two rows of the Files field, which were two questions before this design.
 FILES_CHOICES = (
@@ -307,7 +314,11 @@ def choose(cwd: Path, answers: dict | None = None, attach: bool = False) -> Plan
     while True:
         base = base_profile(saved, answers)
         rows = form_rows(answers, base, registry, live, str(cwd))
-        chosen = screen.form(form_title(answers, base), f"in {cwd}", rows, cursor)
+        # What the backend will refuse, asked here rather than after the launch: a saved
+        # profile answers every field at once, so the field editors that refuse each other
+        # never opened (SPEC §2.1, §2.2).
+        refused = launch_refusal(answers, base, registry)
+        chosen = screen.form(form_title(answers, base), f"in {cwd}", rows, cursor, refused)
         if chosen is None:  # escape or Cancel: nothing chosen and nothing done
             return None
         what, cursor = chosen
@@ -381,7 +392,7 @@ def _edit(
     if field == "profile":
         return _edit_profile(answers, saved, registry)
     if field == "backend":
-        return _edit_backend(answers, base)
+        return _edit_backend(answers, base, registry)
     if field == "agent":
         return _edit_agent(answers, base, registry)
     if field == "tools":
@@ -432,8 +443,11 @@ def _edit_profile(answers: dict, saved: dict[str, Profile], registry: dict[str, 
     return settle(dict(answers, profile=choices[index][1]), "profile")
 
 
-def _edit_backend(answers: dict, base: Profile) -> dict:
-    rows = backend_choices(build_session(base, answers).profile.opens_every_domain())
+def _edit_backend(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> dict:
+    plan = build_session(base, answers)
+    rows = backend_choices(
+        plan.profile.opens_every_domain(), no_image(plan.profile.agent, registry)
+    )
     refused = {index: why for index, (_, _, why) in enumerate(rows) if why}
     choices = [(key, hint) for key, hint, _ in rows]
     where = _at([(key, key) for key, _, _ in rows], str(answers.get("backend", SRT)))
@@ -516,6 +530,36 @@ def network_refusals(rows: list[tuple[str, str, bool]], backend: str) -> dict[in
         return {}
     return {index: NO_ALLOW_ALL_ON_SRT for index, (_, value, _) in enumerate(rows)
             if value == NETWORK_ALL}
+
+
+def backend_refusal(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
+    """Why the chosen backend cannot run this plan, or nothing when it can (SPEC §2.1, §2.2).
+
+    Each half of this is already refused inside the field it belongs to: the Backend list
+    greys out srt while the network's allow-all is ticked, and the Agent list greys out an
+    image-less agent while msb is chosen. Neither of those catches a saved profile, which
+    answers every field at once and opens none of the lists, so a combination that arrives
+    whole walked past both and was refused by the backend a minute into the launch.
+
+    This is the form's own half of the same mutual refusal, and the one that holds whatever
+    route the answers came by.
+    """
+    if plan.backend == SRT and plan.profile.opens_every_domain():
+        return NO_ALLOW_ALL_ON_SRT
+    if plan.backend == MSB:
+        return no_image(plan.profile.agent, registry)
+    return ""
+
+
+def launch_refusal(answers: dict, base: Profile, registry: dict[str, AgentSpec]) -> str:
+    """Why the form cannot launch what it is showing, or nothing when it can.
+
+    Only a new sandbox has a backend to refuse: a local tab has no sandbox at all, and an
+    attach joins one that booted long ago.
+    """
+    if str(answers.get("open", NEW)) != NEW:
+        return ""
+    return backend_refusal(build_session(base, answers), registry)
 
 
 def _edit_files(answers: dict, base: Profile, cwd: Path) -> dict:
@@ -708,18 +752,25 @@ def form_rows(
     A local or an attached tab greys out everything the sandbox fields decide, because none
     of it applies. Nothing is hidden and nothing moves, so the screen never rearranges.
 
+    A backend that cannot run these answers takes over its own row: the reason is its hint
+    and the edge says it is refused, so the one field that has to change is the one marked.
+
     `live` is the session list the Open answer is read against, so it is required: without
     it every attach would read as a new sandbox, which is the opposite of what it does.
     """
     opened = str(answers.get("open", NEW))
     values = _field_values(answers, base, registry, live, cwd, bool(answers.get("shell")))
     notes = _field_notes(answers, base)
+    hints = dict(FIELD_HINTS)
+    refused = launch_refusal(answers, base, registry)
+    if refused:
+        hints["backend"], notes["backend"] = refused, REFUSED_NOTE
     rows = []
     for field in FIELDS:
         if opened != NEW and field not in ("open", "files"):
             rows.append((FIELD_LABELS[field], "-", NO_SANDBOX, ""))
         else:
-            rows.append((FIELD_LABELS[field], values[field], FIELD_HINTS[field], notes[field]))
+            rows.append((FIELD_LABELS[field], values[field], hints[field], notes[field]))
     return rows
 
 
@@ -744,25 +795,16 @@ def confirm_lines(
         ("profile", _profile_line(answers, base)),
         ("can write", _writable(profile, plan.backend)),
         ("can read", _readable(profile, plan.backend)),
-        ("can reach", _reachable(profile)),
+        ("can reach", _reachable(profile, plan.backend)),
         ("can run", _runnable(profile, registry, plan.backend)),
         ("can see", _visible(profile, registry)),
     ]
-    warned = [warning for warning in (policy_warning(plan), install_warning(plan, registry))
-              if warning]
+    warned = [
+        warning
+        for warning in (backend_refusal(plan, registry), install_warning(plan, registry))
+        if warning
+    ]
     return lines + [("warning", warning) for warning in warned]
-
-
-def policy_warning(plan: NewSession) -> str:
-    """Why this backend will refuse this policy, or nothing when it will not.
-
-    The Backend and Network fields refuse each other's answer already, so reaching here
-    takes a saved profile that names both. This screen is the one that says what is being
-    granted, and it may not assert a grant the backend is about to reject (SPEC §2.1).
-    """
-    if plan.backend == SRT and plan.profile.opens_every_domain():
-        return NO_ALLOW_ALL_ON_SRT
-    return ""
 
 
 def install_warning(plan: NewSession, registry: dict[str, AgentSpec]) -> str:
@@ -986,8 +1028,16 @@ def _readable(profile: Profile, backend: str = SRT) -> str:
     return f"your disk, except {' '.join(profile.deny_read)}"
 
 
-def _reachable(profile: Profile) -> str:
-    """The count and every domain it names. The screen elides only when the popup makes it."""
+def _reachable(profile: Profile, backend: str = SRT) -> str:
+    """The count and every domain it names. The screen elides only when the popup makes it.
+
+    The local grant is the one line that differs by backend, and by more than wording.
+    srt's loopback rule takes no port, so the grant is every service listening here
+    whatever the profile named. msb writes the port into the rule, so a profile that
+    named one reaches that port and no other (SPEC §2.1, §2.2). Saying "whatever port"
+    on an msb session would overstate what was granted, which is the one direction this
+    screen must never be wrong in.
+    """
     if profile.opens_every_domain():
         # No list to print, and no count that would mean anything: this is the whole grant.
         return ALL_GRANTED["network"]
@@ -997,9 +1047,22 @@ def _reachable(profile: Profile) -> str:
     line = f"{_counted(domains)}: {', '.join(domains)}"
     if not profile.opens_local_services():
         return line
-    # Two names on the list understate the grant: the OS rule behind them takes no port,
-    # so the count is not what this sandbox can reach (SPEC §2.1).
-    return f"{line}. Plus {LOCAL_SERVICES_CONSEQUENCE}"
+    return f"{line}. Plus {_local_grant(profile, backend)}"
+
+
+def _local_grant(profile: Profile, backend: str) -> str:
+    """What ticking loopback actually opens on this backend, in the confirm's own voice."""
+    domains = profile.allowed_domains()
+    ports = sorted({port for port in map(loopback_port, domains) if port is not None})
+    portless = any(names_loopback(domain) and loopback_port(domain) is None for domain in domains)
+    if backend != MSB or portless or not ports:
+        # Either the backend cannot scope the grant, or an entry named no port, which msb
+        # writes as the whole machine. Both are wide, and the wide wording is the true one.
+        return LOCAL_SERVICES_CONSEQUENCE
+    named = [str(port) for port in ports]
+    listed = " and ".join(named) if len(named) < 3 else f"{', '.join(named[:-1])} and {named[-1]}"
+    counted = "port" if len(named) == 1 else "ports"
+    return f"{counted} {listed} on this machine, and nothing else on it"
 
 
 def _runnable(profile: Profile, registry: dict[str, AgentSpec], backend: str = SRT) -> str:
@@ -1058,21 +1121,24 @@ def open_choices(live: list[sessions.Session]) -> list[tuple[str, str]]:
     return [("New sandbox", NEW), ("Local tab", LOCAL), *session_choices(live)]
 
 
-def backend_choices(everything: bool = False) -> list[tuple[str, str, str]]:
+def backend_choices(everything: bool = False, no_image: str = "") -> list[tuple[str, str, str]]:
     """Each backend, what it costs and gives, and why it cannot be chosen when it cannot.
 
     A backend this machine has no binary for stays on the list and says so, the way a tool
     the host lacks does: hiding it would leave the user wondering where the microVM went.
 
     `everything` is the network's allow-all row, which srt has no way to enforce (SPEC
-    §2.1). Refusing it here is the other half of refusing the row on srt: whichever of the
-    two is picked first, the second one says the two cannot go together, and no plan is
-    built that a backend would only reject later.
+    §2.1). `no_image` is the chosen agent having no image for msb to boot (SPEC §2.2).
+    Refusing each here is the other half of refusing it on the field it came from:
+    whichever of the two is picked first, the second one says the two cannot go together,
+    and no plan is built that a backend would only reject later.
+
+    A machine with no msb has nothing to say about images, so that refusal comes first.
     """
     absent = "msb is not installed, so this machine cannot run a microVM session"
     return [
         (SRT, BACKEND_HINTS[SRT], NO_ALLOW_ALL_ON_SRT if everything else ""),
-        (MSB, BACKEND_HINTS[MSB], "" if shutil.which(MSB) else absent),
+        (MSB, BACKEND_HINTS[MSB], ("" if shutil.which(MSB) else absent) or no_image),
     ]
 
 
@@ -1245,6 +1311,25 @@ def agent_refusal(key: str, registry: dict[str, AgentSpec], backend: str = SRT) 
     if missing:
         return f"{key} needs {', '.join(missing)}, which this machine has not got"
     return ""
+
+
+def no_image(agent: str, registry: dict[str, AgentSpec]) -> str:
+    """Why msb cannot run this agent, or nothing when it can (SPEC §2.2).
+
+    The same fact `agent_refusal` greys an agent out for, said the other way round, because
+    this is what the Backend row says: the agent is usually what the user came for, so the
+    backend is the half the sentence offers to change.
+
+    An agent no registry answers to has no image either, which is what a command typed into
+    the Agent field is until it is saved. The shell agent is the one exception: msb boots it
+    in the default image rather than refusing it for having none of its own.
+    """
+    if not agent or agent == SHELL_AGENT:
+        return ""
+    spec = registry.get(agent)
+    if spec is not None and spec.image:
+        return ""
+    return f"{agent} has no image, so a microVM has nothing to run it in: srt runs it"
 
 
 def tool_choices(base: Profile, selected: list[str] | None = None) -> list[tuple[str, str, bool]]:

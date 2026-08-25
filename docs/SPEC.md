@@ -321,25 +321,25 @@ preset, a domain typed into the extra-domains box, and a local-model agent entry
 whose `api_domains` declare it. Anything else gets no `allowLocalBinding` key at
 all, so the default is the denial above.
 
-**For `microsandbox` the answer is different, and worse.** A guest has its own
-kernel, so host loopback is not the guest's loopback: the spike measured a
-default-network guest reaching nothing on a host listener — not `127.0.0.1`, not
-the gateway `172.16.0.81`, not the host's LAN address — and `--net host` alone
-did not change it. The gateway is a router, not a proxy to host services, so
-there is no `host.docker.internal` equivalent to aim at (every such name is
-`NXDOMAIN`). What works is naming the host's real address in a rule:
-`msb run --net-rule "allow@<host LAN address>" ...`, or the blunter
-`--net private`. That is only half of it, because a host-side server bound to
-loopback is unreachable from another kernel no matter what the rule says —
-`ollama` binds `127.0.0.1:11434` by default, so it also has to be started with
-`OLLAMA_HOST=0.0.0.0`, which exposes it to the LAN. The stable answer is
-`--vsock HOST_PATH:PORT`, host IPC with no address to expose; it was not
-exercised in the spike and is the thing to build the msb side of this preset on.
-Until then the preset is **srt-only**: `net_rules` (§2.2) turns its two entries
-into `allow@localhost:tcp:443` and `allow@127.0.0.1:tcp:443`, which name the
-guest's own loopback on a port nothing is listening on, so an msb session ticking
-it gets no host service and no error saying why. The chooser should say so before
-that gap is closed.
+**For `microsandbox` the answer is different, and better.** A guest has its own
+kernel, so host loopback is not the guest's loopback, and a rule naming
+`127.0.0.1` would name the guest's own. What the profile meant is this machine,
+which msb spells as the `host` group, and a rule there can carry a port. So the
+same tick that gives srt every local port gives msb one named port, and the port
+comes from the profile rather than from paddock: a loopback entry written
+`localhost:<port>`, in an agent's `api_domains` or typed into the extra-domains
+box, becomes `allow@host:tcp:<port>` and nothing else. §2.2 has the mechanism,
+what was measured, and the limits. The preset's own entries carry no port, so on
+msb they stay as wide as they are on srt: `allow@host`, every port on this
+machine. That width is the reason to name a port instead.
+
+**The confirm screen says which of the two it is**, because the same tick is now two
+different grants. `_reachable` takes the backend the way `_writable`, `_readable` and
+`_runnable` already do (§3.1). On srt, and on msb for an entry that named no port, it
+is the preset's own width: every service listening on this machine's loopback, whatever
+port. On msb for a profile that named its ports it is `port 11434 on this machine, and
+nothing else on it`. A screen that said "whatever port" for a one-port session would
+overstate the grant, which is the one direction this screen must never be wrong in.
 
 **There is no allow-all, and the profile says so rather than pretending.** The
 `everything` network preset is a sentinel: it names no domains, and a backend
@@ -519,9 +519,18 @@ Four of those differ in kind, not in spelling:
   symlink to `/private/tmp` on macOS, which fails as a mount source. The backend
   passes `Path.resolve()` for every mount.
 - **Network rules name a host, a protocol and a port, not a URL path.** srt allows a
-  domain through its proxy; an msb rule is `allow@<domain>:tcp:443`, so it is https to
-  that host and nothing else. A profile with no domains gets no network at all, DNS
-  included.
+  domain through its proxy; an msb rule is `allow@domain=<domain>:tcp:443`, so it is
+  https to that host and nothing else. A profile with no domains gets no network at all,
+  DNS included.
+- **A domain is spelled `domain=`, and that is a security fix, not a style.** msb's rule
+  targets share one namespace with its groups (`public`, `private`, `host`, `multicast`,
+  ...), so a bare `allow@public:tcp:443` is read as **the group**. A profile with
+  `public` in its extra-domains box therefore booted a guest that reached example.com
+  and api.github.com, neither of them on its allowlist: measured on 0.6.13, an allowlist
+  silently turned into open egress on 443 by one typed word. Every remote target now
+  carries `domain=`, which makes it a name to resolve; the same guest is refused,
+  because nothing answers to `public`. A profile entry is user input and must never be
+  able to name an msb group.
 - **Allow-all is a default, not a rule.** A profile that ticks `everything` (§2.1) boots
   with `--net-default allow` and no rules at all: every host, every port, and DNS with
   them. It is the one network answer msb can give and srt cannot, which is why the
@@ -534,6 +543,95 @@ Four of those differ in kind, not in spelling:
 - **The PATH shim dir has no job here.** The guest holds what the image holds, so the
   image is the tool selection, and the absolute-path bypass §4.1 documents is not
   available: `/opt/homebrew/bin/docker` is not in the guest to be run.
+
+#### Reaching a server on this machine
+
+**A local inference server is the case, and the mechanism is generic.** ollama, LM
+Studio, llama.cpp's server and vLLM are one shape: an HTTP server on a host port. So
+nothing here names a product, a model or a port. The port is configuration, and there
+is no default: paddock does not know what is listening and will not invent a rule for
+a service nobody named.
+
+**The rule aims at the gateway, and carries the port.** A loopback entry in the
+resolved domains (§6) becomes a `host` rule rather than a domain rule, because the
+guest's `127.0.0.1` is its own:
+
+| Entry in the resolved domains | Rule |
+| --- | --- |
+| `localhost:8080`, `127.0.0.1:8080`, `[::1]:8080` | `--net-rule allow@host:tcp:8080` |
+| `localhost`, `127.0.0.1` (the preset's own spelling) | `--net-rule allow@host`, every port |
+| both of the above together | `--net-rule allow@host`, the wider one, said once |
+
+Measured against `msb` 0.6.13, with a server bound to `127.0.0.1:11434` on the host
+and nothing rebound:
+
+- **A guest holding `allow@host:tcp:11434` reaches it.** The gateway connects onward
+  from the host itself, so it arrives at the host's own loopback. **The server does
+  not have to be published to anything.** This is the finding that reverses the
+  spike's: it measured a *default-network* guest reaching nothing, and concluded the
+  host had to be named by its LAN address and the server bound to `0.0.0.0`. Neither
+  is true with an explicit rule. Binding a local model server to the LAN to reach it
+  from a sandbox would have been the opposite of the point.
+- **The same guest is refused on every other host port.** A second host server on
+  `127.0.0.1:18099` answers the host and refuses the guest: `wget: can't connect to
+  remote host (172.16.2.213): Connection refused`. That is the whole difference from
+  srt, where the same grant takes no port at all (§2.1).
+- **The `host` group is the gateway alone.** A guest holding `allow@host` reaches a
+  host server through `host.microsandbox.internal` and is refused at the host's LAN
+  address for that same server. The grant does not carry the host's other addresses,
+  and the guest cannot reach the LAN through it.
+- **No DNS rule is needed.** msb writes `host.microsandbox.internal` into the guest's
+  `/etc/hosts` at boot, pointing at that sandbox's own gateway. A profile whose only
+  entry is loopback therefore gets no `allow@dns`, because nothing has to be resolved.
+- **What that closes, and what it does not.** With a **port-scoped** grant it closes
+  the DNS hole outright: no rule reaches the gateway's port 53, so names do not
+  resolve, which the live gate measured (`wget: bad address 'example.com'`). With the
+  **portless** `allow@host` it does not, and the difference is not a subtlety: the
+  gateway's resolver listens on a port of the host group, so a grant on every host port
+  is a grant on 53. Measured on 0.6.13, a guest holding `allow@host` and no `allow@dns`
+  resolved `example.com` through the gateway; the connections were still refused, but
+  the names came back. Names are a low-bandwidth channel out (see the DNS bullet
+  above), so a profile that wants that channel shut has to name its port.
+- **The address is per sandbox and the name is not.** Every sandbox gets its own
+  `/30`, so its gateway address differs (`172.16.2.213` in one run, `172.16.2.225` in
+  the next). The name is the same in all of them, which is why paddock writes the
+  name.
+
+**The guest is told where the server is.** When the resolved domains name exactly one
+local port, `msb create` carries two variables, set at boot so that every later `msb
+exec`, the agent tab and any shell tab, has them:
+
+```sh
+-e OPENAI_BASE_URL=http://host.microsandbox.internal:<port>/v1
+-e OLLAMA_HOST=http://host.microsandbox.internal:<port>
+```
+
+The OpenAI in the name is a request format, not a service, so aiming the variable at a
+local port needs no OpenAI account and sends nothing off the machine.
+
+`OPENAI_BASE_URL` is the one that matters: it is what an OpenAI-shaped client reads,
+which is nearly all of them, and every server named above serves that API. `OLLAMA_HOST`
+is a courtesy for clients that read it instead, naming the same endpoint without the
+`/v1` suffix those APIs do not use. Neither is a credential, and a client that wants an
+API key for a local server can be given any string.
+
+**Exactly one port, or neither variable.** Two open local ports are a server and
+something else, a dev server or a database, and paddock cannot tell which one
+answers prompts, so it names neither rather than guessing wrong. A profile that opened the
+whole machine named no port at all and gets no endpoint either. In both cases the
+rules still let the traffic through: what is missing is only paddock's claim about
+where to aim, which it will not make when it does not know.
+
+**One port named inside a wider grant still gets the endpoint.** Ticking the preset and
+naming `localhost:8080` is one rule, `allow@host`, and one endpoint, `:8080`. The port
+was declared and it is still where the server is, so the variable is true; it is the
+rule that is generous, not the name. What suppresses the endpoint is ambiguity about
+which port answers prompts, never a grant being wider than the endpoint it names.
+
+**What this does not do.** No image ships a client, so the guest needs one it can
+install or one baked into its image; the endpoint is set either way. There is no
+preflight that checks a server is actually listening before the VM boots: a wrong
+port is a refused connection inside the guest, the same as any other closed port.
 
 #### Provisioning an agent in the guest
 
@@ -571,7 +669,10 @@ binary. Bumping it is a one-line registry edit.
 
 An agent with no image is refused at create, before a VM is booted: the guest holds what
 the image holds, so there would be nothing to run. `shell` is the exception that needs
-neither, and attaches to whatever shell the image ships. An agent that has an image but no
+neither, and attaches to whatever shell the image ships. Every backend says what it will
+refuse without doing anything about it (`refusal`), so a caller asks before it announces
+what a slow launch is starting: a line about pulling a guest image in front of a refusal
+describes a minute that never happens. An agent that has an image but no
 config-dir redirection (§4.3) boots and says on stderr that it starts unauthenticated:
 nothing carries its credentials in.
 
@@ -735,9 +836,17 @@ enforce one refuses the row with the reason on the key line, the way the agent
 list refuses an agent this machine has not got: srt has no allow-all network at
 all (§2.1), so on srt that row says so and names msb. The refusal runs both ways,
 because either field can be answered first: with the allow-all network ticked, the
-Backend list refuses srt for the same reason. A saved profile that names both
-still reaches the confirm, and there it is a warning row rather than a grant the
-screen asserts and the backend then rejects.
+Backend list refuses srt for the same reason.
+
+**A saved profile answers every field at once and opens none of the lists**, so
+neither half of a mutual refusal ever runs, and the pair used to reach the launch
+and be refused by the backend a minute into it. The form carries the same refusal
+itself: the Backend row takes the reason as its hint and keeps `(refused)` at its
+edge, and Launch puts the reason on the key line instead of launching, the way a
+refused row on a list does. Every field still opens and the answers still save,
+because changing one of the two answers is the way out and that is done from the
+form. The confirm carries it as a warning row too, because that screen may never
+assert a grant the backend is about to reject.
 
 The `a` key, which ticks everything on a checklist, never reaches an allow-all
 row. "All of the groups" and "no list at all" are different answers, and the key
@@ -782,9 +891,12 @@ with nothing to run it is not an agent either. A command written as a path is
 left alone, which is what the `shell` agent's `$SHELL` is. On msb the host PATH
 says nothing at all, because the guest holds what its image holds and installs
 the rest (§2.2), so what stops an agent there is having no image to boot, which
-is what the backend itself refuses on. A registry entry whose command cannot even
-be parsed is refused with the parse error as its reason: this is drawn for every
-agent on the list, before anything is chosen, so it may not raise.
+is what the backend itself refuses on. That one runs both ways as well: with an
+image-less agent chosen, the Backend list refuses msb and names srt, and a profile
+that carries both is refused on the form before the launch. A registry entry whose
+command cannot even be parsed is refused with the parse error as its reason: this
+is drawn for every agent on the list, before anything is chosen, so it may not
+raise.
 
 **Nothing the popup was asked to do dies without a screen.** The popup is
 transient (§1.1): it closes when `paddock` exits, so a message printed after the
@@ -1213,7 +1325,7 @@ entry:
 | --- | --- |
 | `name` | Display name |
 | `command` | Executable run inside the sandbox |
-| `api_domains` | Domains the agent needs; merged into the allowlist when selected |
+| `api_domains` | Domains the agent needs; merged into the allowlist when selected. A `localhost:<port>` entry is how an agent says its API is a server on this machine, which is the whole configuration the local-inference case has (§2.2) |
 | `required_tools` | Tools the command cannot start without, put on the srt shim dir when the agent is selected. `codex` is a `#!/usr/bin/env node` script, so it names `node`. Blank for an agent that is a binary |
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
@@ -1265,6 +1377,11 @@ Notes:
   that resolved set is what writes `allowLocalBinding` into the settings (§2.1);
   no profile ships with it. The `everything` preset is outside that sum: it adds
   no domain and is read as a sentinel by the backend (§2.1).
+- A loopback entry may carry a port, `localhost:8080`, and that is the only
+  configuration the local-server case has. msb scopes its rule to that port and
+  points the guest at it (§2.2); srt's grant takes no port and ignores it (§2.1).
+  An agent that calls a server on this machine declares it in `api_domains` (§5)
+  the way any agent declares its API, so choosing that agent is what opens it.
 - Two profiles ship built in: `claude-default` (Claude Code with the usual dev
   tools and registries) and `offline-shell` (a plain shell, no network). A user
   file of the same name **replaces** the built-in whole: fields the file leaves
@@ -1296,7 +1413,8 @@ should be small, and mostly plain functions over a `Profile`:
 | `paddock/tui.py` | The chooser's fields, words and rules: answers in, one plan out | Done; the workspace default binding (§3.3) is not asked about |
 | `paddock/screen.py` | The screens: the form, a list, a checklist, a box, the confirm and the one a failed launch ends on, over prompt_toolkit | Done |
 | `paddock/recent.py` | What the form opens on: the profile each workspace launched last | Done |
-| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `attach <session>`, `profiles`, `gc`, `logs`, `init` | Done |
+| `paddock/cli.py` | Entry point: `choose` (default), `launch <profile>`, `run [profile]`, `attach <session>`, `collect <session>`, `profiles`, `gc`, `logs`, `init` | Done |
+| `paddock/standalone.py` | `paddock run`: prepare a session and exec it in the current terminal, with no herdr (§11) | Done |
 | `paddock/init.py` | `paddock init`: splice the keybinding into herdr's config, back it up, reload (§1.1) | Done; the plugin manifest (§1.4) is v1.1 |
 | `paddock/log.py` | Where paddock logs, at what level, and what never reaches the file (§9) | Done |
 
@@ -1474,3 +1592,83 @@ layer can call every other one, every bug belongs to everybody.
 breaks this, naming the file and the import it objected to. It also holds the
 list of backend modules `sessions` may reach, so adding a backend is one line
 there and not a search: `paddock.backends.microsandbox` was that line.
+
+---
+
+## 11. Standalone mode: `paddock run`
+
+**The destination is the terminal you are in.** `paddock run <profile>` prepares
+the run exactly as a launch does, the same settings, shim dir, synthesized config
+and launch script, and then execs `/bin/sh <run_dir>/launch.sh` in place instead
+of asking herdr for a tab. It is the same script a pane is sent (§1.3), so the
+pane log, the failure hold and the policy are the same here as they are there.
+The process becomes the sandbox, and the terminal is the pane.
+
+`paddock run` with no profile opens the chooser (§3.1) in the terminal, and does
+whatever the plan says in place:
+
+| The chooser said | Standalone does |
+| --- | --- |
+| New sandbox session | Prepare it and exec its launch script |
+| Attach to a session | Exec that run's launch script, or its shell script |
+| Local tab | Prints "you already have a terminal" and exits 0 |
+
+With no terminal to draw in, `paddock run` needs a profile named on the command
+line, or `--attach <session>` to join one that is running, exactly as `paddock`
+itself needs `paddock launch`. With either named, no terminal is needed at all:
+the exec inherits whatever stdio there is, and a non-interactive agent is a
+reasonable thing to run under a redirect. `--dry-run` prints what it would exec
+and prepares nothing.
+
+**A terminal is not a tab.** Nothing registers a pane id, so nothing here changes
+what closing herdr's last tab means. A standalone run of a session herdr owns
+does not hold it open, and does not end it.
+
+**srt runs are ephemeral.** Nothing outlives the process, so there is no registry
+entry: the session ends when the terminal does, and an entry nothing would ever
+collect is a session for ever.
+
+**What speaks for a run with no registry entry is a pid file.** Every standalone
+run writes its own pid to `<run_dir>/standalone.pid` before the exec, and `execv`
+keeps the pid, so the number in there is the process sitting in the sandbox.
+`collect_run_dirs` (§8) leaves a run dir alone while that pid answers to
+`kill(pid, 0)`; a pid this user may not signal counts as alive, because refusing
+to remove a directory costs a directory and removing a live run costs the shim
+dir out from under it. A pid the system has since reused is covered by the grace
+period the sweep already leaves.
+
+**msb runs must not leak a VM.** A microVM outlives the process that booted it,
+so a standalone msb run is registered like any other session, with no pane ids.
+That does two things: a `paddock gc` elsewhere sees the sandbox claimed and
+leaves it alone, and there is something to end. Ending it is the run's own job,
+because no paddock process is left by then: paddock writes a `run.sh` beside the
+launch script that runs the launch script and then calls `paddock collect
+<session>`, under a `trap` so that ctrl-c and a closed terminal collect too.
+A session told to keep running (§3.4) gets no wrapper, because staying up is what
+was asked for.
+
+The trap is dropped before the collection runs, so a second ctrl-c cannot
+interrupt the first one's work: an ignored signal is inherited across `exec`, so
+that covers the `paddock collect` itself and not only the shell waiting for it.
+
+Nothing covers a terminal killed outright. That leaves a registered session with
+a running VM, which `paddock collect <session>` ends. Collecting a session twice
+is not a crash: the second one says there is no session by that name and exits 1.
+`paddock gc` names every session it finds with no tabs, so a session left over
+this way is reported rather than silently kept. It says which kind: a run in a
+terminal, or a session told to survive its last tab (§3.4). Both end the same
+way and a user reads the two for different reasons.
+
+**A session whose sandbox has gone ends at the door.** `ensure_live(run)` is on
+the backend contract: srt has nothing that can have gone and does nothing, msb
+asks `msb ls`. Both ways in call it, `open_pane` for a tab and
+`attach_standalone` for a terminal, so neither leaves a dead session in the
+registry offering something that cannot open (§3.4).
+
+**Zero-pane sessions survive reconciliation.** `reconcile` (§3.4) already keeps a
+session whose pane list has not changed, and a standalone one never had a pane, so
+a `paddock` invocation in another terminal cannot collect a run that is under way.
+
+**herdr stays out of it.** `standalone.py` never imports `herdr_client`, and
+`tests/test_architecture.py` fails on the edge if it ever does. Sessions, tabs
+and the attach UX live in herdr; this is one session in one terminal.

@@ -14,7 +14,8 @@ package "Herdr 0.8.0" {
 }
 
 package "paddock" {
-  [cli.py\nchoose | launch | attach | profiles | gc | logs | init\n~--cwd, ~--dry-run] as CLI
+  [cli.py\nchoose | launch | run | attach | collect | profiles | gc | logs | init\n~--cwd, ~--dry-run] as CLI
+  [standalone.py\n`paddock run`: prepare a session, then exec\nits launch script in this terminal\nno herdr, no tab, no pane id] as Standalone
   [init.py\nsplice the keybinding into\n$HOME/.config/herdr/config.toml\n~--dry-run, ~--undo] as Init
   [tui.py\nthe chooser: fields, words and rules\nanswers -> a plan] as TUI
   [screen.py\nthe screens: form, list, checklist, box,\nconfirm, and the one a failed launch ends on\none prompt_toolkit Application each,\nplus the progress lines a slow launch prints] as Screen
@@ -62,6 +63,9 @@ Profiles ..> ConfigFiles : reads / writes
 Agents ..> ConfigFiles : reads user agents/*.json
 
 CLI --> Sessions : launch_local | get_session + attach | launch\n(the only module that carries a plan out)
+CLI --> Standalone : run: the same plan, carried out here\ninstead of in a herdr tab
+Standalone --> Sessions : prepare_standalone | attach_standalone\n(the same door: which backend runs it\nstays sessions' business)
+Standalone --> RunDir : run.sh for a session with a VM:\nthe launch script, then `paddock collect`,\nunder a trap for ctrl-c and HUP
 BackendAPI <|.. SrtBackend
 BackendAPI <|.. MsbBackend
 
@@ -119,6 +123,13 @@ note right of Sessions
   backend, and no backend imports them or sessions.py.
   tests/test_architecture.py parses the imports and
   fails on any edge that breaks that (SPEC section 10).
+end note
+
+note right of Standalone
+  `paddock run` is paddock without herdr, so this module
+  never imports herdr_client and never reaches a backend
+  by name. The same test fails on either edge.
+  See standalone_run.puml and SPEC section 11.
 end note
 
 @enduml

@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from paddock import __version__, init, log, recent, sessions, tui
+from paddock import __version__, init, log, recent, sessions, standalone, tui
 from paddock.agents import load_agents
 from paddock.profiles import Profile, load_profiles
 from paddock.sessions import DEFAULT_BACKEND
@@ -100,6 +100,12 @@ def run(command: Command) -> int:
 
     if command.name == "gc":
         return gc()
+    # Both are the terminal's own business and neither has a tab to lose, so both stay
+    # above the reconcile: it is the one call on this path that would ask herdr anything.
+    if command.name == "run":
+        return run_here(command)
+    if command.name == "collect":
+        return collect(command.ref)
     # Every command left here opens or lists sessions, so first drop the ones whose tabs
     # are gone (SPEC §3.4). A dry run changes nothing, so it collects nothing either.
     if not command.dry_run:
@@ -112,7 +118,7 @@ def run(command: Command) -> int:
     cwd = Path(command.cwd) if command.cwd else Path.cwd()
     if command.name == "choose":
         if not has_terminal():
-            return _fail("no terminal to ask in. Try: paddock launch <profile>")
+            return _fail(no_terminal("launch"))
         return choose(cwd, command.dry_run, command.attach)
     if command.name == "attach":
         # Only an asked-for cwd, so an attached tab otherwise keeps the session's workdir.
@@ -129,8 +135,26 @@ def run(command: Command) -> int:
     if command.dry_run:
         print(describe(plan))
         return 0
+    refused = refusal(plan)
+    if refused:
+        return _fail(refused)
     announce(plan)
     return perform(plan)
+
+
+def refusal(plan: tui.Plan) -> str:
+    """Why this plan cannot start, when that is known before anything is done about it.
+
+    Asked in front of `announce`, never behind it. The announcement is about a wait, and a
+    launch that says it is pulling the guest image and then refuses the agent it was going
+    to run in it described a minute that never happened (SPEC §2.2).
+
+    Only a new session has a backend to refuse. A local tab has no sandbox and an attach
+    joins one that already booted.
+    """
+    if not isinstance(plan, tui.NewSession):
+        return ""
+    return sessions.refusal(plan.profile, plan.backend)
 
 
 def announce(plan: tui.Plan) -> None:
@@ -139,6 +163,9 @@ def announce(plan: tui.Plan) -> None:
     The chooser draws a progress screen at this point. A CLI launch printed nothing at all,
     and an msb start spends the better part of a minute pulling an image and installing the
     agent inside the guest, which reads as a command that has hung.
+
+    Everything this says is about a launch that is going ahead: `refusal` is asked first,
+    so nothing is announced in front of a refusal.
     """
     if not isinstance(plan, tui.NewSession) or plan.backend == tui.SRT:
         return  # srt starts at once, and a line about it would only be noise
@@ -166,6 +193,10 @@ def gc() -> int:
         # Not counted as done: nothing was collected, and a gc that says "nothing to
         # collect" alongside this is telling the truth about both.
         print(left_alone(swept.unowned))
+    for session in sessions.list_sessions():
+        # Same rule, same reason: named rather than collected, and not counted as done.
+        if not session.pane_ids:
+            print(no_tabs(session))
     for path in sessions.collect_run_dirs():
         print(f"removed the orphaned run dir {path}")
         done += 1
@@ -189,6 +220,21 @@ def left_alone(handles: list[str]) -> str:
     )
 
 
+def no_tabs(session: sessions.Session) -> str:
+    """The one line gc says about a session with no tabs, and how to end it.
+
+    Nothing collects one of these: reconciliation only ends a session it has just taken the
+    last tab from. Silence would read as a gc that missed them, and there are two ways to
+    get here that a user acts on differently: a run in somebody's terminal (SPEC §11), and
+    a session told to survive its last tab (SPEC §3.4).
+    """
+    why = "kept running on purpose" if session.keep_alive else "a session in a terminal"
+    return (
+        f"paddock: leaving {session.name} alone: {why}, with no tabs. "
+        f"End it with: paddock collect {session.name}"
+    )
+
+
 def choose(cwd: Path, dry_run: bool = False, attach: bool = False) -> int:
     """Ask what to open and do it, staying open until something is done or nobody wants to.
 
@@ -209,9 +255,11 @@ def choose(cwd: Path, dry_run: bool = False, attach: bool = False) -> int:
         if dry_run:
             print(describe(plan))
             return 0
-        if isinstance(plan, tui.NewSession):
+        if isinstance(plan, tui.NewSession) and not refusal(plan):
             # Before the call, not after it: prepare blocks for as long as a guest install
-            # takes, and a blank popup is what that minute used to look like.
+            # takes, and a blank popup is what that minute used to look like. Nothing is
+            # drawn in front of a launch the backend refuses out of hand: `perform` raises
+            # the reason at once, and the failure screen is where it belongs.
             tui.starting(plan)
         try:
             return perform(plan)
@@ -227,6 +275,105 @@ def choose(cwd: Path, dry_run: bool = False, attach: bool = False) -> int:
             answers = tui.answers_from(plan, load_profiles())
 
 
+def run_here(command: Command) -> int:
+    """`paddock run`: work out the plan, then become it in the terminal it was typed in.
+
+    A named profile or session is the whole question answered, so neither needs a terminal
+    to ask in: the agent may not want one either, and the exec inherits whatever stdio
+    there is (SPEC §11).
+    """
+    if command.profile and command.ref:
+        return _fail("run takes a profile or --attach <session>, not both")
+    if command.ref:
+        plan: tui.Plan = tui.Attach(ref=command.ref)
+    elif command.profile:
+        saved = load_profiles()
+        if command.profile not in saved:
+            return _fail(f"no profile named {command.profile!r}")
+        plan = tui.NewSession(profile=saved[command.profile], backend=command.backend)
+    else:
+        if not has_terminal():
+            return _fail(no_terminal("run"))
+        chosen = tui.choose(Path.cwd())
+        if chosen is None:  # backed out: nothing chosen, nothing done
+            return 0
+        plan = chosen
+    if command.dry_run:
+        print(describe_here(plan))
+        return 0
+    refused = refusal(plan)
+    if refused:
+        # Before the plan is announced, so a backend nobody has, or an agent this one
+        # cannot run, says so at once rather than after a screenful about what is starting.
+        return _fail(refused)
+    announce(plan)
+    return perform_here(plan)
+
+
+def describe_here(plan: tui.Plan) -> str:
+    """What `paddock run --dry-run` would do. Nothing is prepared, so no run dir is named."""
+    if isinstance(plan, tui.Local):
+        return "would say you already have a terminal, and open nothing"
+    if isinstance(plan, tui.Attach):
+        script = "shell.sh" if plan.shell else "launch.sh"
+        return (
+            f"would exec /bin/sh <run dir>/{script} in this terminal, "
+            f"joining session {plan.ref!r}"
+        )
+    return f"{describe(plan)}, then exec /bin/sh <run dir>/launch.sh in this terminal"
+
+
+def perform_here(plan: tui.Plan) -> int:
+    """Do it here. Every call into standalone goes through this, as `perform` does sessions."""
+    if isinstance(plan, tui.Local):
+        # There is no herdr to open a tab in, and the one honest answer is a short one.
+        print("paddock: you already have a terminal", file=sys.stderr)
+        return 0
+    if isinstance(plan, tui.Attach):
+        session = sessions.get_session(plan.ref)
+        if session is None:
+            return _fail(f"no session named {plan.ref!r}")
+        return standalone.attach(session, shell=plan.shell)
+    try:
+        profile = keep(plan)
+    except ValueError as error:
+        return _fail(str(error))
+    remembered = plan.save_as or plan.started_from
+    if remembered in load_profiles():  # "+custom" is no profile to open on next time
+        recent.remember(remembered)
+    return standalone.start(profile, plan.backend, plan.keep_alive, plan.name)
+
+
+def collect(ref: str) -> int:
+    """End one session now: take its sandbox down and drop it from the registry.
+
+    A run in the user's own terminal leaves this for its own script to call when the agent
+    exits, because there is no paddock process left by then to notice (SPEC §11).
+    """
+    session = sessions.get_session(ref)
+    if session is None:
+        return _fail(f"no session named {ref!r}")
+    sessions.forget(session)
+    print(f"collected {session.name}")
+    return 0
+
+
+def keep(plan: tui.NewSession) -> Profile:
+    """The chooser's two promises on the way to a launch, kept whichever terminal it lands in.
+
+    Returns the profile to launch, which is the saved one when the answers were saved.
+    """
+    profile = plan.profile
+    if plan.agent_command:
+        path = tui.remember_agent(profile.agent, plan.agent_command)
+        if path is not None:
+            print(f"paddock: remembered agent in {path}", file=sys.stderr)
+    if plan.save_as:
+        profile, message = tui.save_answers(profile, plan.save_as)
+        print(message, file=sys.stderr)
+    return profile
+
+
 def perform(plan: tui.Plan) -> int:
     """Do it. Every call into sessions goes through here."""
     if isinstance(plan, tui.Local):
@@ -240,17 +387,10 @@ def perform(plan: tui.Plan) -> int:
         print(sessions.attach(session, where, shell=plan.shell))
         return 0
 
-    profile = plan.profile
-    if plan.agent_command:
-        try:
-            path = tui.remember_agent(profile.agent, plan.agent_command)
-        except ValueError as error:
-            return _fail(str(error))
-        if path is not None:
-            print(f"paddock: remembered agent in {path}", file=sys.stderr)
-    if plan.save_as:
-        profile, message = tui.save_answers(profile, plan.save_as)
-        print(message, file=sys.stderr)
+    try:
+        profile = keep(plan)
+    except ValueError as error:
+        return _fail(str(error))
     session, pane_id = sessions.launch(profile, plan.name or None, backend=plan.backend)
     if plan.keep_alive:
         sessions.set_keep_alive(session, True)
@@ -377,6 +517,27 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_BACKEND,
         help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
     )
+    here = subcommands.add_parser(
+        "run", parents=[dry], help="run a session in this terminal, with no herdr and no new tab"
+    )
+    here.add_argument(
+        "profile",
+        nargs="?",
+        default="",
+        help="profile name; with none, ask (which needs a terminal to ask in)",
+    )
+    here.add_argument(
+        "--backend",
+        default=DEFAULT_BACKEND,
+        help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
+    )
+    here.add_argument(
+        "--attach",
+        metavar="session",
+        dest="ref",
+        default="",
+        help="join a running session in this terminal instead of starting one",
+    )
     attach = subcommands.add_parser(
         "attach", parents=[dry, where], help="put a new tab on a running session"
     )
@@ -390,6 +551,10 @@ def _parser() -> argparse.ArgumentParser:
     subcommands.add_parser(
         "gc", help="collect sessions whose tabs are all closed (every command does this first)"
     )
+    ender = subcommands.add_parser(
+        "collect", help="end one session now: stop its sandbox and drop it from the registry"
+    )
+    ender.add_argument("ref", metavar="session", help="session id or name")
     tail = subcommands.add_parser("logs", help="where paddock logged what it did, and the end")
     tail.add_argument(
         "ref",
@@ -405,6 +570,11 @@ def _parser() -> argparse.ArgumentParser:
         "--undo", action="store_true", help="put the newest backed-up herdr config back"
     )
     return parser
+
+
+def no_terminal(command: str) -> str:
+    """What a chooser with nowhere to draw says, naming the command that needs no asking."""
+    return f"no terminal to ask in. Try: paddock {command} <profile>"
 
 
 def has_terminal() -> bool:
