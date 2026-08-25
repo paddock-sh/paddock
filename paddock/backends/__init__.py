@@ -13,6 +13,7 @@ same shape whichever sandbox was behind it: srt's `srt -c ...` and msb's `msb ex
 
 from __future__ import annotations
 
+import os
 import shlex
 import tempfile
 import time
@@ -34,6 +35,10 @@ SHELL_SCRIPT = "shell.sh"
 # The wrapper `paddock run` becomes when the run it starts has to be collected on the way
 # out (SPEC §11). It runs the launch script and ends the session after it.
 RUN_SCRIPT = "run.sh"
+
+# The pid of the `paddock run` that became this run. A run in somebody's terminal keeps no
+# registry entry on every backend, so this is what tells a sweep it is not over (SPEC §11).
+PID_FILE = "standalone.pid"
 
 # A launch that fails does so at once. A non-zero exit later than this is the agent ending,
 # ctrl-c included, and holding the pane on that would hold it hostage.
@@ -235,6 +240,10 @@ def run_script_text(run_dir: Path, after: list[str]) -> str:
     because the user pressed a key is exactly the leak this exists to stop. A trap covers
     that and the terminal closing with it. Nothing covers being killed outright, which is
     what `paddock collect <session>` is for.
+
+    The trap is dropped before the command runs, so a second ctrl-c cannot interrupt the
+    collection the first one started. A child inherits an ignored signal across exec, so
+    that covers the command itself and not only the shell waiting for it.
     """
     return "\n".join(
         [
@@ -243,6 +252,7 @@ def run_script_text(run_dir: Path, after: list[str]) -> str:
             "paddock_after() {",
             '  [ -n "$paddock_done" ] && return',
             "  paddock_done=1",
+            "  trap '' INT HUP TERM",
             f"  {shlex.join(after)}",
             "}",
             "trap paddock_after EXIT HUP INT TERM",
@@ -254,6 +264,43 @@ def run_script_text(run_dir: Path, after: list[str]) -> str:
             "",
         ]
     )
+
+
+def write_pid_marker(run_dir: Path) -> Path:
+    """Name the process that is about to become this run (SPEC §11).
+
+    Written before the exec, and `execv` keeps the pid, so the number in here is the
+    process sitting in the sandbox for as long as it is sitting there.
+    """
+    path = run_dir / PID_FILE
+    path.write_text(f"{os.getpid()}\n")
+    return path
+
+
+def run_is_live(run_dir: Path) -> bool:
+    """Whether a terminal is still in this run, by the pid it left behind (SPEC §11).
+
+    A run that keeps no registry entry has nothing else to say so, and a sweep that
+    removed its shim dir would take the tools out from under a live sandbox.
+
+    A pid this user may not signal belongs to somebody else and counts as alive: refusing
+    to remove a directory costs a directory, and removing a live run costs the session.
+    A pid the system has since given to something else is covered by the grace period a
+    sweep already leaves, which is longer than the gap between the two.
+    """
+    try:
+        pid = int((run_dir / PID_FILE).read_text().strip())
+    except (OSError, ValueError):
+        return False  # no marker, or one nothing wrote a number in: not a live run
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def launch_line(run_dir: Path, name: str = LAUNCH_SCRIPT) -> str:

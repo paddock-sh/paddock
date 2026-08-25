@@ -487,6 +487,10 @@ def open_pane(run: Run, label: str = "", cwd: Path | None = None, shell: bool = 
     return pane_id
 
 
+def ensure_live(run: Run) -> None:
+    """Nothing outlives the process here, so there is never a sandbox to have gone."""
+
+
 def sweep(known: set[str], ours: set[str]) -> Swept:
     """Nothing outlives the process here, so a sweep finds nothing and removes nothing."""
     return Swept()

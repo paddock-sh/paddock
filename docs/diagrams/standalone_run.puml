@@ -33,23 +33,26 @@ alt the plan is a local tab
 else the plan is a session to attach to
   CLI -> Standalone : attach(session, shell)
   Standalone -> Sessions : attach_standalone(session)
-  Sessions -> Backend : load_run(run_dir)
+  Sessions -> Backend : load_run(run_dir), then ensure_live(run)
   Backend --> Sessions : the run, its scripts rewritten if stale
+  note right : a sandbox that has gone ends the session here,\nthe same answer a tab gets.
   note right : no pane id is registered, so what closing\nherdr's last tab means is left as it was
 else the plan is a new session
   CLI -> Standalone : start(profile, backend, keep_alive)
   Standalone -> Sessions : prepare_standalone(profile, backend)
   Sessions -> Backend : prepare(profile)
+  Sessions -> RunDir : standalone.pid: the process\nthat is about to become this run
   Backend -> RunDir : settings / shim dir / config dir,\nlaunch.sh and shell.sh
   Backend --> Sessions : the run, and a vm_handle if it has one
 
   alt the run leaves nothing running (srt)
-    Sessions --> Standalone : run dir + workdir, no session
-    note right : ephemeral: no registry entry,\nthe run ends with the terminal
+    Sessions --> Standalone : script + workdir, no session
+    note right : ephemeral: no registry entry.\nstandalone.pid is what stops a sweep\ntaking the run dir from under it
   else the run leaves a microVM (msb)
     Sessions -> Sessions : register the session,\nno pane ids
-    Sessions --> Standalone : run dir + workdir + session
-    Standalone -> RunDir : write run.sh:\nlaunch.sh, then `paddock collect <session>`,\nunder a trap for ctrl-c and HUP
+    Sessions --> Standalone : script + workdir + session
+    Standalone -> Sessions : wrap_standalone(here, collect argv)
+    Sessions -> RunDir : write run.sh:\nlaunch.sh, then `paddock collect <session>`,\nunder a trap for ctrl-c and HUP
   end
 end
 

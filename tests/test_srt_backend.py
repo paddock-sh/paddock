@@ -1550,3 +1550,10 @@ def test_a_link_out_is_dropped_even_beside_the_agents_own_login(tmp_path: Path) 
     settings = srt.build_settings(Profile(), CLAUDE, tmp_path, synth)
 
     assert settings["filesystem"]["allowRead"] == [str(credentials)]
+
+
+def test_an_srt_run_is_always_live(which: dict[str, str]) -> None:
+    """Nothing outlives the process here, so there is never a sandbox to have gone."""
+    run = srt.prepare(Profile(name="p", tools=["git"]))
+
+    assert srt.ensure_live(run) is None

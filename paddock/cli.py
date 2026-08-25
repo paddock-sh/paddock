@@ -172,6 +172,10 @@ def gc() -> int:
         # Not counted as done: nothing was collected, and a gc that says "nothing to
         # collect" alongside this is telling the truth about both.
         print(left_alone(swept.unowned))
+    for session in sessions.list_sessions():
+        # Same rule, same reason: named rather than collected, and not counted as done.
+        if not session.pane_ids:
+            print(no_tabs(session.name))
     for path in sessions.collect_run_dirs():
         print(f"removed the orphaned run dir {path}")
         done += 1
@@ -192,6 +196,19 @@ def left_alone(handles: list[str]) -> str:
     return (
         f"paddock: leaving {named} alone: owned by another paddock state dir or a test run. "
         f"Remove by hand with: {remedy}"
+    )
+
+
+def no_tabs(name: str) -> str:
+    """The one line gc says about a session with no tabs, and how to end it.
+
+    Nothing collects one of these: reconciliation only ends a session it has just taken the
+    last tab from, so a run in somebody's terminal (SPEC §11) and a session told to keep
+    running both sit here on purpose. Silence would read as a gc that missed them.
+    """
+    return (
+        f"paddock: leaving {name} alone: a session in a terminal, with no tabs. "
+        f"End it with: paddock collect {name}"
     )
 
 
@@ -236,14 +253,25 @@ def choose(cwd: Path, dry_run: bool = False, attach: bool = False) -> int:
 def run_here(command: Command) -> int:
     """`paddock run`: work out the plan, then become it in the terminal it was typed in.
 
-    A named profile is the whole question answered, so it needs no terminal to ask in: the
-    agent may not want one either, and the exec inherits whatever stdio there is (SPEC §11).
+    A named profile or session is the whole question answered, so neither needs a terminal
+    to ask in: the agent may not want one either, and the exec inherits whatever stdio
+    there is (SPEC §11).
     """
-    if command.profile:
+    if command.profile and command.ref:
+        return _fail("run takes a profile or --attach <session>, not both")
+    if command.ref:
+        plan: tui.Plan = tui.Attach(ref=command.ref)
+    elif command.profile:
         saved = load_profiles()
         if command.profile not in saved:
             return _fail(f"no profile named {command.profile!r}")
-        plan: tui.Plan = tui.NewSession(profile=saved[command.profile], backend=command.backend)
+        try:
+            # Before the plan is announced, so a backend nobody has says so at once rather
+            # than after a screenful about what is starting.
+            sessions.backend_for(command.backend)
+        except ValueError as error:
+            return _fail(str(error))
+        plan = tui.NewSession(profile=saved[command.profile], backend=command.backend)
     else:
         if not has_terminal():
             return _fail(no_terminal("run"))
@@ -251,8 +279,24 @@ def run_here(command: Command) -> int:
         if chosen is None:  # backed out: nothing chosen, nothing done
             return 0
         plan = chosen
+    if command.dry_run:
+        print(describe_here(plan))
+        return 0
     announce(plan)
     return perform_here(plan)
+
+
+def describe_here(plan: tui.Plan) -> str:
+    """What `paddock run --dry-run` would do. Nothing is prepared, so no run dir is named."""
+    if isinstance(plan, tui.Local):
+        return "would say you already have a terminal, and open nothing"
+    if isinstance(plan, tui.Attach):
+        script = "shell.sh" if plan.shell else "launch.sh"
+        return (
+            f"would exec /bin/sh <run dir>/{script} in this terminal, "
+            f"joining session {plan.ref!r}"
+        )
+    return f"{describe(plan)}, then exec /bin/sh <run dir>/launch.sh in this terminal"
 
 
 def perform_here(plan: tui.Plan) -> int:
@@ -273,7 +317,7 @@ def perform_here(plan: tui.Plan) -> int:
     remembered = plan.save_as or plan.started_from
     if remembered in load_profiles():  # "+custom" is no profile to open on next time
         recent.remember(remembered)
-    return standalone.start(profile, plan.backend, plan.keep_alive)
+    return standalone.start(profile, plan.backend, plan.keep_alive, plan.name)
 
 
 def collect(ref: str) -> int:
@@ -450,7 +494,7 @@ def _parser() -> argparse.ArgumentParser:
         help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
     )
     here = subcommands.add_parser(
-        "run", help="run a session in this terminal, with no herdr and no new tab"
+        "run", parents=[dry], help="run a session in this terminal, with no herdr and no new tab"
     )
     here.add_argument(
         "profile",
@@ -462,6 +506,13 @@ def _parser() -> argparse.ArgumentParser:
         "--backend",
         default=DEFAULT_BACKEND,
         help=f"which sandbox runs it: srt, or msb for a microVM (default: {DEFAULT_BACKEND})",
+    )
+    here.add_argument(
+        "--attach",
+        metavar="session",
+        dest="ref",
+        default="",
+        help="join a running session in this terminal instead of starting one",
     )
     attach = subcommands.add_parser(
         "attach", parents=[dry, where], help="put a new tab on a running session"

@@ -7,13 +7,16 @@ the process running them is never replaced, and check what it would have become.
 from __future__ import annotations
 
 import os
+import signal
+import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from paddock import herdr_client, sessions, standalone
-from paddock.backends import LAUNCH_SCRIPT, RUN_SCRIPT, SHELL_SCRIPT
+from paddock import backends, herdr_client, sessions, standalone
+from paddock.backends import LAUNCH_SCRIPT, PID_FILE, RUN_SCRIPT, SHELL_SCRIPT, SandboxGone
 from paddock.profiles import Profile
 
 
@@ -33,12 +36,13 @@ class FakeBackend:
     the whole difference between the two backends here.
     """
 
-    def __init__(self, run_dir: Path, vm_handle: str = "") -> None:
+    def __init__(self, run_dir: Path, vm_handle: str = "", gone: bool = False) -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "work").mkdir(exist_ok=True)
         for name in (LAUNCH_SCRIPT, SHELL_SCRIPT):
             (run_dir / name).write_text("#!/bin/sh\n")
         self.run = FakeRun(run_dir, run_dir / "work", vm_handle)
+        self.gone = gone
         self.prepared: list[Profile] = []
         self.loaded: list[Path] = []
         self.collected: list[tuple[Path, str]] = []
@@ -50,6 +54,10 @@ class FakeBackend:
     def load_run(self, run_dir: Path) -> FakeRun:
         self.loaded.append(run_dir)
         return self.run
+
+    def ensure_live(self, run: FakeRun) -> None:
+        if self.gone:
+            raise SandboxGone(f"the microVM {run.vm_handle} is not running any more")
 
     def collect(self, run_dir: Path, vm_handle: str = "") -> None:
         self.collected.append((run_dir, vm_handle))
@@ -91,9 +99,11 @@ def no_herdr(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(herdr_client, name, refuse)
 
 
-def a_vm_backend(monkeypatch: pytest.MonkeyPatch, run_dir: Path) -> FakeBackend:
+def a_vm_backend(
+    monkeypatch: pytest.MonkeyPatch, run_dir: Path, gone: bool = False
+) -> FakeBackend:
     """Stand a backend with a VM in for msb, under the name sessions dispatches on."""
-    backend = FakeBackend(run_dir, vm_handle="paddock-fake")
+    backend = FakeBackend(run_dir, vm_handle="paddock-fake", gone=gone)
     monkeypatch.setitem(sessions.BACKENDS, "msb", backend)
     return backend
 
@@ -107,6 +117,8 @@ def artifacts(run_dir: Path) -> dict[str, str]:
     found = {}
     for path in sorted(run_dir.rglob("*")):
         name = str(path.relative_to(run_dir))
+        if name == PID_FILE:
+            continue  # only a run in a terminal has one, which is its own test
         if path.is_symlink():
             found[name] = f"-> {os.readlink(path)}"
         elif path.is_dir():
@@ -280,5 +292,104 @@ def test_the_collect_command_names_this_paddock_and_this_session() -> None:
 
     argv = standalone.collect_argv(session)
 
-    assert argv[1:] == ["-m", "paddock", "collect", "s1"]
+    assert argv[1:] == ["-P", "-m", "paddock", "collect", "s1"]
     assert Path(argv[0]).name.startswith("python")
+
+
+# --- the pid a run leaves behind --------------------------------------------
+
+
+def test_a_run_marks_its_run_dir_with_the_process_that_becomes_it(which, execs, moved) -> None:
+    """execv keeps the pid, so this number is the process sitting in the sandbox."""
+    standalone.start(Profile(name="p", agent="shell", tools=[], network_presets=[]))
+
+    marker = Path(execs[0][-1]).parent / PID_FILE
+    assert marker.read_text().strip() == str(os.getpid())
+
+
+def test_a_run_with_a_vm_is_marked_too(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, execs, moved
+) -> None:
+    """The registry claims the sandbox; the marker is what claims the directory."""
+    a_vm_backend(monkeypatch, tmp_path / "run")
+
+    standalone.start(Profile(name="p"), backend="msb")
+
+    assert (tmp_path / "run" / PID_FILE).read_text().strip() == str(os.getpid())
+
+
+# --- a session name the chooser asked for -----------------------------------
+
+
+def test_a_named_run_is_registered_under_that_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, execs, moved
+) -> None:
+    """The chooser can name a session, and a run here is a session like any other."""
+    a_vm_backend(monkeypatch, tmp_path / "run")
+
+    standalone.start(Profile(name="p"), backend="msb", name="review")
+
+    assert [one.name for one in sessions.list_sessions()] == ["review"]
+
+
+# --- a session whose sandbox has gone ---------------------------------------
+
+
+def test_joining_a_session_whose_sandbox_has_gone_says_so_and_ends_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, execs, moved
+) -> None:
+    """Better than exec'ing the terminal into a command that fails a moment later."""
+    a_vm_backend(monkeypatch, tmp_path / "run")
+    session = sessions.create_session(Profile(name="p"), backend="msb")
+    a_vm_backend(monkeypatch, tmp_path / "run", gone=True)
+
+    with pytest.raises(SandboxGone, match="is over"):
+        standalone.attach(session)
+
+    assert sessions.list_sessions() == []
+    assert execs == []
+
+
+# --- the wrapper, run for real ----------------------------------------------
+
+
+def a_wrapped_run(run_dir: Path, marker: Path, inner: str) -> Path:
+    """A run dir holding a launch script that does `inner`, wrapped so `marker` is written."""
+    (run_dir / LAUNCH_SCRIPT).write_text(f"#!/bin/sh\ntouch {run_dir / 'started'}\n{inner}\n")
+    after = ["/bin/sh", "-c", f"sleep 0.5; echo collected >> {marker}"]
+    return backends.write_run_script(run_dir, after)
+
+
+def test_the_wrapper_runs_the_command_after_it_and_keeps_the_launch_status(
+    real_subprocess: None, tmp_path: Path
+) -> None:
+    """The exit status is the run's, and the collection happens on the way past."""
+    marker = tmp_path / "collected"
+    script = a_wrapped_run(tmp_path, marker, "exit 3")
+
+    done = subprocess.run(["/bin/sh", str(script)], capture_output=True, timeout=30)
+
+    assert done.returncode == 3
+    assert marker.read_text() == "collected\n"
+
+
+def test_a_second_ctrl_c_cannot_interrupt_the_collection_the_first_one_started(
+    real_subprocess: None, tmp_path: Path
+) -> None:
+    """Ctrl-c reaches the whole group, and an impatient second press must not leak the VM."""
+    marker = tmp_path / "collected"
+    script = a_wrapped_run(tmp_path, marker, "sleep 30")
+
+    running = subprocess.Popen(["/bin/sh", str(script)], start_new_session=True)
+    started = tmp_path / "started"
+    for _ in range(200):
+        if started.exists():
+            break
+        time.sleep(0.05)
+    os.killpg(running.pid, signal.SIGINT)
+    time.sleep(0.2)
+    os.killpg(running.pid, signal.SIGINT)  # the impatient one, while the collection runs
+    running.wait(timeout=30)
+
+    assert started.exists()
+    assert marker.read_text() == "collected\n"

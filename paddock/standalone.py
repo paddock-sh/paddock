@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 from paddock import log, sessions
-from paddock.backends import LAUNCH_SCRIPT, SHELL_SCRIPT, write_run_script
 from paddock.profiles import Profile
 
 logger = log.get_logger(__name__)
@@ -26,11 +25,13 @@ SHELL = "/bin/sh"
 
 
 def start(
-    profile: Profile, backend: str = sessions.DEFAULT_BACKEND, keep_alive: bool = False
+    profile: Profile,
+    backend: str = sessions.DEFAULT_BACKEND,
+    keep_alive: bool = False,
+    name: str = "",
 ) -> int:
     """Prepare a run and become it. Comes back only if the exec could not happen."""
-    here = sessions.prepare_standalone(profile, backend, keep_alive)
-    script = here.run_dir / LAUNCH_SCRIPT
+    here = sessions.prepare_standalone(profile, name or None, backend, keep_alive)
     if here.session is None:
         if keep_alive:
             print(
@@ -42,10 +43,10 @@ def start(
         if not keep_alive:
             # Nothing else would. This session has no pane for a reconcile to miss, and a
             # gc leaves a registered sandbox alone, so the script that runs it ends it.
-            script = write_run_script(here.run_dir, collect_argv(here.session))
+            here = sessions.wrap_standalone(here, collect_argv(here.session))
     try:
-        return become(script, here.workdir)
-    except OSError:
+        return become(here.script, here.workdir)
+    except Exception:
         # The exec is the last thing that can fail, and after it there is nothing left to
         # collect the sandbox the prepare booted.
         if here.session is not None:
@@ -56,7 +57,7 @@ def start(
 def attach(session: sessions.Session, shell: bool = False) -> int:
     """Put this terminal inside a session that is already running. No tab, no pane id."""
     here = sessions.attach_standalone(session, shell)
-    return become(here.run_dir / (SHELL_SCRIPT if shell else LAUNCH_SCRIPT), here.workdir)
+    return become(here.script, here.workdir)
 
 
 def become(script: Path, workdir: Path) -> int:
@@ -77,6 +78,7 @@ def collect_argv(session: sessions.Session) -> list[str]:
 
     Through this interpreter, not through a `paddock` on PATH: the script runs in whatever
     environment the sandbox leaves behind, and the paddock that wrote it is the one that
-    knows where the registry it wrote to is.
+    knows where the registry it wrote to is. `-P` keeps the run's own workdir off
+    `sys.path`, so nothing the sandbox wrote there can be imported by the collection.
     """
-    return [sys.executable, "-m", "paddock", "collect", session.session_id]
+    return [sys.executable, "-P", "-m", "paddock", "collect", session.session_id]

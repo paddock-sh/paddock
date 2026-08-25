@@ -644,7 +644,12 @@ def test_gc_reconciles_and_names_what_it_collected(
     fake_sessions.collects.append(Session(name="review"))
 
     assert cli.main(["gc"]) == 0
-    assert names(fake_sessions.calls) == ["reconcile", "collect_orphans", "collect_run_dirs"]
+    assert names(fake_sessions.calls) == [
+        "reconcile",
+        "collect_orphans",
+        "list_sessions",
+        "collect_run_dirs",
+    ]
     assert "review" in capsys.readouterr().out
 
 
@@ -901,6 +906,7 @@ def test_the_fake_sessions_module_matches_the_real_one() -> None:
         "launch",
         "set_keep_alive",
         "remove_pane",
+        "backend_for",
         "forget",
         "reconcile",
         "launch_local",
@@ -1072,8 +1078,14 @@ class FakeStandalone:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def start(self, profile: Profile, backend: str = "srt", keep_alive: bool = False) -> int:
-        self.calls.append(("start", profile, backend, keep_alive))
+    def start(
+        self,
+        profile: Profile,
+        backend: str = "srt",
+        keep_alive: bool = False,
+        name: str = "",
+    ) -> int:
+        self.calls.append(("start", profile, backend, keep_alive, name))
         return 0
 
     def attach(self, session: object, shell: bool = False) -> int:
@@ -1101,8 +1113,14 @@ def test_run_takes_a_backend_like_launch_does() -> None:
 def test_run_with_a_profile_becomes_that_profile_here(fake_sessions, here) -> None:
     assert cli.main(["run", "offline-shell"]) == 0
 
-    what, profile, backend, keep_alive = here.calls[0]
-    assert (what, profile.name, backend, keep_alive) == ("start", "offline-shell", "srt", False)
+    what, profile, backend, keep_alive, name = here.calls[0]
+    assert (what, profile.name, backend, keep_alive, name) == (
+        "start",
+        "offline-shell",
+        "srt",
+        False,
+        "",
+    )
 
 
 def test_run_with_a_profile_on_another_backend_says_which(fake_sessions, here) -> None:
@@ -1124,7 +1142,7 @@ def test_run_with_a_profile_opens_no_tab_and_reconciles_nothing(fake_sessions, h
     """herdr is not on this path, and the reconcile is the one call that would ask it."""
     cli.main(["run", "offline-shell"])
 
-    assert fake_sessions_module.calls == []
+    assert names(fake_sessions_module.calls) == ["backend_for"]
 
 
 def test_run_with_no_profile_and_no_terminal_says_so(
@@ -1222,3 +1240,87 @@ def test_collect_asks_herdr_nothing(fake_sessions) -> None:
     cli.main(["collect", "one"])
 
     assert "reconcile" not in names(fake_sessions_module.calls)
+
+
+# --- `paddock run` without a chooser ---------------------------------------
+
+
+def test_run_takes_a_session_to_join(fake_sessions, here) -> None:
+    """The other half of §11's table, for a terminal with nobody to ask."""
+    fake_sessions.registry.append(Session(name="one"))
+
+    assert cli.main(["run", "--attach", "one"]) == 0
+    assert [(call[0], call[1].name, call[2]) for call in here.calls] == [("attach", "one", False)]
+
+
+def test_run_takes_a_profile_or_a_session_but_not_both(
+    fake_sessions, here, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["run", "offline-shell", "--attach", "one"]) == 1
+
+    assert "a profile or --attach <session>, not both" in capsys.readouterr().err
+    assert here.calls == []
+
+
+def test_run_on_a_backend_this_paddock_has_never_heard_of_says_so_first(
+    fake_sessions, here, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Before the plan is announced, so it does not say what is starting and then refuse."""
+    assert cli.main(["run", "offline-shell", "--backend", "nope"]) == 1
+
+    said = capsys.readouterr().err
+    assert "'nope' is not in this paddock" in said
+    assert "starting" not in said
+    assert here.calls == []
+
+
+def test_a_dry_run_names_the_script_it_would_become(
+    fake_sessions, here, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(["run", "offline-shell", "--dry-run"]) == 0
+
+    said = capsys.readouterr().out
+    assert "profile offline-shell" in said
+    assert "exec /bin/sh <run dir>/launch.sh in this terminal" in said
+    assert here.calls == []
+
+
+def test_a_dry_run_of_an_attach_names_the_script_of_the_session(fake_sessions, here) -> None:
+    fake_sessions.registry.append(Session(name="one"))
+
+    assert cli.main(["run", "--attach", "one", "--dry-run"]) == 0
+    assert here.calls == []
+
+
+def test_a_dry_run_of_a_local_tab_says_what_it_would_say(
+    fake_sessions, chooser, here, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chooser(tui.Local(cwd="/work"))
+
+    assert cli.main(["run", "--dry-run"]) == 0
+    assert "you already have a terminal" in capsys.readouterr().out
+
+
+# --- gc says what it left alone --------------------------------------------
+
+
+def test_gc_names_a_session_with_no_tabs_instead_of_saying_nothing(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Nothing collects one of these, so a silent gc reads as a gc that missed it."""
+    fake_sessions.registry.append(Session(name="review", pane_ids=[]))
+
+    assert cli.main(["gc"]) == 0
+
+    said = capsys.readouterr().out
+    assert "leaving review alone: a session in a terminal, with no tabs" in said
+    assert "paddock collect review" in said
+
+
+def test_gc_says_nothing_about_a_session_that_has_tabs(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_sessions.registry.append(Session(name="review", pane_ids=["wA:p1"]))
+
+    assert cli.main(["gc"]) == 0
+    assert "leaving review alone" not in capsys.readouterr().out

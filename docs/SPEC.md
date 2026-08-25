@@ -1497,9 +1497,11 @@ whatever the plan says in place:
 | Local tab | Prints "you already have a terminal" and exits 0 |
 
 With no terminal to draw in, `paddock run` needs a profile named on the command
-line, exactly as `paddock` itself does. With one named, no terminal is needed at
-all: the exec inherits whatever stdio there is, and a non-interactive agent is a
-reasonable thing to run under a redirect.
+line, or `--attach <session>` to join one that is running, exactly as `paddock`
+itself needs `paddock launch`. With either named, no terminal is needed at all:
+the exec inherits whatever stdio there is, and a non-interactive agent is a
+reasonable thing to run under a redirect. `--dry-run` prints what it would exec
+and prepares nothing.
 
 **A terminal is not a tab.** Nothing registers a pane id, so nothing here changes
 what closing herdr's last tab means. A standalone run of a session herdr owns
@@ -1507,9 +1509,16 @@ does not hold it open, and does not end it.
 
 **srt runs are ephemeral.** Nothing outlives the process, so there is no registry
 entry: the session ends when the terminal does, and an entry nothing would ever
-collect is a session for ever. The cost is that `paddock gc` in another terminal
-may remove such a run dir once it is five minutes old and its workdir is empty
-(§8). The sandbox keeps running; the shim dir it was pointed at does not.
+collect is a session for ever.
+
+**What speaks for a run with no registry entry is a pid file.** Every standalone
+run writes its own pid to `<run_dir>/standalone.pid` before the exec, and `execv`
+keeps the pid, so the number in there is the process sitting in the sandbox.
+`collect_run_dirs` (§8) leaves a run dir alone while that pid answers to
+`kill(pid, 0)`; a pid this user may not signal counts as alive, because refusing
+to remove a directory costs a directory and removing a live run costs the shim
+dir out from under it. A pid the system has since reused is covered by the grace
+period the sweep already leaves.
 
 **msb runs must not leak a VM.** A microVM outlives the process that booted it,
 so a standalone msb run is registered like any other session, with no pane ids.
@@ -1521,8 +1530,21 @@ launch script that runs the launch script and then calls `paddock collect
 A session told to keep running (§3.4) gets no wrapper, because staying up is what
 was asked for.
 
+The trap is dropped before the collection runs, so a second ctrl-c cannot
+interrupt the first one's work: an ignored signal is inherited across `exec`, so
+that covers the `paddock collect` itself and not only the shell waiting for it.
+
 Nothing covers a terminal killed outright. That leaves a registered session with
-a running VM, which `paddock collect <session>` ends.
+a running VM, which `paddock collect <session>` ends. Collecting a session twice
+is not a crash: the second one says there is no session by that name and exits 1.
+`paddock gc` names every session it finds with no tabs, so a session left over
+this way is reported rather than silently kept.
+
+**A session whose sandbox has gone ends at the door.** `ensure_live(run)` is on
+the backend contract: srt has nothing that can have gone and does nothing, msb
+asks `msb ls`. Both ways in call it, `open_pane` for a tab and
+`attach_standalone` for a terminal, so neither leaves a dead session in the
+registry offering something that cannot open (§3.4).
 
 **Zero-pane sessions survive reconciliation.** `reconcile` (§3.4) already keeps a
 session whose pane list has not changed, and a standalone one never had a pane, so

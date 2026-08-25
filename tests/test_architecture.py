@@ -137,12 +137,12 @@ def test_the_standalone_run_reaches_no_herdr() -> None:
     assert broken == []
 
 
-def test_the_standalone_run_still_goes_through_the_one_door() -> None:
-    """It runs the session in this terminal. Which backend runs it stays sessions' business."""
+def test_the_standalone_run_reaches_no_backend() -> None:
+    """It runs the session in this terminal. What a run dir holds stays sessions' business."""
     reached = [
         imported
         for importer, imported in edges()
-        if importer == STANDALONE and imported in BACKENDS
+        if importer == STANDALONE and imported.startswith("paddock.backends")
     ]
 
     assert reached == []

@@ -41,9 +41,12 @@ class FakeBackend:
         run_dir: str = "/state/runs/fake",
         vm_handle: str = "",
         fails_with: Exception | None = None,
+        gone: bool = False,
     ) -> None:
         self.run = FakeRun(Path(run_dir), vm_handle)
         self.fails_with = fails_with
+        # Whether its sandbox has gone, which both a tab and a terminal ask before joining.
+        self.gone = gone
         self.prepared: list[Profile] = []
         self.loaded: list[Path] = []
         self.opened: list[tuple[object, str, Path | None, bool]] = []
@@ -56,6 +59,10 @@ class FakeBackend:
     def load_run(self, run_dir: Path) -> FakeRun:
         self.loaded.append(run_dir)
         return self.run
+
+    def ensure_live(self, run: FakeRun) -> None:
+        if self.gone:
+            raise SandboxGone(f"the sandbox {run.vm_handle} is not running any more")
 
     def open_pane(
         self, run: FakeRun, label: str = "", cwd: Path | None = None, shell: bool = False
@@ -1137,12 +1144,18 @@ def test_a_directory_outside_the_runs_dir_is_never_removed(tmp_path: Path) -> No
     assert elsewhere.is_dir()
 
 
-def stale_run(state_dir: Path, name: str, work: str = "") -> Path:
-    """A run dir old enough to sweep, with something in its workdir when `work` is named."""
+def stale_run(state_dir: Path, name: str, work: str = "", pid: int = 0) -> Path:
+    """A run dir old enough to sweep, with something in its workdir when `work` is named.
+
+    `pid` writes the marker a run in somebody's terminal leaves (SPEC §11), before the
+    directory is aged: writing a file in it is what makes it look young again.
+    """
     path = state_dir / "runs" / name
     (path / "work").mkdir(parents=True)
     if work:
         (path / "work" / work).write_text("someone's work\n")
+    if pid:
+        (path / "standalone.pid").write_text(f"{pid}\n")
     old = time.time() - sessions.RUN_DIR_GRACE_SECONDS - 60
     os.utime(path, (old, old))
     return path
@@ -1187,29 +1200,50 @@ def test_gc_with_no_runs_directory_at_all_sweeps_nothing(state_dir: Path) -> Non
 # --- a run in the terminal that asked for it (SPEC §11) ---------------------
 
 
+def standalone_backend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, vm_handle: str = ""
+) -> FakeBackend:
+    """A backend whose run dir is really on disk: a run in a terminal writes a pid in it."""
+    run_dir = tmp_path / "run"
+    (run_dir / "work").mkdir(parents=True, exist_ok=True)
+    fake = FakeBackend(run_dir=str(run_dir), vm_handle=vm_handle)
+    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    return fake
+
+
 def test_a_standalone_run_with_nothing_left_running_keeps_no_registry_entry(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """srt dies with the terminal, so an entry offering to end it would never be used."""
-    fake = FakeBackend()
-    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    fake = standalone_backend(monkeypatch, tmp_path)
 
     here = sessions.prepare_standalone(Profile(name="p"), backend="fake")
 
     assert sessions.list_sessions() == []
-    assert (here.run_dir, here.workdir, here.session) == (
-        Path("/state/runs/fake"),
-        Path("/state/runs/fake/work"),
+    assert (here.script, here.workdir, here.session) == (
+        tmp_path / "run" / "launch.sh",
+        tmp_path / "run" / "work",
         None,
     )
     assert fake.prepared[0].name == "p"
 
 
+def test_a_standalone_run_marks_its_run_dir_with_this_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The one thing that says a run with no registry entry is still going."""
+    standalone_backend(monkeypatch, tmp_path)
+
+    sessions.prepare_standalone(Profile(name="p"), backend="fake")
+
+    assert (tmp_path / "run" / "standalone.pid").read_text().strip() == str(os.getpid())
+
+
 def test_a_standalone_run_with_a_vm_is_registered_with_no_panes(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A microVM outlives the process, so something has to claim it and something must end it."""
-    monkeypatch.setitem(sessions.BACKENDS, "fake", FakeBackend(vm_handle="paddock-one"))
+    standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
 
     here = sessions.prepare_standalone(Profile(name="p"), backend="fake")
 
@@ -1219,22 +1253,47 @@ def test_a_standalone_run_with_a_vm_is_registered_with_no_panes(
     ]
 
 
-def test_a_standalone_run_asked_to_stay_up_says_so_in_the_registry(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_standalone_run_takes_the_name_it_was_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setitem(sessions.BACKENDS, "fake", FakeBackend(vm_handle="paddock-one"))
+    """The chooser can name a session, and a run in a terminal is a session like any other."""
+    standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
+
+    sessions.prepare_standalone(Profile(name="p"), "review", backend="fake")
+
+    assert [one.name for one in sessions.list_sessions()] == ["review"]
+
+
+def test_a_standalone_run_asked_to_stay_up_says_so_in_the_registry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
 
     sessions.prepare_standalone(Profile(name="p"), backend="fake", keep_alive=True)
 
     assert sessions.list_sessions()[0].keep_alive is True
 
 
+def test_wrapping_a_standalone_run_points_it_at_the_wrapper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """What the terminal becomes when the run has to be collected on the way out."""
+    standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
+    here = sessions.prepare_standalone(Profile(name="p"), backend="fake")
+
+    wrapped = sessions.wrap_standalone(here, ["paddock", "collect", "one"])
+
+    assert wrapped.script == tmp_path / "run" / "run.sh"
+    assert wrapped.session is here.session
+    assert "paddock collect one" in wrapped.script.read_text()
+
+
 def test_a_standalone_session_survives_a_reconcile_that_has_no_panes_for_it(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """It never had a pane. A reconcile that read that as "the last one closed" would
     take the terminal's own sandbox down while it was still being used."""
-    monkeypatch.setitem(sessions.BACKENDS, "fake", FakeBackend(vm_handle="paddock-one"))
+    standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
     sessions.prepare_standalone(Profile(name="p"), backend="fake")
 
     assert sessions.reconcile() == []
@@ -1242,11 +1301,14 @@ def test_a_standalone_session_survives_a_reconcile_that_has_no_panes_for_it(
 
 
 def test_a_gc_leaves_the_sandbox_of_a_standalone_run_alone(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The registry entry is what makes the sweep see a VM that is claimed, not orphaned."""
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    run_dir = tmp_path / "run"
+    (run_dir / "work").mkdir(parents=True)
     backend = SweepingBackend(["paddock-one"], vm_handle="paddock-one")
+    backend.run = FakeRun(run_dir, "paddock-one")
     monkeypatch.setitem(sessions.BACKENDS, "fake", backend)
     sessions.prepare_standalone(Profile(name="p"), backend="fake")
 
@@ -1254,28 +1316,80 @@ def test_a_gc_leaves_the_sandbox_of_a_standalone_run_alone(
     assert backend.swept == [({"paddock-one"}, set())]
 
 
+def test_gc_leaves_the_run_dir_of_a_run_a_terminal_is_still_in(state_dir: Path) -> None:
+    """An srt run in a terminal claims nothing, so the pid file is all that speaks for it."""
+    live = stale_run(state_dir, "20260824-000000-here", pid=os.getpid())
+
+    assert sessions.collect_run_dirs() == []
+    assert live.is_dir()
+
+
+def test_gc_removes_the_run_dir_of_a_run_whose_terminal_is_gone(state_dir: Path) -> None:
+    """A pid nothing answers to is a run that ended, and its settings are nobody's work."""
+    over = stale_run(state_dir, "20260824-000000-over", pid=_dead_pid())
+
+    assert sessions.collect_run_dirs() == [over]
+    assert not over.exists()
+
+
+def _dead_pid() -> int:
+    """A pid nothing on this machine answers to: one this test started and reaped."""
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    os.waitpid(pid, 0)
+    return pid
+
+
 def test_attaching_a_terminal_loads_the_run_and_registers_no_pane(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A terminal is not a tab: what closing herdr's last tab means is left as it was."""
-    fake = FakeBackend(vm_handle="paddock-one")
-    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    fake = standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
     session = sessions.create_session(Profile(name="p"), backend="fake")
 
     here = sessions.attach_standalone(session)
 
-    assert fake.loaded == [Path("/state/runs/fake")]
-    assert (here.run_dir, here.workdir) == (Path("/state/runs/fake"), Path("/state/runs/fake/work"))
+    assert fake.loaded == [tmp_path / "run"]
+    assert (here.script, here.workdir) == (
+        tmp_path / "run" / "launch.sh",
+        tmp_path / "run" / "work",
+    )
     assert sessions.list_sessions()[0].pane_ids == []
 
 
-def test_collecting_one_session_ends_it_and_drops_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_attaching_a_terminal_as_a_shell_names_the_shell_script(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
+    session = sessions.create_session(Profile(name="p"), backend="fake")
+
+    assert sessions.attach_standalone(session, shell=True).script == tmp_path / "run" / "shell.sh"
+
+
+def test_attaching_a_terminal_to_a_sandbox_that_has_gone_ends_the_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The same answer a tab gets, so neither way in leaves a dead session in the registry."""
+    fake = standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
+    session = sessions.create_session(Profile(name="p"), backend="fake")
+    fake.gone = True
+
+    with pytest.raises(SandboxGone, match="is over"):
+        sessions.attach_standalone(session)
+
+    assert sessions.list_sessions() == []
+    assert fake.collected == [(tmp_path / "run", "paddock-one")]
+
+
+def test_collecting_one_session_ends_it_and_drops_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """What the run's own script calls when the agent it started exits (SPEC §11)."""
-    fake = FakeBackend(vm_handle="paddock-one")
-    monkeypatch.setitem(sessions.BACKENDS, "fake", fake)
+    fake = standalone_backend(monkeypatch, tmp_path, vm_handle="paddock-one")
     session = sessions.create_session(Profile(name="p"), backend="fake")
 
     sessions.forget(session)
 
     assert sessions.list_sessions() == []
-    assert fake.collected == [(Path("/state/runs/fake"), "paddock-one")]
+    assert fake.collected == [(tmp_path / "run", "paddock-one")]

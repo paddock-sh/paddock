@@ -245,9 +245,13 @@ paddock run                     # no profile: ask, then run the answer here
 ```
 
 The run is the same one a tab would have got: same profile, same policy, same
-launch script. When it ends, the terminal is yours again. `paddock collect
-<session>` ends a session by hand, which a microVM run needs only if the terminal
-was killed outright.
+launch script. When it ends, the terminal is yours again. `paddock run --attach
+<session>` joins one that is already running, and `--dry-run` prints what it
+would start without starting it.
+
+`paddock collect <session>` ends a session by hand, which a microVM run needs
+only if the terminal was killed outright. It ends the sandbox, so any herdr tabs
+on that session are left with nothing behind them: close those in herdr.
 
 Bind it to a key and you have a popup of your own, in whatever terminal you
 already use. tmux:
