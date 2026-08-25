@@ -37,6 +37,7 @@ from paddock.backends import (
     ensure_launch_script,
     launch_line,
     new_run_dir,
+    unknown_agent,
     write_launch_script,
 )
 from paddock.profiles import Profile, loopback_port, names_loopback
@@ -367,20 +368,46 @@ def stop_vm(handle: str) -> None:
         )
 
 
+def no_image(agent: str) -> str:
+    """What msb says about an agent whose registry entry names no image (SPEC §2.2).
+
+    The guest holds what its image holds, so an agent with no image of its own has nothing
+    to be booted into. Both ways out are named, because which one is meant depends on
+    whether the agent or the backend was the answer the user came for.
+    """
+    return (
+        f"agent {agent!r} has no image, so the msb backend has nothing to run it in: give "
+        "the agent an `image` in the registry, or launch it on the srt backend"
+    )
+
+
+def refusal(profile: Profile) -> str:
+    """Why msb will refuse this profile, or nothing when it will not (SPEC §2.2).
+
+    Everything `prepare` decides before it boots anything, said rather than raised, and
+    answered out of what is already in memory: no subprocess, no VM, no run dir. That is
+    what lets a caller refuse a launch in front of the line it would otherwise print about
+    the minute an image pull and a guest install were going to take.
+    """
+    agent = load_agents().get(profile.agent)
+    if agent is None:
+        return unknown_agent(profile.name, profile.agent)
+    if profile.agent != SHELL_AGENT and not agent.image:
+        return no_image(profile.agent)
+    return ""
+
+
 def prepare(profile: Profile) -> Run:
     """Boot the session's VM, put the agent in it, and write what a tab needs to attach.
 
     Opens no pane. The guest holds what the image holds, so an agent without one is
     refused here, before a VM exists.
     """
-    agent = load_agents().get(profile.agent)
-    if agent is None:
-        raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
-    if profile.agent != SHELL_AGENT and not agent.image:
-        raise ValueError(
-            f"agent {profile.agent!r} has no image, so the msb backend has nothing to run it "
-            "in: give the agent an `image` in the registry, or launch it on the srt backend"
-        )
+    reason = refusal(profile)
+    if reason:
+        raise ValueError(reason)
+    # `refusal` has already found it, with an image to boot it in.
+    agent = load_agents()[profile.agent]
     # Before the run dir exists, so a missing msb leaves nothing behind.
     find_msb()
 

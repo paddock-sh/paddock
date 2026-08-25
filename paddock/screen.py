@@ -197,8 +197,14 @@ def footer_line(parts: tuple[str, ...] | list[str], width: int = WIDTH) -> str:
     return cut("   ".join(parts), width)
 
 
-def form_footer(fields: int, width: int = WIDTH) -> str:
-    """The form's keys, including how many digits jump, which is however many fields there are."""
+def form_footer(fields: int, width: int = WIDTH, error: str = "") -> str:
+    """The form's keys, including how many digits jump, which is however many fields there are.
+
+    A refusal takes the row instead, the way it does on a list: one row of chrome, two
+    jobs, never both at once.
+    """
+    if error:
+        return cut(error, width)
     return footer_line((FORM_KEYS[0], FORM_KEYS[1], f"1-{fields} jump", *FORM_KEYS[2:]), width)
 
 
@@ -569,45 +575,58 @@ def _box_lines(box: tuple[str, str, str] | None, in_box: bool, width: int = WIDT
 
 
 def form(
-    title: str, where: str, rows: list[tuple], cursor: int = 0
+    title: str, where: str, rows: list[tuple], cursor: int = 0, refused: str = ""
 ) -> tuple[str, int] | None:
     """The home screen. What to do and where the cursor was, or None to close the popup.
 
     Every field is one arrow key away, so there is no walk to go back through and no summary
     to edit from: coming back from an editor puts the cursor where it left.
+
+    `refused` is why these answers cannot be launched. Launch puts the reason on the key
+    line rather than launching, the way a refused row on a list does, and it goes when the
+    cursor moves on. Every field still opens and the answers still save: the way out of a
+    refusal is to change one of the answers that caused it, and that is done from here.
     """
-    state: dict = {"cursor": min(max(cursor, 0), len(rows) + 1), "keys": False}
+    state: dict = {"cursor": min(max(cursor, 0), len(rows) + 1), "keys": False, "error": ""}
     keys = KeyBindings()
     last = len(rows) + 1  # the two buttons live after the fields
+
+    def launch(event) -> None:
+        state["error"] = refused
+        if not refused:
+            event.app.exit(result=(LAUNCH, state["cursor"]))
 
     @keys.add("up")
     @keys.add("k")
     def _(event: object) -> None:
         state["cursor"] = max(state["cursor"] - 1, 0)
+        state["error"] = ""
 
     @keys.add("down")
     @keys.add("j")
     def _(event: object) -> None:
         state["cursor"] = min(state["cursor"] + 1, last)
+        state["error"] = ""
 
     for digit in range(1, min(len(rows), 9) + 1):
 
         @keys.add(str(digit))
         def _(event: object, place: int = digit - 1) -> None:
             state["cursor"] = place
+            state["error"] = ""
 
     @keys.add("enter")
     def _(event) -> None:
         if state["cursor"] < len(rows):
             event.app.exit(result=(OPEN, state["cursor"]))
         elif state["cursor"] == len(rows):
-            event.app.exit(result=(LAUNCH, state["cursor"]))
+            launch(event)
         else:
             event.app.exit(result=None)
 
     @keys.add("L")
     def _(event) -> None:
-        event.app.exit(result=(LAUNCH, state["cursor"]))
+        launch(event)
 
     @keys.add("s")
     def _(event) -> None:
@@ -622,7 +641,7 @@ def form(
     def body(height: int, width: int) -> list[str]:
         return form_lines(title, where, rows, state["cursor"], height, width)
 
-    return _run(body, lambda width: form_footer(len(rows), width), keys, state)
+    return _run(body, lambda width: form_footer(len(rows), width, state["error"]), keys, state)
 
 
 def pick(

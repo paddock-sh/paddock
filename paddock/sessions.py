@@ -103,6 +103,25 @@ def backend_for(name: str) -> ModuleType:
     return module
 
 
+def refusal(profile: Profile, backend: str = DEFAULT_BACKEND) -> str:
+    """Why this launch will be refused before its backend does any work, or nothing.
+
+    The one door to what each backend refuses out of hand: an unknown backend name, an
+    agent no registry answers to, a policy the backend cannot enforce, an agent with no
+    image to boot. Every one of them is answered from what is already in memory, so asking
+    costs nothing and leaves nothing behind.
+
+    It is asked in front of the line a slow launch prints about what it is starting. That
+    line is a promise about a wait, and a launch that says it is pulling a guest image and
+    then refuses the agent it was going to run in it made a promise it never kept.
+    """
+    try:
+        module = backend_for(backend)
+    except ValueError as error:
+        return str(error)
+    return str(module.refusal(profile))
+
+
 def registry_path() -> Path:
     return state_dir() / REGISTRY_FILE
 

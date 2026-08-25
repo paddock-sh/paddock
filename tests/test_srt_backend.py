@@ -796,6 +796,39 @@ def test_prepare_rejects_a_profile_naming_an_unknown_agent(which: dict[str, str]
         srt.prepare(Profile(agent="nope"))
 
 
+@pytest.mark.parametrize(
+    "profile", [Profile(agent="nope"), Profile(network_presets=[NETWORK_ALL])]
+)
+def test_the_refusal_says_exactly_what_prepare_would_have_raised(
+    which: dict[str, str], fake_home: Path, profile: Profile
+) -> None:
+    """A caller asks this in front of the line it prints about what is starting.
+
+    The two have to agree word for word, or a launch refused up front and one refused on
+    the way in would give the same user two different reasons for the same thing.
+    """
+    with pytest.raises((ValueError, srt.UnsupportedPolicy)) as raised:
+        srt.prepare(profile)
+
+    assert srt.refusal(profile) == str(raised.value)
+
+
+def test_a_profile_this_backend_can_run_is_refused_for_nothing(
+    which: dict[str, str], fake_home: Path
+) -> None:
+    assert srt.refusal(Profile()) == ""
+
+
+def test_asking_why_a_launch_would_be_refused_writes_nothing(
+    which: dict[str, str], state_dir: Path, client: FakeClient
+) -> None:
+    """It is asked before every launch, so it may not write a run dir or open a tab."""
+    assert srt.refusal(Profile(network_presets=[NETWORK_ALL]))
+
+    assert client.tabs == []
+    assert not (state_dir / "runs").exists()
+
+
 # --- the launch script -----------------------------------------------------
 
 

@@ -79,6 +79,15 @@ class Swept:
     unowned: list[str] = field(default_factory=list)
 
 
+def unknown_agent(profile: str, agent: str) -> str:
+    """What every backend says about a profile naming an agent no registry answers to.
+
+    One sentence for both, because a caller that asks a backend why it will refuse a launch
+    (`refusal`) has to get back exactly what the backend would have raised.
+    """
+    return f"profile {profile!r} names an unknown agent: {agent!r}"
+
+
 def new_run_dir() -> Path:
     """A fresh directory for this launch, named for when it was made."""
     runs = state_dir() / "runs"

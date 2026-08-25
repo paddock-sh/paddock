@@ -666,7 +666,10 @@ binary. Bumping it is a one-line registry edit.
 
 An agent with no image is refused at create, before a VM is booted: the guest holds what
 the image holds, so there would be nothing to run. `shell` is the exception that needs
-neither, and attaches to whatever shell the image ships. An agent that has an image but no
+neither, and attaches to whatever shell the image ships. Every backend says what it will
+refuse without doing anything about it (`refusal`), so a caller asks before it announces
+what a slow launch is starting: a line about pulling a guest image in front of a refusal
+describes a minute that never happens. An agent that has an image but no
 config-dir redirection (§4.3) boots and says on stderr that it starts unauthenticated:
 nothing carries its credentials in.
 
@@ -830,9 +833,17 @@ enforce one refuses the row with the reason on the key line, the way the agent
 list refuses an agent this machine has not got: srt has no allow-all network at
 all (§2.1), so on srt that row says so and names msb. The refusal runs both ways,
 because either field can be answered first: with the allow-all network ticked, the
-Backend list refuses srt for the same reason. A saved profile that names both
-still reaches the confirm, and there it is a warning row rather than a grant the
-screen asserts and the backend then rejects.
+Backend list refuses srt for the same reason.
+
+**A saved profile answers every field at once and opens none of the lists**, so
+neither half of a mutual refusal ever runs, and the pair used to reach the launch
+and be refused by the backend a minute into it. The form carries the same refusal
+itself: the Backend row takes the reason as its hint and keeps `(refused)` at its
+edge, and Launch puts the reason on the key line instead of launching, the way a
+refused row on a list does. Every field still opens and the answers still save,
+because changing one of the two answers is the way out and that is done from the
+form. The confirm carries it as a warning row too, because that screen may never
+assert a grant the backend is about to reject.
 
 The `a` key, which ticks everything on a checklist, never reaches an allow-all
 row. "All of the groups" and "no list at all" are different answers, and the key
@@ -877,9 +888,12 @@ with nothing to run it is not an agent either. A command written as a path is
 left alone, which is what the `shell` agent's `$SHELL` is. On msb the host PATH
 says nothing at all, because the guest holds what its image holds and installs
 the rest (§2.2), so what stops an agent there is having no image to boot, which
-is what the backend itself refuses on. A registry entry whose command cannot even
-be parsed is refused with the parse error as its reason: this is drawn for every
-agent on the list, before anything is chosen, so it may not raise.
+is what the backend itself refuses on. That one runs both ways as well: with an
+image-less agent chosen, the Backend list refuses msb and names srt, and a profile
+that carries both is refused on the form before the launch. A registry entry whose
+command cannot even be parsed is refused with the parse error as its reason: this
+is drawn for every agent on the list, before anything is chosen, so it may not
+raise.
 
 **Nothing the popup was asked to do dies without a screen.** The popup is
 transient (§1.1): it closes when `paddock` exits, so a message printed after the

@@ -135,8 +135,26 @@ def run(command: Command) -> int:
     if command.dry_run:
         print(describe(plan))
         return 0
+    refused = refusal(plan)
+    if refused:
+        return _fail(refused)
     announce(plan)
     return perform(plan)
+
+
+def refusal(plan: tui.Plan) -> str:
+    """Why this plan cannot start, when that is known before anything is done about it.
+
+    Asked in front of `announce`, never behind it. The announcement is about a wait, and a
+    launch that says it is pulling the guest image and then refuses the agent it was going
+    to run in it described a minute that never happened (SPEC §2.2).
+
+    Only a new session has a backend to refuse. A local tab has no sandbox and an attach
+    joins one that already booted.
+    """
+    if not isinstance(plan, tui.NewSession):
+        return ""
+    return sessions.refusal(plan.profile, plan.backend)
 
 
 def announce(plan: tui.Plan) -> None:
@@ -145,6 +163,9 @@ def announce(plan: tui.Plan) -> None:
     The chooser draws a progress screen at this point. A CLI launch printed nothing at all,
     and an msb start spends the better part of a minute pulling an image and installing the
     agent inside the guest, which reads as a command that has hung.
+
+    Everything this says is about a launch that is going ahead: `refusal` is asked first,
+    so nothing is announced in front of a refusal.
     """
     if not isinstance(plan, tui.NewSession) or plan.backend == tui.SRT:
         return  # srt starts at once, and a line about it would only be noise
@@ -234,9 +255,11 @@ def choose(cwd: Path, dry_run: bool = False, attach: bool = False) -> int:
         if dry_run:
             print(describe(plan))
             return 0
-        if isinstance(plan, tui.NewSession):
+        if isinstance(plan, tui.NewSession) and not refusal(plan):
             # Before the call, not after it: prepare blocks for as long as a guest install
-            # takes, and a blank popup is what that minute used to look like.
+            # takes, and a blank popup is what that minute used to look like. Nothing is
+            # drawn in front of a launch the backend refuses out of hand: `perform` raises
+            # the reason at once, and the failure screen is where it belongs.
             tui.starting(plan)
         try:
             return perform(plan)
@@ -267,12 +290,6 @@ def run_here(command: Command) -> int:
         saved = load_profiles()
         if command.profile not in saved:
             return _fail(f"no profile named {command.profile!r}")
-        try:
-            # Before the plan is announced, so a backend nobody has says so at once rather
-            # than after a screenful about what is starting.
-            sessions.backend_for(command.backend)
-        except ValueError as error:
-            return _fail(str(error))
         plan = tui.NewSession(profile=saved[command.profile], backend=command.backend)
     else:
         if not has_terminal():
@@ -284,6 +301,11 @@ def run_here(command: Command) -> int:
     if command.dry_run:
         print(describe_here(plan))
         return 0
+    refused = refusal(plan)
+    if refused:
+        # Before the plan is announced, so a backend nobody has, or an agent this one
+        # cannot run, says so at once rather than after a screenful about what is starting.
+        return _fail(refused)
     announce(plan)
     return perform_here(plan)
 

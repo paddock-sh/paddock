@@ -548,6 +548,39 @@ def test_prepare_rejects_a_profile_naming_an_unknown_agent(
     assert msb_calls == []
 
 
+@pytest.mark.parametrize("profile", [Profile(agent="codex"), Profile(agent="nope")])
+def test_the_refusal_says_exactly_what_prepare_would_have_raised(
+    which: dict[str, str], msb_calls: list[list[str]], profile: Profile
+) -> None:
+    """A caller asks this in front of the line it prints about the wait (SPEC §2.2).
+
+    The two have to agree word for word, or a launch refused up front and one refused on
+    the way in would give the same user two different reasons for the same thing.
+    """
+    with pytest.raises(ValueError) as raised:
+        msb.prepare(profile)
+
+    assert msb.refusal(profile) == str(raised.value)
+
+
+def test_a_profile_this_backend_can_run_is_refused_for_nothing(
+    which: dict[str, str], msb_calls: list[list[str]]
+) -> None:
+    """The shell agent has no image of its own and is the one that does not need one."""
+    assert msb.refusal(CLAUDE) == ""
+    assert msb.refusal(SHELL) == ""
+
+
+def test_asking_why_a_launch_would_be_refused_starts_nothing(
+    which: dict[str, str], msb_calls: list[list[str]], state_dir: Path
+) -> None:
+    """It is asked before every msb launch, so it may not boot, pull or write anything."""
+    assert msb.refusal(Profile(agent="codex"))
+
+    assert msb_calls == []
+    assert not (state_dir / "runs").exists()
+
+
 def test_prepare_fails_before_anything_when_msb_is_missing(
     which: dict[str, str], msb_calls: list[list[str]], state_dir: Path
 ) -> None:

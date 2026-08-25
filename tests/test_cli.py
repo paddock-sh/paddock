@@ -569,6 +569,83 @@ def test_a_dry_run_says_what_would_happen_and_announces_nothing(
     assert capsys.readouterr().err == ""
 
 
+def image_less_agent(config_dir: Path, key: str = "ollama") -> None:
+    """A user agent entry with no image, which is what the chooser writes for a typed command.
+
+    The msb backend has nothing to boot one of these in, so every launch that names it on
+    that backend is refused (SPEC §2.2).
+    """
+    (config_dir / "agents").mkdir(parents=True, exist_ok=True)
+    (config_dir / "agents" / f"{key}.json").write_text(json.dumps({"name": key, "command": key}))
+
+
+def test_an_agent_with_no_image_is_refused_before_the_pulling_line(
+    fake_sessions, config_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reported case: it said what it was starting, and then would not start it.
+
+    The announcement is a promise about a wait. This launch never waits for anything, so
+    the only line it may print is the reason.
+    """
+    image_less_agent(config_dir)
+    save_profile(Profile(name="local-llm", agent="ollama"))
+
+    assert cli.main(["launch", "local-llm", "--backend", "msb"]) == 1
+
+    said = capsys.readouterr().err
+    assert "agent 'ollama' has no image" in said
+    assert "pulling" not in said
+    assert rest(fake_sessions.calls) == []
+
+
+def test_run_here_refuses_the_same_launch_before_it_says_what_is_starting(
+    fake_sessions, here, config_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The other way into a launch, and the same promise (SPEC §11)."""
+    image_less_agent(config_dir)
+    save_profile(Profile(name="local-llm", agent="ollama"))
+
+    assert cli.main(["run", "local-llm", "--backend", "msb"]) == 1
+
+    said = capsys.readouterr().err
+    assert "agent 'ollama' has no image" in said
+    assert "pulling" not in said
+    assert here.calls == []
+
+
+def test_launch_on_a_backend_this_paddock_has_never_heard_of_says_so_first(
+    fake_sessions, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same rule for the same reason: nothing about a wait in front of a refusal."""
+    assert cli.main(["launch", "claude-default", "--backend", "nope"]) == 1
+
+    said = capsys.readouterr().err
+    assert "'nope' is not in this paddock" in said
+    assert "preparing" not in said
+    assert rest(fake_sessions.calls) == []
+
+
+def test_the_chooser_draws_no_progress_screen_in_front_of_a_refusal(
+    fake_sessions, chooser, quiet_start, failure_screen, config_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """That screen explains a wait, and a launch refused out of hand never waits.
+
+    The reason belongs on the failure screen, which is where the popup says everything a
+    launch that opened no pane has to say (SPEC §1.1).
+    """
+    image_less_agent(config_dir)
+    chooser(tui.NewSession(profile=Profile(name="local-llm", agent="ollama"), backend="msb"))
+    monkeypatch.setattr(
+        fake_sessions_module, "launch", raising(ValueError("agent 'ollama' has no image"))
+    )
+    shown = failure_screen(False)  # Cancel
+
+    assert cli.main(["choose"]) == 1
+    assert quiet_start == []
+    assert "has no image" in shown[0][0]
+
+
 class Redirected:
     """A stream that is not a terminal, which is what a pipe or a file looks like."""
 
@@ -907,6 +984,7 @@ def test_the_fake_sessions_module_matches_the_real_one() -> None:
         "set_keep_alive",
         "remove_pane",
         "backend_for",
+        "refusal",
         "forget",
         "reconcile",
         "launch_local",
@@ -1139,10 +1217,14 @@ def test_run_with_an_unknown_profile_says_so(
 
 
 def test_run_with_a_profile_opens_no_tab_and_reconciles_nothing(fake_sessions, here) -> None:
-    """herdr is not on this path, and the reconcile is the one call that would ask it."""
+    """herdr is not on this path, and the reconcile is the one call that would ask it.
+
+    Nothing at all is asked of sessions: the check in front of the announcement is a
+    question about a profile and a backend name, and it does nothing about either.
+    """
     cli.main(["run", "offline-shell"])
 
-    assert names(fake_sessions_module.calls) == ["backend_for"]
+    assert names(fake_sessions_module.calls) == []
 
 
 def test_run_with_no_profile_and_no_terminal_says_so(
