@@ -32,7 +32,7 @@ LAUNCH_SCRIPT = "launch.sh"
 SHELL_SCRIPT = "shell.sh"
 
 # The wrapper `paddock run` becomes when the run it starts has to be collected on the way
-# out (SPEC §11). It runs one of the scripts above and ends the session after it.
+# out (SPEC §11). It runs the launch script and ends the session after it.
 RUN_SCRIPT = "run.sh"
 
 # A launch that fails does so at once. A non-zero exit later than this is the agent ending,
@@ -214,7 +214,7 @@ def _prompt() -> list[str]:
     ]
 
 
-def write_run_script(run_dir: Path, after: list[str], name: str = LAUNCH_SCRIPT) -> Path:
+def write_run_script(run_dir: Path, after: list[str]) -> Path:
     """Wrap one of the run's scripts so a run in the user's own terminal ends itself.
 
     `paddock run` execs into the sandbox (SPEC §11), so there is no paddock process left to
@@ -222,12 +222,12 @@ def write_run_script(run_dir: Path, after: list[str], name: str = LAUNCH_SCRIPT)
     `after`, then leaves with the launch script's own status.
     """
     script = run_dir / RUN_SCRIPT
-    script.write_text(run_script_text(run_dir, after, name))
+    script.write_text(run_script_text(run_dir, after))
     script.chmod(0o700)
     return script
 
 
-def run_script_text(run_dir: Path, after: list[str], name: str = LAUNCH_SCRIPT) -> str:
+def run_script_text(run_dir: Path, after: list[str]) -> str:
     """The wrapper: one script, one command after it, and the first one's exit status.
 
     The command runs on the way out however the run ended. Ctrl-c goes to the whole
@@ -247,7 +247,7 @@ def run_script_text(run_dir: Path, after: list[str], name: str = LAUNCH_SCRIPT) 
             "}",
             "trap paddock_after EXIT HUP INT TERM",
             "",
-            f"/bin/sh {shlex.quote(str(run_dir / name))}",
+            f"/bin/sh {shlex.quote(str(run_dir / LAUNCH_SCRIPT))}",
             "paddock_exit=$?",
             "paddock_after",
             'exit "$paddock_exit"',
