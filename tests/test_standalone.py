@@ -140,7 +140,7 @@ def test_a_run_execs_the_launch_script_in_place(which, execs, moved) -> None:
     assert script.endswith(f"/{LAUNCH_SCRIPT}")
 
 
-def test_a_run_starts_in_the_run_s_own_workdir(which, execs, moved) -> None:
+def test_a_run_starts_in_its_own_workdir(which, execs, moved) -> None:
     """The sandbox may write there and the terminal is in it, as a pane would have been."""
     standalone.start(Profile(name="p", agent="shell", tools=[], network_presets=[]))
 
@@ -226,7 +226,7 @@ def test_a_run_that_cannot_start_leaves_no_session_behind(
 # --- joining a session that is already running ------------------------------
 
 
-def test_attaching_execs_the_session_s_own_launch_script(
+def test_attaching_execs_the_launch_script_of_the_session_it_joined(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, execs, moved
 ) -> None:
     a_vm_backend(monkeypatch, tmp_path / "run")
@@ -237,7 +237,7 @@ def test_attaching_execs_the_session_s_own_launch_script(
     assert execs == [["/bin/sh", "/bin/sh", str(tmp_path / "run" / LAUNCH_SCRIPT)]]
 
 
-def test_attaching_a_shell_execs_the_run_s_shell_script(
+def test_attaching_a_shell_execs_the_runs_shell_script(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, execs, moved
 ) -> None:
     a_vm_backend(monkeypatch, tmp_path / "run")
