@@ -30,6 +30,7 @@ from paddock.backends import (
     ensure_launch_script,
     launch_line,
     new_run_dir,
+    unknown_agent,
     write_launch_script,
 )
 from paddock.profiles import Profile
@@ -384,6 +385,19 @@ def _shim_dir(profile: Profile, agent: AgentSpec, run_dir: Path) -> Path | None:
     return shim
 
 
+def refusal(profile: Profile) -> str:
+    """Why srt will refuse this profile, or nothing when it will not (SPEC §2.1).
+
+    Everything `prepare` decides before it writes anything, said rather than raised, and
+    answered out of what is already in memory: no subprocess, no run dir, nothing on disk.
+    That is what lets a caller refuse a launch in front of the line it would otherwise
+    print about work that is never going to happen.
+    """
+    if load_agents().get(profile.agent) is None:
+        return unknown_agent(profile.name, profile.agent)
+    return NO_ALLOW_ALL if profile.opens_every_domain() else ""
+
+
 def prepare(profile: Profile) -> Run:
     """Get a run ready on disk: settings, shim dir, synthesized config, launch record.
 
@@ -391,7 +405,7 @@ def prepare(profile: Profile) -> Run:
     """
     agent = load_agents().get(profile.agent)
     if agent is None:
-        raise ValueError(f"profile {profile.name!r} names an unknown agent: {profile.agent!r}")
+        raise ValueError(unknown_agent(profile.name, profile.agent))
     if profile.opens_every_domain():
         # `build_settings` refuses this too, but that is three directories later: a policy
         # srt cannot enforce should leave nothing on disk behind it.
