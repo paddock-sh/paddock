@@ -261,6 +261,21 @@ def test_a_typed_in_loopback_domain_grants_it_too(tmp_path: Path) -> None:
     assert settings["network"]["allowLocalBinding"] is True
 
 
+def test_naming_a_port_changes_nothing_here(tmp_path: Path) -> None:
+    """srt's loopback grant takes no port, so `localhost:8080` is the same whole-loopback
+    grant `localhost` is. The port is carried into the allowlist and is enforced only for
+    traffic that reaches the proxy, which loopback never does (SPEC §2.1)."""
+    scoped = Profile(network_presets=[], extra_domains=["localhost:8080"])
+    whole = Profile(network_presets=[], extra_domains=["localhost"])
+
+    settings = srt.build_settings(scoped, CLAUDE, tmp_path / "work", NO_REDIRECT)
+    plain = srt.build_settings(whole, CLAUDE, tmp_path / "work", NO_REDIRECT)
+
+    assert settings["network"]["allowLocalBinding"] is True
+    assert settings["network"]["allowLocalBinding"] == plain["network"]["allowLocalBinding"]
+    assert settings["filesystem"] == plain["filesystem"]
+
+
 def test_an_agent_that_names_loopback_grants_it_for_its_profile(
     config_dir: Path, tmp_path: Path
 ) -> None:

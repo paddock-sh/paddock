@@ -321,25 +321,25 @@ preset, a domain typed into the extra-domains box, and a local-model agent entry
 whose `api_domains` declare it. Anything else gets no `allowLocalBinding` key at
 all, so the default is the denial above.
 
-**For `microsandbox` the answer is different, and worse.** A guest has its own
-kernel, so host loopback is not the guest's loopback: the spike measured a
-default-network guest reaching nothing on a host listener — not `127.0.0.1`, not
-the gateway `172.16.0.81`, not the host's LAN address — and `--net host` alone
-did not change it. The gateway is a router, not a proxy to host services, so
-there is no `host.docker.internal` equivalent to aim at (every such name is
-`NXDOMAIN`). What works is naming the host's real address in a rule:
-`msb run --net-rule "allow@<host LAN address>" ...`, or the blunter
-`--net private`. That is only half of it, because a host-side server bound to
-loopback is unreachable from another kernel no matter what the rule says —
-`ollama` binds `127.0.0.1:11434` by default, so it also has to be started with
-`OLLAMA_HOST=0.0.0.0`, which exposes it to the LAN. The stable answer is
-`--vsock HOST_PATH:PORT`, host IPC with no address to expose; it was not
-exercised in the spike and is the thing to build the msb side of this preset on.
-Until then the preset is **srt-only**: `net_rules` (§2.2) turns its two entries
-into `allow@localhost:tcp:443` and `allow@127.0.0.1:tcp:443`, which name the
-guest's own loopback on a port nothing is listening on, so an msb session ticking
-it gets no host service and no error saying why. The chooser should say so before
-that gap is closed.
+**For `microsandbox` the answer is different, and better.** A guest has its own
+kernel, so host loopback is not the guest's loopback, and a rule naming
+`127.0.0.1` would name the guest's own. What the profile meant is this machine,
+which msb spells as the `host` group, and a rule there can carry a port. So the
+same tick that gives srt every local port gives msb one named port, and the port
+comes from the profile rather than from paddock: a loopback entry written
+`localhost:<port>`, in an agent's `api_domains` or typed into the extra-domains
+box, becomes `allow@host:tcp:<port>` and nothing else. §2.2 has the mechanism,
+what was measured, and the limits. The preset's own entries carry no port, so on
+msb they stay as wide as they are on srt: `allow@host`, every port on this
+machine. That width is the reason to name a port instead.
+
+**The confirm screen says which of the two it is**, because the same tick is now two
+different grants. `_reachable` takes the backend the way `_writable`, `_readable` and
+`_runnable` already do (§3.1). On srt, and on msb for an entry that named no port, it
+is the preset's own width: every service listening on this machine's loopback, whatever
+port. On msb for a profile that named its ports it is `port 11434 on this machine, and
+nothing else on it`. A screen that said "whatever port" for a one-port session would
+overstate the grant, which is the one direction this screen must never be wrong in.
 
 **There is no allow-all, and the profile says so rather than pretending.** The
 `everything` network preset is a sentinel: it names no domains, and a backend
@@ -519,9 +519,18 @@ Four of those differ in kind, not in spelling:
   symlink to `/private/tmp` on macOS, which fails as a mount source. The backend
   passes `Path.resolve()` for every mount.
 - **Network rules name a host, a protocol and a port, not a URL path.** srt allows a
-  domain through its proxy; an msb rule is `allow@<domain>:tcp:443`, so it is https to
-  that host and nothing else. A profile with no domains gets no network at all, DNS
-  included.
+  domain through its proxy; an msb rule is `allow@domain=<domain>:tcp:443`, so it is
+  https to that host and nothing else. A profile with no domains gets no network at all,
+  DNS included.
+- **A domain is spelled `domain=`, and that is a security fix, not a style.** msb's rule
+  targets share one namespace with its groups (`public`, `private`, `host`, `multicast`,
+  ...), so a bare `allow@public:tcp:443` is read as **the group**. A profile with
+  `public` in its extra-domains box therefore booted a guest that reached example.com
+  and api.github.com, neither of them on its allowlist: measured on 0.6.13, an allowlist
+  silently turned into open egress on 443 by one typed word. Every remote target now
+  carries `domain=`, which makes it a name to resolve; the same guest is refused,
+  because nothing answers to `public`. A profile entry is user input and must never be
+  able to name an msb group.
 - **Allow-all is a default, not a rule.** A profile that ticks `everything` (§2.1) boots
   with `--net-default allow` and no rules at all: every host, every port, and DNS with
   them. It is the one network answer msb can give and srt cannot, which is why the
@@ -534,6 +543,92 @@ Four of those differ in kind, not in spelling:
 - **The PATH shim dir has no job here.** The guest holds what the image holds, so the
   image is the tool selection, and the absolute-path bypass §4.1 documents is not
   available: `/opt/homebrew/bin/docker` is not in the guest to be run.
+
+#### Reaching a server on this machine
+
+**A local inference server is the case, and the mechanism is generic.** ollama, LM
+Studio, llama.cpp's server and vLLM are one shape: an HTTP server on a host port. So
+nothing here names a product, a model or a port. The port is configuration, and there
+is no default: paddock does not know what is listening and will not invent a rule for
+a service nobody named.
+
+**The rule aims at the gateway, and carries the port.** A loopback entry in the
+resolved domains (§6) becomes a `host` rule rather than a domain rule, because the
+guest's `127.0.0.1` is its own:
+
+| Entry in the resolved domains | Rule |
+| --- | --- |
+| `localhost:8080`, `127.0.0.1:8080`, `[::1]:8080` | `--net-rule allow@host:tcp:8080` |
+| `localhost`, `127.0.0.1` (the preset's own spelling) | `--net-rule allow@host`, every port |
+| both of the above together | `--net-rule allow@host`, the wider one, said once |
+
+Measured against `msb` 0.6.13, with a server bound to `127.0.0.1:11434` on the host
+and nothing rebound:
+
+- **A guest holding `allow@host:tcp:11434` reaches it.** The gateway connects onward
+  from the host itself, so it arrives at the host's own loopback. **The server does
+  not have to be published to anything.** This is the finding that reverses the
+  spike's: it measured a *default-network* guest reaching nothing, and concluded the
+  host had to be named by its LAN address and the server bound to `0.0.0.0`. Neither
+  is true with an explicit rule. Binding a local model server to the LAN to reach it
+  from a sandbox would have been the opposite of the point.
+- **The same guest is refused on every other host port.** A second host server on
+  `127.0.0.1:18099` answers the host and refuses the guest: `wget: can't connect to
+  remote host (172.16.2.213): Connection refused`. That is the whole difference from
+  srt, where the same grant takes no port at all (§2.1).
+- **The `host` group is the gateway alone.** A guest holding `allow@host` reaches a
+  host server through `host.microsandbox.internal` and is refused at the host's LAN
+  address for that same server. The grant does not carry the host's other addresses,
+  and the guest cannot reach the LAN through it.
+- **No DNS rule is needed.** msb writes `host.microsandbox.internal` into the guest's
+  `/etc/hosts` at boot, pointing at that sandbox's own gateway. A profile whose only
+  entry is loopback therefore gets no `allow@dns`, because nothing has to be resolved.
+- **What that closes, and what it does not.** With a **port-scoped** grant it closes
+  the DNS hole outright: no rule reaches the gateway's port 53, so names do not
+  resolve, which the live gate measured (`wget: bad address 'example.com'`). With the
+  **portless** `allow@host` it does not, and the difference is not a subtlety: the
+  gateway's resolver listens on a port of the host group, so a grant on every host port
+  is a grant on 53. Measured on 0.6.13, a guest holding `allow@host` and no `allow@dns`
+  resolved `example.com` through the gateway; the connections were still refused, but
+  the names came back. Names are a low-bandwidth channel out (see the DNS bullet
+  above), so a profile that wants that channel shut has to name its port.
+- **The address is per sandbox and the name is not.** Every sandbox gets its own
+  `/30`, so its gateway address differs (`172.16.2.213` in one run, `172.16.2.225` in
+  the next). The name is the same in all of them, which is why paddock writes the
+  name.
+
+**The guest is told where the server is.** When the resolved domains name exactly one
+local port, `msb create` carries two variables, set at boot so that every later `msb
+exec`, the agent tab and any shell tab, has them:
+
+```sh
+-e OPENAI_BASE_URL=http://host.microsandbox.internal:<port>/v1
+-e OLLAMA_HOST=http://host.microsandbox.internal:<port>
+```
+
+`OPENAI_BASE_URL` is the one that matters: it is what an OpenAI-shaped client reads,
+which is nearly all of them, and every server named above serves that API. `OLLAMA_HOST`
+is a courtesy for clients that read it instead, naming the same endpoint without the
+`/v1` suffix those APIs do not use. Neither is a credential, and a client that wants an
+API key for a local server can be given any string.
+
+**Exactly one port, or neither variable.** Two open local ports are a server and
+something else, a dev server or a database, and paddock cannot tell which one
+answers prompts, so it names neither rather than guessing wrong. A profile that opened the
+whole machine named no port at all and gets no endpoint either. In both cases the
+rules still let the traffic through: what is missing is only paddock's claim about
+where to aim, which it will not make when it does not know.
+
+**One port named inside a wider grant still gets the endpoint.** Ticking the preset and
+naming `localhost:8080` is one rule, `allow@host`, and one endpoint, `:8080`. The port
+was declared and it is still where the server is, so the variable is true; it is the
+rule that is generous, not the name. What suppresses the endpoint is ambiguity about
+which port answers prompts, never a grant being wider than the endpoint it names.
+
+**What this does not do.** No image ships a client, so the guest needs one it can
+install or one baked into its image; the endpoint is set either way. There is no
+preflight that checks a server is actually listening before the VM boots: a wrong
+port is a refused connection inside the guest, the same as any other closed port.
 
 #### Provisioning an agent in the guest
 
@@ -1213,7 +1308,7 @@ entry:
 | --- | --- |
 | `name` | Display name |
 | `command` | Executable run inside the sandbox |
-| `api_domains` | Domains the agent needs; merged into the allowlist when selected |
+| `api_domains` | Domains the agent needs; merged into the allowlist when selected. A `localhost:<port>` entry is how an agent says its API is a server on this machine, which is the whole configuration the local-inference case has (§2.2) |
 | `required_tools` | Tools the command cannot start without, put on the srt shim dir when the agent is selected. `codex` is a `#!/usr/bin/env node` script, so it names `node`. Blank for an agent that is a binary |
 | `auth_read_paths` | Credential paths auto-allowed for reading |
 | `config_write_paths` | Paths it legitimately writes (history, session state) |
@@ -1265,6 +1360,11 @@ Notes:
   that resolved set is what writes `allowLocalBinding` into the settings (§2.1);
   no profile ships with it. The `everything` preset is outside that sum: it adds
   no domain and is read as a sentinel by the backend (§2.1).
+- A loopback entry may carry a port, `localhost:8080`, and that is the only
+  configuration the local-server case has. msb scopes its rule to that port and
+  points the guest at it (§2.2); srt's grant takes no port and ignores it (§2.1).
+  An agent that calls a server on this machine declares it in `api_domains` (§5)
+  the way any agent declares its API, so choosing that agent is what opens it.
 - Two profiles ship built in: `claude-default` (Claude Code with the usual dev
   tools and registries) and `offline-shell` (a plain shell, no network). A user
   file of the same name **replaces** the built-in whole: fields the file leaves

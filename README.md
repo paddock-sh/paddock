@@ -198,6 +198,115 @@ authenticates, answers, and cannot write outside its paddock.
 [docs/SPEC.md §4](docs/SPEC.md#4-three-enforcement-layers) covers what each layer
 does and does not stop, including known bypasses.
 
+## Local models, contained
+
+An agent that talks to a model on your machine, and to nothing else. No API key,
+no prompt leaving the laptop, and a sandbox whose entire network policy is one
+port on this machine.
+
+On the `msb` backend a session is a microVM with its own kernel. Naming a local
+port writes one rule: reach this machine, on that port, and nothing else. Not
+another port on this machine, not the internet, not even DNS. Your files are not
+in the guest to deny, because only the directory you shared is mounted.
+
+The mechanism is a server on a host port, so it is the same for all of them:
+[ollama](https://ollama.com), [LM Studio](https://lmstudio.ai),
+[llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`,
+[vLLM](https://docs.vllm.ai). paddock has no default port and no favourite
+runtime: you say which port, once.
+
+**The one conscious step is what your server listens on.** Keep it on loopback,
+which is where these all start. paddock reaches it there: the microVM's gateway
+connects onward from the host, so `127.0.0.1` is the address it arrives at, and
+your server is never published to your network to make this work. If you have
+turned on serving to the local network at some point (LM Studio has a toggle,
+ollama has `OLLAMA_HOST=0.0.0.0`), that hands the model to everyone on the
+Wi-Fi and paddock does not need it. Turn it back off.
+
+**The recipe.** Nothing is installed in the guest, so the policy stays at one
+port. ollama on its usual port, as one example:
+
+```sh
+# 1. your server, wherever it already listens
+ollama serve                                   # 11434
+# LM Studio: start the local server in the app  # 1234
+# llama.cpp: llama-server -m model.gguf --port 8080
+# vLLM:      vllm serve <model> --port 8000
+
+# 2. tell paddock the port, once, in an agent file.
+#    The filename is the agent's key in the registry.
+mkdir -p ~/.config/paddock/agents
+cat > ~/.config/paddock/agents/local-inference.json <<'JSON'
+{
+  "name": "Local inference",
+  "command": "/bin/sh",
+  "image": "alpine",
+  "api_domains": ["localhost:11434"]
+}
+JSON
+
+# 3. prefix+s, pick "Local inference" in Agent, set Backend to msb, launch.
+#    `s` on the form saves those answers as a profile. Name it `local-model`
+#    and every later launch is one line:
+paddock launch local-model --backend msb
+```
+
+`api_domains` is where any agent declares the API it calls, so a local server is
+declared the same way, and choosing that agent is what opens the port. For a
+one-off, type `localhost:11434` into the chooser's `Network` field instead.
+
+The tab comes up as a shell in the guest, knowing where the server is:
+
+```sh
+OPENAI_BASE_URL=http://host.microsandbox.internal:11434/v1
+OLLAMA_HOST=http://host.microsandbox.internal:11434
+```
+
+Alpine's `wget` is enough to talk to it, with nothing installed and nothing
+resolved:
+
+```sh
+wget -qO- --header='Content-Type: application/json' \
+  --post-data '{"model":"qwen3:8b","stream":false,
+                "messages":[{"role":"user","content":"hello"}]}' \
+  "$OPENAI_BASE_URL/chat/completions"
+```
+
+`OPENAI_BASE_URL` is the one nearly every client reads, and all four servers
+above answer that API. Clients that insist on a key take any string.
+
+**A client that installs itself is the wider variant.** Point the agent at a real
+CLI and the guest has to fetch it on the way up, which needs the package registry
+and the DNS to find it:
+
+```json
+{
+  "name": "Aider on the local model",
+  "command": "aider --no-auto-commits",
+  "image": "python:3.12-slim",
+  "install": "pip install --quiet aider-chat",
+  "api_domains": ["localhost:11434"]
+}
+```
+
+That launch needs the `pypi/uv` preset ticked as well, and the rules are set when
+the VM boots, so the session keeps that network for its whole life: pypi, and DNS
+for every name, not just the one port. The prompts still go nowhere but your own
+machine. If you want the install and the one-port policy, bake the client into an
+image and leave `install` blank, which is what `image` is for.
+
+**Verified live**, with a real 27B model answering a real prompt from inside the
+guest: the host's `/Users` is not there, `example.com` does not resolve, the
+host's SSH keys are unreachable, a second host server on another port is refused,
+and `paddock gc` takes the VM away. The full transcript is in
+[the spike notes](docs/spikes/microvm.md#appendix-reaching-a-local-inference-server).
+
+On the `srt` backend the same entry still works, but the grant is not scoped:
+Seatbelt's loopback rule takes no port, so it opens every service listening on
+this machine. The confirm screen says which of the two you are getting, in as
+many words, before anything launches. If you want the narrow version, use `msb`. [SPEC §2.1 and §2.2](docs/SPEC.md#22-microsandbox-msb-registered-as-msb)
+have the measurements behind both.
+
 ## Command line
 
 The popup is the usual way in. The same jobs work without questions:

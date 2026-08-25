@@ -218,6 +218,12 @@ a target is an IP, a CIDR, a domain, a `*.example.com` suffix, or a group
 
 **Not by default, and that is the correct default. It needs an explicit rule.**
 
+> **Superseded in part.** The conclusion below, that the host must be named by
+> its LAN address and a loopback-bound server rebound to `0.0.0.0`, is wrong. A
+> rule aimed at the `host` group reaches the host's own loopback, and it can
+> carry a port. See
+> [Appendix: reaching a local inference server](#appendix-reaching-a-local-inference-server).
+
 With a host server on `*:18080`, a default-network guest reaches nothing:
 
 ```
@@ -613,6 +619,229 @@ error: sandbox not found: nosuchvm      # exit 1
 ```
 
 `probevm` and `/tmp/msbprobe` were removed afterwards.
+
+---
+
+## Appendix: reaching a local inference server
+
+Run against `msb` 0.6.13 on 2026-08-24, while the contained-local-model MVP was
+built. **This appendix corrects
+[question 4](#can-the-guest-reach-host-services), which measured the wrong thing.**
+
+The question there was whether a *default-network* guest reaches a host server.
+It does not, and the conclusion drawn was that the host has to be named by its
+LAN address and the server bound to `0.0.0.0`. Both are wrong once there is an
+explicit rule, and for a local model server the second would have been the
+opposite of the point: exposing the model to the network in order to reach it
+from a sandbox.
+
+### The host group reaches the host's own loopback
+
+Host server on `127.0.0.1:11434`, nothing rebound, nothing published:
+
+```
+$ lsof -nP -iTCP -sTCP:LISTEN | grep 11434
+ollama  97484 desquaredp  3u  IPv4  TCP 127.0.0.1:11434 (LISTEN)
+
+$ msb create --name probe-lm --net-default deny --net-rule "allow@host:tcp:11434" alpine
+$ msb exec probe-lm -- /bin/sh -c 'wget -q -O - http://host.microsandbox.internal:11434/api/tags'
+{"models":[{"name":"qwen3.8-uncensored-vision:latest", ...
+```
+
+The gateway connects onward from the host process, so it arrives at the host's
+loopback. A server bound to `127.0.0.1` is reachable from the guest without
+being reachable from anything else.
+
+### The rule is per port, and portless means every port
+
+Two guests, two rules, one extra host server on `127.0.0.1:18099`:
+
+| Guest rule | `:11434` | `:18099` |
+| --- | --- | --- |
+| `allow@host:tcp:11434` | answers | `can't connect to remote host (172.16.2.213): Connection refused` |
+| `allow@host` | answers | answers |
+
+So `allow@host:tcp:<port>` is the narrow grant paddock writes for a loopback
+entry that names a port, and `allow@host` is what the `local services` preset
+means on this backend: every port on this machine, the same width srt gives it.
+
+### The host group is the gateway alone
+
+Third host server, this one on `0.0.0.0:18100`, reachable at the host's LAN
+address. From a guest holding `allow@host`:
+
+```
+$ ... http://host.microsandbox.internal:18100/     ->  <!DOCTYPE HTML> ...
+$ ... http://100.110.158.155:18100/                ->  can't connect to remote host: Connection refused
+```
+
+The grant does not carry the host's other addresses. A sandbox given the whole
+host group still cannot reach the LAN.
+
+### The name is stable, the address is not
+
+```
+$ msb exec probe-lm -- /bin/sh -c 'cat /etc/hosts; ip route'
+172.16.2.213    host.microsandbox.internal
+fd42:6d73:62:b5::1      host.microsandbox.internal
+default via 172.16.2.213 dev eth0
+```
+
+msb writes the alias at boot, pointing at that sandbox's own gateway. Each
+sandbox gets its own `/30`, so the address differed between runs (`172.16.2.213`,
+then `172.16.2.225`) and the name did not. That is why paddock writes the name
+into `OPENAI_BASE_URL` and never an address. It also means a loopback-only
+profile needs no `allow@dns`: nothing has to be resolved.
+
+### Live gate
+
+Booted through paddock's own `prepare()`, with the port coming from an agent
+registry entry and nothing else, against the real `qwen3.8-uncensored` (27.3B)
+on this machine. Throwaway config and state dirs, so no real profile was touched.
+
+```
+== configuration ==
+agent entry api_domains: ['localhost:11434']
+resolved domains:       ['localhost:11434']
+net rules:              ['--net-default', 'deny', '--net-rule', 'allow@host:tcp:11434']
+endpoint env:           {'OPENAI_BASE_URL': 'http://host.microsandbox.internal:11434/v1',
+                         'OLLAMA_HOST': 'http://host.microsandbox.internal:11434'}
+
+== booted ==
+vm: paddock-20260824-175210-yn2xdzrp
+
+== 1. the guest was told where the server is ==
+http://host.microsandbox.internal:11434/v1
+http://host.microsandbox.internal:11434
+
+== 2. chat round trip, from inside the guest ==
+{"id":"chatcmpl-946","object":"chat.completion","model":"qwen3.8-uncensored",
+ "choices":[{"message":{"role":"assistant","content":"A hypervisor is software that
+ creates and manages virtual machines by abstracting the underlying hardware."}}],
+ "usage":{"prompt_tokens":63,"completion_tokens":50,"total_tokens":113}}
+
+== 3. /Users is not there ==
+ls: /Users: No such file or directory
+bin dev etc home lib media mnt opt proc root run sbin srv sys tmp usr var work
+
+== 4. example.com is refused ==
+wget: bad address 'example.com'          # http, and https the same
+
+== 5. the host's ssh keys are unreachable ==
+ls: /Users/desquaredp/.ssh: No such file or directory
+ls: /root/.ssh: No such file or directory        HOME=/root
+find / -name 'id_*' -o -name 'known_hosts'  ->  nothing
+
+== 6. the host's other loopback ports are refused ==
+wget: can't connect to remote host (172.16.2.225): Connection refused   # :18099
+
+== 7. gc collects it ==
+swept: ['paddock-20260824-175210-yn2xdzrp'] left alone: ['paddock-20260824-175206-22un83z_']
+gate VM still listed: False
+```
+
+The VM left alone belonged to another paddock context running at the same time,
+which is the scoped sweep of SPEC §3.4 working: a sandbox is only this state
+dir's to remove.
+
+### A domain entry that names a group gets the group
+
+Found in review of the branch above, and the reason every remote rule now says
+`domain=`. msb's rule targets share one namespace with its groups, so the rule
+`net_rules` used to write for a domain was ambiguous whenever the domain was
+spelled like a group:
+
+```
+$ msb create --net-default deny --net-rule "allow@dns" \
+    --net-rule "allow@public:tcp:443" alpine        # what `public` in a profile emitted
+$ ... https://example.com/     -> <!doctype html><html lang="en">...
+$ ... https://api.github.com/  -> {"current_user_url": "https://api.github.com/user", ...
+```
+
+Neither host was on the allowlist. One typed word turned an allowlist into open
+egress on 443. With the target disambiguated, the same two requests are refused:
+
+```
+$ msb create --net-default deny --net-rule "allow@dns" \
+    --net-rule "allow@domain=example.com:tcp:443" \
+    --net-rule "allow@domain=public:tcp:443" alpine
+$ ... https://example.com/     -> <!doctype html><html lang="en">...   # the real allowlist entry
+$ ... https://api.github.com/  -> can't connect to remote host (172.182.252.137): Connection refused
+```
+
+`domain=public` is looked up as a name, nothing answers to it, and the group is
+untouched. `public`, `private`, `host` and `multicast` are all now tested.
+
+### The portless grant does not close the DNS hole
+
+Also from review, and it corrects a claim made earlier on this branch. A
+**port-scoped** guest resolves nothing, which the live gate shows
+(`wget: bad address 'example.com'`). A **portless** `allow@host` guest resolves
+fine, because the gateway's resolver sits on a host port and the grant covers
+every host port:
+
+```
+$ msb create --net-default deny --net-rule "allow@host" alpine   # no allow@dns
+$ msb exec ... nslookup example.com
+Server:  172.16.3.13
+Address: 172.16.3.13:53
+Non-authoritative answer:
+Name:    example.com
+Address: 2606:4700:10::ac42:93f3
+$ ... https://example.com/  -> can't connect to remote host (172.66.147.243): Connection refused
+```
+
+The connections are still refused, so this is a name channel and not egress. It
+is one more reason to name a port rather than tick the preset.
+
+### Live gate, round 2: both rule kinds on one VM
+
+The first gate was a loopback-only profile, so it never exercised a remote rule.
+This one boots through `prepare()` with the github preset, `public` typed into
+the extra-domains box, and the local port from the agent entry:
+
+```
+net rules: --net-default deny --net-rule allow@dns
+           --net-rule allow@domain=*.github.com:tcp:443
+           --net-rule allow@domain=*.githubusercontent.com:tcp:443
+           --net-rule allow@domain=github.com:tcp:443
+           --net-rule allow@domain=public:tcp:443
+           --net-rule allow@host:tcp:11434
+
+1. github.com (allowed)        -> <!DOCTYPE html><html lang="en" ...
+2. example.com (not allowed)   -> Connection refused
+   api.github.com (not allowed) -> Connection refused
+3. the model on its one port   -> {"choices":[{"message":{"content":"contained"}}], ...}
+4. host port 18099             -> Connection refused
+5. paddock gc                  -> swept, no longer listed
+```
+
+Line 2 is the fix: `public` was in the profile and granted nothing. Before it,
+that same profile reached both of those hosts.
+
+### Rule tokens with a stray colon are rejected, not misread
+
+Relevant because a suffix that is not a real port now leaves the entry whole, so
+it reaches the remote branch as an odd domain. msb refuses such a token outright
+rather than reading part of it:
+
+```
+$ msb create --net-rule "allow@domain=localhost:99999:tcp:443" alpine
+error: rule token `allow@domain=localhost:99999:tcp:443` has trailing fields after `<ports>`
+```
+
+Same for `domain=example.com:443`, `domain=localhost:` and `domain=localhost:evil`.
+The launch fails with that message and no VM, which is the safe direction: the
+alternative that used to be reachable, reading `localhost:99999` as loopback,
+emitted `allow@host` and granted every port on this machine.
+
+### State of the machine after these probes
+
+- `probe-lm`, `probe-lm2`, the gate VM, and the review probes (`rev-group`,
+  `rev-dom`, `rev-hostdns`, `rev-parse`) were removed. `msb ls` reports none of
+  them. The two host test servers on 18099 and 18100 were stopped.
+- **The inference server's binding was never changed.** It was on `127.0.0.1:11434`
+  before and after, which is the whole point of the finding.
 
 ---
 
