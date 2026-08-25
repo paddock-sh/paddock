@@ -145,13 +145,13 @@ a:hover { color: var(--blue-bright); }
   color: var(--faint);
 }
 .strip .wordmark { display: inline-flex; align-items: center; gap: 0.72rem; color: var(--bone); letter-spacing: 0.42em; font-weight: 600; }
-/* The mark is logo.png's deep blue horse, the same picture as the poster and the
-   colophon read at a third zoom. The head is lifted whole, both ears down to the
-   top of the neck, and set on a square of the illustration's own sky (#b4b5b7)
-   so nothing is clipped by an edge at any size. A tighter crop lost an ear at
-   24px and turned to mush in a 16px tab. It keeps the colophon image's 1px rule
-   border, and the plate measures 5.2:1 against --ink, well over the 3:1 WCAG
-   asks of a non-text graphic. */
+/* The mark is the whole logo, never a crop of it. The four horses are the
+   identity, so the composition stays intact at every size. logo.png is square
+   already, so it only wants a good downscale, with contrast and sharpening
+   graduated up as it gets smaller: 64, 32, 16. No radius, no clip, no overflow,
+   nothing that would cut a horse off. It keeps the colophon image's 1px rule
+   border and measures 3.8:1 against --ink, over the 3:1 WCAG asks of a non-text
+   graphic. */
 .strip .wordmark img { flex: none; width: 24px; height: 24px; border: 1px solid var(--rule); }
 .strip nav { display: flex; gap: 1.3rem; flex-wrap: wrap; }
 .strip nav a { color: var(--muted); text-decoration: none; padding-block: 0.55rem; margin-block: -0.55rem; }
@@ -230,24 +230,17 @@ h1 .b { display: block; color: var(--bone); }
 }
 @media (max-width: 1100px) { .shell { grid-template-columns: minmax(0, 1fr); } }
 
-.doc { position: relative; padding-left: clamp(1.35rem, 4.5vw, 3.6rem); }
-.doc::before {
-  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 9px;
-  border-left: 1px solid var(--rule); border-right: 1px solid var(--rule);
-  background: repeating-linear-gradient(180deg, transparent 0 46px, var(--rule) 46px 48px);
-  opacity: 0.75;
-  z-index: 1;   /* over the banded section, so the spine is unbroken */
-  pointer-events: none;
-}
-
-/* The running index in the right margin. It only exists where there is margin. */
+/* The running index in the right margin. It only exists where there is margin.
+   The section in view is marked by weight and colour, not by a rule. */
 .index { position: sticky; top: 2.4rem; padding-top: var(--s-sec); font-family: var(--mono); font-size: 0.735rem; }
 @media (max-width: 1100px) { .index { display: none; } }
-.index ol { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--hair); }
-.index a { display: block; padding: 0.4rem 0 0.4rem 0.85rem; color: var(--faint); text-decoration: none; border-left: 2px solid transparent; margin-left: -1px; transition: color 150ms var(--ease), border-color 150ms var(--ease); }
+.index ol { list-style: none; margin: 0; padding: 0; }
+.index a { display: block; padding: 0.4rem 0; color: var(--faint); text-decoration: none; transition: color 150ms var(--ease); }
 .index a:hover { color: var(--bone-dim); }
-.index a[aria-current="location"] { color: var(--bone); border-left-color: var(--blue-lift); }
-.index .n { color: var(--blue-lift); margin-right: 0.55rem; }
+.index a[aria-current="location"] { color: var(--bone); }
+.index .n { color: var(--rule); margin-right: 0.55rem; transition: color 150ms var(--ease); }
+.index a:hover .n { color: var(--blue); }
+.index a[aria-current="location"] .n { color: var(--blue-lift); }
 
 section { position: relative; padding-block: var(--s-sec); }
 section + section { border-top: 1px solid var(--hair); }
@@ -321,9 +314,11 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 }
 .grant dd { margin: 0; max-width: 58ch; }
 .grant dd > p { margin: 0; color: var(--bone); font-size: 1.02rem; }
+/* The catch is set apart by type and space, not by a rule: mono against the
+   serif above it, and the clay lead-in does the flagging. */
 .grant .catch {
-  margin-top: 0.6rem; font-family: var(--mono); font-size: 0.755rem; line-height: 1.65;
-  color: var(--muted); border-left: 2px solid var(--clay); padding-left: 0.7rem;
+  margin-top: 0.8rem; font-family: var(--mono); font-size: 0.755rem; line-height: 1.65;
+  color: var(--muted);
 }
 .grant .catch b { color: var(--clay); font-weight: 500; }
 
@@ -364,13 +359,15 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 /* ------------------------------------------------------------- quotes etc -- */
 
 pre.snip {
-  margin: var(--s-3) 0 0; padding: 0.95rem; border: 1px solid var(--hair); border-left: 2px solid var(--blue);
+  margin: var(--s-3) 0 0; padding: 0.95rem; border: 1px solid var(--hair);
   background: var(--term); overflow-x: auto; font-family: var(--mono);
   font-size: clamp(0.685rem, 0.55rem + 0.45vw, 0.79rem); line-height: 1.75; color: var(--bone-dim); scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
 }
 pre.snip i { color: var(--faint); font-style: normal; }
 
-.measured { margin: var(--s-3) 0 0; padding: 0.85rem 0 0.85rem 1.05rem; border-left: 2px solid var(--clay);
+/* It quotes a terminal, so it is set on the terminal's own ground rather than
+   flagged with a rule. */
+.measured { margin: var(--s-3) 0 0; padding: 0.9rem 1rem; background: var(--term); border: 1px solid var(--hair);
   font-family: var(--mono); font-size: clamp(0.69rem, 0.55rem + 0.45vw, 0.78rem); line-height: 1.7; color: var(--bone-dim);
   max-width: 82ch; }
 .measured b { color: var(--clay); font-weight: 500; }
@@ -394,7 +391,9 @@ pre.snip i { color: var(--faint); font-style: normal; }
 .colophon { border-top: 1px solid var(--rule); padding-block: clamp(2.4rem, 6vw, 3.6rem) 3rem; font-family: var(--mono); font-size: 0.775rem; color: var(--faint); }
 .colophon__grid { display: grid; grid-template-columns: 118px repeat(auto-fit, minmax(178px, 1fr)); gap: 1.7rem 2rem; align-items: start; }
 @media (max-width: 640px) { .colophon__grid { grid-template-columns: minmax(0, 1fr); } }
-.colophon img { width: 108px; height: auto; border: 1px solid var(--rule); filter: grayscale(0.35) brightness(0.9); }
+/* Same mark as the nav, larger. Unfiltered, so the identity reads the same in
+   both places. */
+.colophon img { width: 108px; height: auto; border: 1px solid var(--rule); }
 .colophon h2 { font-family: var(--mono); margin: 0 0 0.55rem; font-size: 0.665rem; line-height: 1.5;
   letter-spacing: 0.19em; text-transform: uppercase; color: var(--muted); font-weight: 500; max-width: none; }
 .colophon ul { list-style: none; margin: 0; padding: 0; line-height: 1.95; }
@@ -438,10 +437,10 @@ pre.snip i { color: var(--faint); font-style: normal; }
     <div class="strip">
       <span class="wordmark"><img src="mark.png" width="64" height="64" alt="" decoding="async">paddock</span>
       <nav aria-label="Project links">
+        <a href="docs.html">Docs</a>
         <a href="https://github.com/desquaredp/paddock">GitHub</a>
         <a href="https://github.com/desquaredp/paddock#trust-model">Trust model</a>
         <a href="https://github.com/desquaredp/paddock/blob/main/docs/SPEC.md">Spec</a>
-        <a href="https://github.com/desquaredp/paddock/blob/main/docs/ROADMAP.md">Roadmap</a>
       </nav>
     </div>
   </div>
@@ -452,11 +451,10 @@ pre.snip i { color: var(--faint); font-style: normal; }
     <h1 class="up d1"><span class="a">The model is local.</span><span class="b">The blast radius should be too.</span></h1>
 
     <div class="deck up d2">
-      <p>A local or uncensored model does what the prompt says. The agent wrapped around
-      it starts with your whole disk and your whole network.</p>
-      <p><b>paddock is the fence.</b> It runs the agent inside a sandbox the operating system
-      enforces, and you settle the tools, the domains and the one writable directory before
-      the first token.</p>
+      <p>A local or uncensored model does what the prompt says. The agent around it
+      starts with your whole disk and your whole network.</p>
+      <p><b>paddock is the fence.</b> The agent runs in a sandbox the OS enforces, and you
+      pick the tools, the domains and the one writable directory before the first token.</p>
     </div>
 
     <div class="cmd up d3">
@@ -484,13 +482,12 @@ pre.snip i { color: var(--faint); font-style: normal; }
       </div>
 
       <p class="sub"><code>paddock run</code> starts a sandboxed session in the terminal you
-      are already in. There is no daemon and no tab to open. It opens on the profile you
-      launched last, so the ordinary case is <code>L</code> and then enter.</p>
+      are already in. No daemon, no tab to open. It opens on the profile you launched last:
+      <code>L</code>, then enter.</p>
 
-      <p class="sub">The confirm screen is not optional, and it does not shrink for a repeat
-      launch. That is the whole promise of the tool: <b>the thing granting the permissions says
-      out loud what it granted</b>. Domain groups are expanded into the domains they open, and
-      paths are written as they will be.</p>
+      <p class="sub">The confirm screen is not optional and does not shrink for a repeat
+      launch. <b>The thing granting the permissions says out loud what it granted</b>: groups
+      expanded, paths as they will be.</p>
 
       <figure class="screen">
         <div class="screen__tab"><span>chooser</span><span><b>paddock run</b></span></div>
@@ -538,16 +535,16 @@ pre.snip i { color: var(--faint); font-style: normal; }
 <u>paddock: installing local in the guest</u>
 <u>paddock: the first start takes about 40 seconds</u>
 <u>paddock: session local-model-4a7f</u></pre>
-        <figcaption>Static mock, drawn at the 80 column width the screens are designed to.
-        Every paddock line is the literal string the code composes, taken from
-        <code>tui.py</code> and <code>screen.py</code>. Standalone <code>paddock run</code> and
-        the port-scoped local rule are open pull requests, not yet on main.</figcaption>
+        <figcaption>Static mock at the 80 column width the screens are drawn to. Every
+        paddock line is the literal string the code composes, from <code>tui.py</code> and
+        <code>screen.py</code>. Standalone <code>paddock run</code> and the port-scoped local
+        rule are on <code>develop</code> at v0.2.0, not yet on main.
+        <a href="docs.html">Full reference</a>.</figcaption>
       </figure>
 
-      <p class="sub sub--after">Inside <a href="https://herdr.dev">herdr</a> the
-      same chooser opens on <code>prefix+s</code> and adds what a multiplexer is for: sandboxed
-      tabs, named sessions, and a second tab attached to a session already running. Outside it,
-      one terminal is one session and <code>paddock run</code> is the whole of it.</p>
+      <p class="sub sub--after">In <a href="https://herdr.dev">herdr</a> the same chooser opens
+      on <code>prefix+s</code> and adds sandboxed tabs, named sessions and re-attach. Outside
+      it, one terminal is one session.</p>
     </section>
 
     <!-- ============================================================ 02 ==== -->
@@ -557,71 +554,60 @@ pre.snip i { color: var(--faint); font-style: normal; }
         <h2 id="h2-grants">Every grant is decided before the first token</h2>
       </div>
 
-      <p class="sub">Nothing here is a runtime prompt the agent can talk its way past. Writes
-      and domains are settled in the kernel sandbox, and the config directory is rebuilt per
-      session so unticked skills and MCP servers are not there to find. These are the confirm
-      screen's own five lines.</p>
+      <p class="sub">No runtime prompts to argue past. Writes and domains are settled in the
+      kernel sandbox, and unticked skills and MCP servers are not in the session's config
+      directory to find.</p>
 
       <dl class="grants">
         <div class="grant">
           <dt>can run</dt>
           <dd>
-            <p>Only the binaries you tick are on the sandbox <code>PATH</code>, plus whatever
-            the chosen agent cannot start without, which is named alongside it.</p>
-            <p class="catch"><b>Soft.</b> An absolute path still reaches any binary on the host.
-            On <code>srt</code> this is convenience and the docs say so. On <code>msb</code> there is no host binary to
-            reach.</p>
+            <p>Only the binaries you tick, plus what the agent cannot start without.</p>
+            <p class="catch"><b>Soft.</b> An absolute path still reaches any host binary. On
+            <code>msb</code> there is none to reach.</p>
           </dd>
         </div>
         <div class="grant">
           <dt>can reach</dt>
           <dd>
-            <p>A domain allowlist, by group or by name. Everything else is refused by the OS.
-            Tick nothing and only the chosen agent's own API stays open; pick the shell agent
-            and the sandbox is fully offline.</p>
-            <p class="catch"><b>Hard, with one hole.</b> On <code>msb</code>, DNS is all or nothing. The
-            gateway resolver answers for every name, not only the allowed ones, and the
-            connection is then refused. Names are a low-bandwidth channel out.</p>
+            <p>A domain allowlist, by group or by name. Everything else refused by the OS.</p>
+            <p class="catch"><b>Hard, one hole.</b> On <code>msb</code> DNS is all or nothing:
+            every name resolves, then the connection is refused. Names leak.</p>
           </dd>
         </div>
         <div class="grant">
           <dt>can write</dt>
           <dd>
-            <p>Denied by default. A session gets an isolated scratch directory, or the one host
-            directory you named, which is then the only thing on this machine it can change.</p>
-            <p class="catch"><b>No opt-out.</b> There is deliberately no allow-everything row.
-            A sandbox with no filesystem fence is an ordinary local tab, which the Open
-            field already offers.</p>
+            <p>Denied by default. A scratch directory, or the one host directory you named.</p>
+            <p class="catch"><b>No opt-out.</b> No allow-everything row. A sandbox with no
+            filesystem fence is a local tab, one field up.</p>
           </dd>
         </div>
         <div class="grant">
           <dt>can read</dt>
           <dd>
-            <p>Your disk, minus the credential directories paddock denies by default:
-            <code>~/.ssh</code>, <code>~/.aws</code>, <code>~/.gnupg</code>,
-            <code>~/.config/gh</code>. On a microVM none of it has to be denied, because none
-            of it is in there.</p>
+            <p>Your disk, minus the credential directories: <code>~/.ssh</code>,
+            <code>~/.aws</code>, <code>~/.gnupg</code>, <code>~/.config/gh</code>. On a microVM
+            none of it is in there.</p>
           </dd>
         </div>
         <div class="grant">
           <dt>can see</dt>
           <dd>
-            <p>The chosen agent's own login, and nothing else. Files it writes back to are
-            copies, so your real config is never touched. No agent is handed another agent's
-            keys, your SSH keys or your cloud credentials.</p>
+            <p>The agent's own login, nothing else. What it writes back are copies, so no
+            agent gets another's keys, your SSH keys or your cloud credentials.</p>
           </dd>
         </div>
       </dl>
 
-      <p class="sub sub--after">Two backends enforce that policy, and they differ
-      in kind rather than in spelling. The chooser refuses an answer the backend cannot express
-      rather than quietly narrowing it.</p>
+      <p class="sub sub--after">Two backends enforce it, and they differ in kind, not spelling.
+      The chooser refuses an answer a backend cannot express.</p>
 
       <div class="sheet">
         <div class="spec">
           <h3>srt <span>policy sandbox</span></h3>
           <dl>
-            <dt>Start</dt><dd><b>Instant.</b> Milliseconds, which is what makes a chooser on a keybinding workable.</dd>
+            <dt>Start</dt><dd><b>Instant.</b> Milliseconds, which is what a keybinding needs.</dd>
             <dt>Boundary</dt><dd>Seatbelt on macOS, bubblewrap on Linux, through Anthropic's sandbox-runtime.</dd>
             <dt>Shares</dt><dd>This machine's kernel and filesystem, minus what the policy refuses.</dd>
           </dl>
@@ -629,9 +615,9 @@ pre.snip i { color: var(--faint); font-style: normal; }
         <div class="spec">
           <h3>msb <span>microVM</span></h3>
           <dl>
-            <dt>Start</dt><dd><b>175ms</b> measured from create to a usable VM. A first agent session is about <b>40s</b>, because the agent is installed in the guest.</dd>
-            <dt>Boundary</dt><dd>A libkrun microVM with a kernel and a filesystem of its own. No server, no daemon, no privileged step.</dd>
-            <dt>Shares</dt><dd>Only the directory you mounted. Your disk is not in there at all.</dd>
+            <dt>Start</dt><dd><b>175ms</b> from create to a usable VM. A first agent session is about <b>40s</b>: the agent installs in the guest.</dd>
+            <dt>Boundary</dt><dd>A libkrun microVM with its own kernel and filesystem. No server, no daemon, no privileged step.</dd>
+            <dt>Shares</dt><dd>Only the directory you mounted.</dd>
           </dl>
         </div>
       </div>
@@ -644,10 +630,8 @@ pre.snip i { color: var(--faint); font-style: normal; }
         <h2 id="h3-local">The agent in the VM, the model on your GPU, one port between them</h2>
       </div>
 
-      <p class="sub">On the <code>msb</code> backend, naming a local port writes exactly one network rule:
-      reach this machine, on that port. <b>Not another port on this machine, not the internet,
-      not even DNS.</b> No API key leaves, no prompt leaves, and the sandbox's entire network
-      policy is a single line.</p>
+      <p class="sub">On <code>msb</code>, naming a local port writes one network rule: reach
+      this machine, on that port. <b>Not another port, not the internet, not even DNS.</b></p>
 
       <div class="cross">
         <div class="box">
@@ -677,10 +661,8 @@ pre.snip i { color: var(--faint); font-style: normal; }
         </div>
       </div>
 
-      <p class="sub sub--after">The mechanism is an HTTP server on a host port,
-      so every runtime is the same shape. paddock ships no default port and has no favourite
-      runtime. You name the port once, in an agent file or in the chooser's network field, and
-      the guest boots knowing where the server is in every tab.</p>
+      <p class="sub sub--after">Every runtime is an HTTP server on a port, so all of them are
+      the same shape. Name it once and the guest boots knowing where it is.</p>
 
 <pre class="snip"><i># the agent file that opens the port, once</i>
 "api_domains": ["localhost:11434"]
@@ -689,23 +671,20 @@ pre.snip i { color: var(--faint); font-style: normal; }
 OPENAI_BASE_URL=http://host.microsandbox.internal:11434/v1
 OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
 
-      <p class="sub sub--after"><b>Leave your server on loopback</b>, which is
-      where all of them start. The microVM's gateway connects onward from the host, so
-      <code>127.0.0.1</code> is the address the request arrives at, and your server is never
-      published to your network to make this work. If you once switched on serving to the local
-      network, that hands the model to everyone on the Wi-Fi and paddock does not need it.</p>
+      <p class="sub sub--after"><b>Leave your server on loopback.</b> The gateway connects
+      onward from the host, so <code>127.0.0.1</code> is where the request arrives. Serving to
+      the network would hand the model to the whole Wi-Fi, and paddock does not need it.</p>
 
       <blockquote class="measured">
-        A second server, on another port of the same host, from inside the same guest:<br>
+        Another port on the same host, from inside the guest:<br>
         <b>wget: can't connect to remote host (172.16.2.213): Connection refused</b>
-        <cite>Measured against msb 0.6.13, alongside a real 27B model answering a prompt from
-        inside the guest, with the host's /Users absent and example.com not resolving.</cite>
+        <cite>msb 0.6.13, with a 27B model answering from inside the guest, /Users absent and
+        example.com not resolving.</cite>
       </blockquote>
 
-      <p class="sub sub--after">On <code>srt</code> the same agent file still works, but the
-      grant is not scoped. Seatbelt's loopback rule takes no port, so it opens every service
-      listening on this machine, and the confirm screen says so in as many words. For the
-      narrow version, use <code>msb</code>.</p>
+      <p class="sub sub--after">On <code>srt</code> the grant is not scoped: Seatbelt's
+      loopback rule takes no port, so it opens every service on this machine. The confirm
+      screen says so. For the narrow version, use <code>msb</code>.</p>
     </section>
 
     <!-- ============================================================ 04 ==== -->
@@ -715,31 +694,24 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
         <h2 id="h4-not">What it is not, yet</h2>
       </div>
 
-      <p class="sub">paddock has had no outside security review. It is a v0.2.0 beta with one
-      author, and a tool that hands out permissions has to be honest about its own.</p>
+      <p class="sub">A tool that hands out permissions has to be honest about its own.</p>
 
       <ul class="notyet">
-        <li><div><b>Nobody independent has tried to break it.</b>
-          <span>Read the trust model before you point it at anything valuable.</span></div></li>
-        <li><div><b>Verified on macOS, on Apple Silicon.</b>
-          <span>The Linux path runs through bubblewrap and the test suite passes on Linux in CI,
-          but every live sandbox check written down in the docs was run on macOS.</span></div></li>
-        <li><div><b>Three enforcement layers, and only two are hard.</b>
-          <span>The kernel sandbox and the synthesized config directory are enforced outside the
-          agent. The generated agent config is the agent enforcing a rule on itself: useful
-          friction, not a boundary.</span></div></li>
+        <li><div><b>Three enforcement layers, two of them hard.</b>
+          <span>The kernel sandbox and the synthesized config directory sit outside the agent.
+          The generated agent config is the agent enforcing a rule on itself: friction, not a
+          boundary.</span></div></li>
         <li><div><b>The tool list is a soft allowlist.</b>
-          <span>It shapes what the agent finds and defaults to. It does not stop a determined
-          caller with an absolute path. Hard per-binary blocking is on the roadmap.</span></div></li>
+          <span>It shapes what the agent finds. It does not stop an absolute path. Hard
+          per-binary blocking is on the roadmap.</span></div></li>
         <li><div><b>Collection is lazy.</b>
-          <span>Nothing runs in the background watching for a closed tab, so a finished session
-          is collected at the next paddock command. Until then a microVM is still up and still
-          holding memory. <code>paddock gc</code> forces it.</span></div></li>
+          <span>Nothing watches for a closed tab, so a session is collected at the next
+          paddock command. Until then its microVM is up and holding memory.
+          <code>paddock gc</code> forces it.</span></div></li>
       </ul>
 
       <p class="sub sub--after"><a href="https://github.com/desquaredp/paddock#trust-model">Read
-      the trust model</a>. It covers what each layer does and does not stop, the known bypasses
-      included.</p>
+      the trust model</a></p>
     </section>
   </main>
 
@@ -760,6 +732,7 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
       <div>
         <h2>Source</h2>
         <ul>
+          <li><a href="docs.html">Docs, the command line reference</a></li>
           <li><a href="https://github.com/desquaredp/paddock">github.com/desquaredp/paddock</a></li>
           <li><a href="https://github.com/desquaredp/paddock/blob/main/LICENSE">MIT license</a></li>
           <li><a href="https://github.com/desquaredp/paddock/blob/main/docs/SPEC.md">docs/SPEC.md</a></li>
@@ -770,20 +743,19 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
         <h2>Install</h2>
         <ul>
           <li>curl -fsSL paddock.desquaredp.com/install.sh | sh</li>
-          <li>uv and Node.js are the prerequisites</li>
-          <li>microVM sessions also need msb</li>
+          <li>needs uv and Node.js</li>
+          <li>microVM sessions need msb</li>
           <li><a href="https://github.com/desquaredp/paddock#install">Full install notes</a></li>
         </ul>
       </div>
       <div>
         <h2>Better with herdr</h2>
-        <p>paddock runs on its own. In <a href="https://herdr.dev">herdr</a> it also gets the
-        chooser on <code>prefix+s</code>, sandboxed tabs and attachable sessions.
-        <a href="https://github.com/desquaredp/paddock#the-chooser">How that works</a>.</p>
+        <p>Runs on its own. In <a href="https://herdr.dev">herdr</a> it also gets the chooser
+        on <code>prefix+s</code>, sandboxed tabs and attachable sessions.</p>
       </div>
     </div>
     <div class="colophon__end">
-      <span>No trackers. No analytics. No cookies. One page, one font request.</span>
+      <span>No trackers, no analytics, no cookies. One font request.</span>
     </div>
   </div>
 </footer>

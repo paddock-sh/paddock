@@ -1,13 +1,54 @@
 # Wiring up paddock.desquaredp.com
 
-Everything the site needs is in this directory: `index.html`, `logo.webp` (the
-page uses it) and `logo.png` (the social card). No build step, no dependencies.
-Point a static host at `site/` and it works.
+Everything the site needs is in this directory: `index.html`, `docs.html`,
+`logo.webp` (the pages use it), `logo.png` (the social card) and `mark.png`,
+`mark-32.png`, `mark-16.png` (the favicon, at three sizes). No build step, no
+dependencies. Point a static host at `site/` and it works.
 
-One thing is not a file: `/install.sh`. That path has to be a **redirect or a
-proxy** to the script in the repository, never a copy. A copy is a second script
-to remember to update, and the day it drifts from the real one is the day it
-installs the wrong thing.
+## The subdomain is its own site root
+
+`paddock.desquaredp.com` is a **dedicated site root**, separate from the
+portfolio at the apex domain. Nothing here shares a template, a stylesheet or an
+analytics tag with it; the two are deployed independently and can move hosts
+independently.
+
+It serves three routes:
+
+| Route | Serves | Notes |
+| --- | --- | --- |
+| `/` | `index.html` | The landing page |
+| `/docs` | `docs.html` | The command line reference |
+| `/install.sh` | the script in the repository | A redirect or proxy, never a copy |
+
+`/docs` wants a clean-URL rewrite, because the pages link to each other as
+`docs.html` and both forms should work. Most hosts do this already: Netlify and
+Cloudflare Pages serve `docs.html` at `/docs` with no configuration, and Vercel
+does the same with `"cleanUrls": true`. To be explicit about it:
+
+```
+# Netlify or Cloudflare Pages, in _redirects
+/docs  /docs.html  200
+```
+
+```json
+// Vercel, in vercel.json
+{ "cleanUrls": true }
+```
+
+```nginx
+# nginx
+location = /docs { try_files /docs.html =404; }
+```
+
+```
+# Caddy
+redir /docs /docs.html 308
+```
+
+`/install.sh` is the one route that is not a file. It has to be a **redirect or
+a proxy** to the script in the repository, never a copy. A copy is a second
+script to remember to update, and the day it drifts from the real one is the day
+it installs the wrong thing.
 
 ## 1. DNS
 
@@ -139,9 +180,11 @@ working, so this is a tidiness change and not a required one.
 
 ## Notes
 
-- The page is one self-contained file. It opens over `file://` with the two
-  images beside it, so you can check a change without a server.
-- The only outbound request it makes is one stylesheet from Google Fonts. There
+- Each page is one self-contained file. Both open over `file://` with the
+  images beside them, so you can check a change without a server. The
+  cross-links use `docs.html` and `./`, which work with or without the clean-URL
+  rewrite.
+- The only outbound request they make is one stylesheet from Google Fonts. There
   are no trackers, no analytics and no cookies. Deleting the two `<link
   rel="preconnect">` lines and the stylesheet link leaves the page working on
   its fallback serif, if you would rather it made no outbound request at all.
