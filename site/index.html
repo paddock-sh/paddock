@@ -39,7 +39,6 @@
   --ink:        #10151d;
   --ink-2:      #161c26;
   --slate:      #1f2837;
-  --slate-2:    #24303f;
   --term:       #0a0e14;
   --rule:       #2e3a4a;
   --hair:       #212a36;
@@ -60,7 +59,13 @@
 
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --pad: clamp(1.1rem, 4.5vw, 3rem);
-  --measure: 60ch;
+  --measure: 62ch;
+
+  /* One spacing scale. Blocks sit on it; sections get the fluid one. */
+  --s-2: 1.15rem;
+  --s-3: 1.9rem;
+  --s-4: 3rem;
+  --s-sec: clamp(3.2rem, 9vw, 6rem);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -83,8 +88,13 @@ a { color: var(--blue-lift); text-decoration-thickness: 1px; text-underline-offs
 a:hover { color: var(--blue-bright); }
 :focus-visible { outline: 2px solid var(--blue-bright); outline-offset: 3px; }
 
-.skip { position: absolute; left: -9999px; top: 0; z-index: 40; background: var(--blue-deep); color: var(--bone); padding: 0.6rem 1rem; font-family: var(--mono); font-size: 0.8rem; }
-.skip:focus { left: 0.6rem; top: 0.6rem; }
+.skip { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.skip:focus {
+  position: fixed; width: auto; height: auto; clip-path: none;
+  left: 0.6rem; top: 0.6rem; z-index: 40;
+  background: var(--blue-deep); color: var(--bone); border: 1px solid var(--blue-lift);
+  padding: 0.6rem 1rem; font-family: var(--mono); font-size: 0.8rem;
+}
 
 .hold { width: min(100% - (var(--pad) * 2), 1180px); margin-inline: auto; }
 
@@ -93,6 +103,7 @@ a:hover { color: var(--blue-bright); }
 .poster {
   position: relative;
   isolation: isolate;
+  min-height: min(94vh, 940px);
   min-height: min(94svh, 940px);
   display: flex;
   flex-direction: column;
@@ -100,25 +111,26 @@ a:hover { color: var(--blue-bright); }
   overflow: hidden;
 }
 
-.art { position: absolute; inset: 0 0 0 auto; width: min(72%, 940px); isolation: isolate; z-index: -2; }
+.art { position: absolute; inset: 0 0 0 auto; width: min(74%, 1000px); isolation: isolate; z-index: -2; }
 .art img {
-  position: absolute; right: -10%; top: 50%; translate: 0 -50%;
-  width: 122%; height: auto;
-  filter: grayscale(1) contrast(1.14) brightness(0.74);
-  opacity: 0.66;
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover; object-position: 58% 38%;
+  filter: grayscale(1) contrast(1.16) brightness(0.72);
+  opacity: 0.68;
 }
 .art::after { content: ""; position: absolute; inset: 0; background: var(--blue); mix-blend-mode: color; opacity: 0.92; }
 
 .scrim { position: absolute; inset: 0; z-index: -1; pointer-events: none;
   background:
-    linear-gradient(96deg, var(--ink) 6%, rgba(16,21,29,0.94) 32%, rgba(16,21,29,0.42) 66%, rgba(16,21,29,0.72) 100%),
+    linear-gradient(97deg, var(--ink) 8%, rgba(16,21,29,0.97) 38%, rgba(16,21,29,0.62) 68%, rgba(16,21,29,0.80) 100%),
     repeating-linear-gradient(0deg, rgba(143,178,232,0.05) 0 1px, transparent 1px 3px);
 }
 @media (max-width: 900px) {
   .art { inset: 0; width: 100%; }
-  .art img { right: -22%; width: 150%; }
+  .art img { object-position: 56% 34%; }
   .scrim { background:
-    linear-gradient(178deg, rgba(16,21,29,0.80) 0%, rgba(16,21,29,0.62) 34%, rgba(16,21,29,0.94) 78%, var(--ink) 100%),
+    linear-gradient(179deg, rgba(16,21,29,0.86) 0%, rgba(16,21,29,0.70) 26%, rgba(16,21,29,0.93) 66%, var(--ink) 96%),
     repeating-linear-gradient(0deg, rgba(143,178,232,0.05) 0 1px, transparent 1px 3px); }
 }
 
@@ -132,7 +144,7 @@ a:hover { color: var(--blue-bright); }
 }
 .strip .wordmark { color: var(--bone); letter-spacing: 0.42em; font-weight: 600; }
 .strip nav { display: flex; gap: 1.3rem; flex-wrap: wrap; }
-.strip nav a { color: var(--faint); text-decoration: none; }
+.strip nav a { color: var(--muted); text-decoration: none; padding-block: 0.55rem; margin-block: -0.55rem; }
 .strip nav a:hover { color: var(--bone); }
 
 .poster__body { flex: 1; display: flex; flex-direction: column; justify-content: center; padding-block: clamp(2.6rem, 8vh, 5.5rem) clamp(1.6rem, 4vh, 2.6rem); }
@@ -154,12 +166,13 @@ h1 {
   letter-spacing: -0.028em;
   margin: 0 0 clamp(1.3rem, 3.5vw, 2.1rem);
   max-width: 15ch;
+  text-wrap: balance;
 }
 h1 .a { display: block; color: var(--muted); font-weight: 400; }
 h1 .b { display: block; color: var(--bone); }
 
 .deck { max-width: 46ch; margin: 0 0 clamp(1.9rem, 5vw, 3rem); font-size: clamp(1.04rem, 0.98rem + 0.4vw, 1.26rem); color: var(--bone-dim); }
-.deck p { margin: 0 0 0.85rem; }
+.deck p { margin: 0 0 0.85rem; text-wrap: pretty; }
 .deck p:last-child { margin: 0; }
 .deck b { color: var(--bone); font-weight: 600; }
 
@@ -167,15 +180,20 @@ h1 .b { display: block; color: var(--bone); }
 .cmd {
   display: grid; grid-template-columns: minmax(0, 1fr) auto;
   border-top: 1px solid var(--blue); border-bottom: 1px solid var(--blue);
-  background: linear-gradient(90deg, rgba(22,40,73,0.92), rgba(22,40,73,0.34));
-  backdrop-filter: blur(2px);
+  background: var(--blue-deep);
 }
 .cmd code {
   font-family: var(--mono);
   font-size: clamp(0.72rem, 0.4rem + 1.15vw, 1.05rem);
   color: var(--bone); white-space: nowrap; overflow-x: auto;
   padding: clamp(0.85rem, 2.2vw, 1.25rem) clamp(0.7rem, 2vw, 1.15rem);
-  scrollbar-width: thin;
+  scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
+}
+/* The command is the point of the page, so it wraps rather than truncating. */
+@media (max-width: 620px) {
+  .cmd { grid-template-columns: minmax(0, 1fr); }
+  .cmd code { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+  .cmd button { border-left: 0; border-top: 1px solid var(--blue); padding: 0.85rem clamp(0.7rem, 2vw, 1.15rem); text-align: left; }
 }
 .cmd code .s { color: var(--blue-lift); user-select: none; }
 .cmd button {
@@ -184,8 +202,9 @@ h1 .b { display: block; color: var(--bone); }
   padding-inline: clamp(0.8rem, 2.6vw, 1.5rem); cursor: pointer; white-space: nowrap;
   transition: color 130ms var(--ease), background-color 130ms var(--ease);
 }
-.cmd button:hover { color: var(--bone); background: rgba(49,66,95,0.5); }
-.cmd button[data-on] { color: var(--blue-bright); }
+.cmd button:hover { color: var(--bone); background: var(--blue); }
+.cmd button:active { background: var(--slate); }
+.cmd button[data-on] { color: var(--blue-bright); background: var(--blue); }
 
 .facts { display: flex; flex-wrap: wrap; gap: 0.35rem 1.5rem; margin: 0.95rem 0 0; padding: 0; list-style: none;
   font-family: var(--mono); font-size: 0.74rem; color: var(--faint); }
@@ -193,16 +212,43 @@ h1 .b { display: block; color: var(--bone); }
 
 /* -------------------------------------------------------------- the fence -- */
 
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 780px) minmax(0, 1fr);
+  gap: clamp(1.5rem, 5vw, 4rem);
+  align-items: start;
+}
+@media (max-width: 1100px) { .shell { grid-template-columns: minmax(0, 1fr); } }
+
 .doc { position: relative; padding-left: clamp(1.35rem, 4.5vw, 3.6rem); }
 .doc::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 9px;
   border-left: 1px solid var(--rule); border-right: 1px solid var(--rule);
   background: repeating-linear-gradient(180deg, transparent 0 46px, var(--rule) 46px 48px);
   opacity: 0.75;
+  z-index: 1;   /* over the banded section, so the spine is unbroken */
+  pointer-events: none;
 }
 
-section { padding-block: clamp(3.2rem, 9vw, 6rem); }
+/* The running index in the right margin. It only exists where there is margin. */
+.index { position: sticky; top: 2.4rem; padding-top: var(--s-sec); font-family: var(--mono); font-size: 0.735rem; }
+@media (max-width: 1100px) { .index { display: none; } }
+.index ol { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--hair); }
+.index a { display: block; padding: 0.4rem 0 0.4rem 0.85rem; color: var(--faint); text-decoration: none; border-left: 2px solid transparent; margin-left: -1px; transition: color 150ms var(--ease), border-color 150ms var(--ease); }
+.index a:hover { color: var(--bone-dim); }
+.index a[aria-current="location"] { color: var(--bone); border-left-color: var(--blue-lift); }
+.index .n { color: var(--blue-lift); margin-right: 0.55rem; }
+
+section { position: relative; padding-block: var(--s-sec); }
 section + section { border-top: 1px solid var(--hair); }
+/* One band of different ground, so the document has a rhythm and not a metre.
+   The shadow paints past the column without adding a pixel of scroll width. */
+#local {
+  background: var(--ink-2);
+  box-shadow: 0 0 0 100vmax var(--ink-2);
+  clip-path: inset(0 -100vmax);
+  border-block: 1px solid var(--hair);
+}
 
 .head { display: flex; align-items: baseline; gap: clamp(0.8rem, 2.5vw, 1.6rem); margin-bottom: 1.35rem; }
 .head .no {
@@ -214,16 +260,17 @@ h2 {
   font-size: clamp(1.65rem, 0.9rem + 2.9vw, 2.95rem);
   font-weight: 700; font-variation-settings: "opsz" 100;
   line-height: 1.04; letter-spacing: -0.019em; color: var(--bone); margin: 0;
-  max-width: 22ch;
+  max-width: 22ch; text-wrap: balance;
 }
-.sub { max-width: var(--measure); font-size: clamp(1.02rem, 0.97rem + 0.3vw, 1.16rem); color: var(--bone-dim); margin: 0 0 1.15rem; }
+.sub { max-width: var(--measure); font-size: clamp(1.02rem, 0.97rem + 0.3vw, 1.16rem); color: var(--bone-dim); margin: 0 0 var(--s-2); text-wrap: pretty; }
+.sub--after { margin-top: var(--s-3); }
 .sub:last-child { margin-bottom: 0; }
 .sub b { color: var(--bone); font-weight: 600; }
 p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color: var(--blue-bright); }
 
 /* ------------------------------------------------------------- the screens -- */
 
-.screen { margin: 1.9rem 0 0; border: 1px solid var(--rule); background: var(--term); }
+.screen { margin: var(--s-3) 0 0; border: 1px solid var(--rule); background: var(--term); }
 .screen__tab {
   display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
   padding: 0.55rem 0.85rem; border-bottom: 1px solid var(--hair);
@@ -234,8 +281,8 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 .screen pre {
   margin: 0; padding: 1rem 0.85rem; overflow-x: auto;
   font-family: var(--mono);
-  font-size: clamp(0.555rem, 0.25rem + 1.45vw, 0.8rem);
-  line-height: 1.55; color: var(--bone-dim); scrollbar-width: thin;
+  font-size: clamp(0.62rem, 0.2rem + 1.62vw, 0.885rem);
+  line-height: 1.55; color: var(--bone-dim); scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
 }
 .screen pre b { color: var(--bone); font-weight: 400; }
 .screen pre i { color: var(--faint); font-style: normal; }
@@ -249,10 +296,10 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 
 /* --------------------------------------------------------- the policy rows -- */
 
-.grants { margin: 2rem 0 0; border-top: 1px solid var(--rule); }
+.grants { margin: var(--s-3) 0 0; border-top: 1px solid var(--rule); }
 .grant {
   display: grid;
-  grid-template-columns: 8.5rem minmax(0, 1fr);
+  grid-template-columns: 7.5rem minmax(0, 1fr);
   gap: 0.35rem clamp(1rem, 3vw, 2.2rem);
   padding: 1.15rem 0 1.25rem;
   border-bottom: 1px solid var(--hair);
@@ -272,7 +319,7 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 
 /* ------------------------------------------------------------- spec sheet -- */
 
-.sheet { margin-top: clamp(2rem, 5vw, 3rem); display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border: 1px solid var(--hair); }
+.sheet { margin-top: var(--s-4); display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); border: 1px solid var(--hair); }
 @media (max-width: 720px) { .sheet { grid-template-columns: minmax(0, 1fr); } }
 .spec { padding: 1.2rem 1.15rem 1.35rem; }
 .spec + .spec { border-left: 1px solid var(--hair); }
@@ -287,10 +334,10 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 
 /* --------------------------------------------------------- the one crossing -- */
 
-.cross { margin-top: 2.1rem; display: grid; grid-template-columns: minmax(0,1fr) minmax(122px, 0.8fr) minmax(0,1fr); align-items: center; }
+.cross { margin-top: var(--s-3); display: grid; grid-template-columns: minmax(0,1fr) minmax(122px, 0.8fr) minmax(0,1fr); align-items: center; }
 @media (max-width: 780px) { .cross { grid-template-columns: minmax(0, 1fr); gap: 0.55rem; } }
 .box { border: 1px solid var(--rule); background: var(--slate); padding: 1rem 0.95rem 1.1rem; }
-.box--guest { border-color: var(--blue); background: linear-gradient(158deg, var(--blue-deep), var(--slate) 80%); }
+.box--guest { border-color: var(--blue); background: var(--blue-deep); }
 .box h3 { margin: 0; font-family: var(--mono); font-size: 0.66rem; letter-spacing: 0.19em; text-transform: uppercase; color: var(--faint); font-weight: 500; }
 .box .name { display: block; margin-top: 0.3rem; font-family: var(--display); font-size: 1.1rem; font-weight: 700; color: var(--bone); line-height: 1.22; }
 .box ul { list-style: none; margin: 0.65rem 0 0; padding: 0; font-family: var(--mono); font-size: 0.735rem; line-height: 1.72; color: var(--muted); }
@@ -307,18 +354,19 @@ p code, li code, .sub code { font-family: var(--mono); font-size: 0.87em; color:
 /* ------------------------------------------------------------- quotes etc -- */
 
 pre.snip {
-  margin: 1.7rem 0 0; padding: 0.95rem; border: 1px solid var(--hair); border-left: 2px solid var(--blue);
+  margin: var(--s-3) 0 0; padding: 0.95rem; border: 1px solid var(--hair); border-left: 2px solid var(--blue);
   background: var(--term); overflow-x: auto; font-family: var(--mono);
-  font-size: clamp(0.685rem, 0.55rem + 0.45vw, 0.79rem); line-height: 1.75; color: var(--bone-dim); scrollbar-width: thin;
+  font-size: clamp(0.685rem, 0.55rem + 0.45vw, 0.79rem); line-height: 1.75; color: var(--bone-dim); scrollbar-width: thin; scrollbar-color: var(--rule) transparent;
 }
 pre.snip i { color: var(--faint); font-style: normal; }
 
-.measured { margin: 1.7rem 0 0; padding: 0.85rem 0 0.85rem 1.05rem; border-left: 2px solid var(--clay);
-  font-family: var(--mono); font-size: clamp(0.69rem, 0.55rem + 0.45vw, 0.78rem); line-height: 1.7; color: var(--bone-dim); }
+.measured { margin: var(--s-3) 0 0; padding: 0.85rem 0 0.85rem 1.05rem; border-left: 2px solid var(--clay);
+  font-family: var(--mono); font-size: clamp(0.69rem, 0.55rem + 0.45vw, 0.78rem); line-height: 1.7; color: var(--bone-dim);
+  max-width: 82ch; }
 .measured b { color: var(--clay); font-weight: 500; }
 .measured cite { display: block; margin-top: 0.5rem; font-style: normal; color: var(--faint); }
 
-.notyet { list-style: none; margin: 2rem 0 0; padding: 0; counter-reset: n; }
+.notyet { list-style: none; margin: var(--s-3) 0 0; padding: 0; counter-reset: n; }
 .notyet li {
   display: grid; grid-template-columns: 2.6rem minmax(0, 1fr); gap: 0 0.75rem;
   padding: 1rem 0 1.05rem; border-top: 1px solid var(--hair); max-width: 66ch;
@@ -342,6 +390,14 @@ pre.snip i { color: var(--faint); font-style: normal; }
 .colophon p { margin: 0; line-height: 1.75; max-width: 36ch; }
 .colophon__end { margin-top: 2.3rem; padding-top: 1rem; border-top: 1px solid var(--hair); display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem; }
 
+/* Mono labels sit at 11 to 12px on a desktop, which is small on a phone. */
+@media (max-width: 700px) {
+  .strip, .facts { font-size: 0.8rem; }
+  .screen__tab, .screen__key, .screen figcaption { font-size: 0.775rem; }
+  .colophon { font-size: 0.82rem; }
+  .grant .catch, .box ul, .spec dl { font-size: 0.8rem; }
+}
+
 /* ------------------------------------------------------------------ motion -- */
 
 @media (prefers-reduced-motion: no-preference) {
@@ -364,7 +420,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
 <a class="skip" href="#doc">Skip to the documentation</a>
 
 <div class="poster">
-  <div class="art"><img src="logo.webp" width="1000" height="1000" alt="Four horses standing at a wooden fence, drawn over a field of binary digits." fetchpriority="high"></div>
+  <div class="art"><img src="logo.webp" width="1000" height="1000" alt="Four horses standing at a wooden fence, drawn over a field of binary digits."></div>
   <div class="scrim" aria-hidden="true"></div>
 
   <div class="hold">
@@ -406,11 +462,11 @@ pre.snip i { color: var(--faint); font-style: normal; }
   </div>
 </div>
 
-<div class="hold">
+<div class="hold shell">
   <main class="doc" id="doc">
 
     <!-- ============================================================ 01 ==== -->
-    <section aria-labelledby="h1-run">
+    <section id="run" aria-labelledby="h1-run">
       <div class="head">
         <span class="no">&sect;&nbsp;01</span>
         <h2 id="h1-run">One command, one screen, then it is running</h2>
@@ -477,14 +533,14 @@ pre.snip i { color: var(--faint); font-style: normal; }
         the port-scoped local rule are open pull requests, not yet on main.</figcaption>
       </figure>
 
-      <p class="sub" style="margin-top:1.6rem">Inside <a href="https://herdr.dev">herdr</a> the
+      <p class="sub sub--after">Inside <a href="https://herdr.dev">herdr</a> the
       same chooser opens on <code>prefix+s</code> and adds what a multiplexer is for: sandboxed
       tabs, named sessions, and a second tab attached to a session already running. Outside it,
       one terminal is one session and <code>paddock run</code> is the whole of it.</p>
     </section>
 
     <!-- ============================================================ 02 ==== -->
-    <section aria-labelledby="h2-grants">
+    <section id="grants" aria-labelledby="h2-grants">
       <div class="head">
         <span class="no">&sect;&nbsp;02</span>
         <h2 id="h2-grants">Every grant is decided before the first token</h2>
@@ -502,7 +558,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
             <p>Only the binaries you tick are on the sandbox <code>PATH</code>, plus whatever
             the chosen agent cannot start without, which is named alongside it.</p>
             <p class="catch"><b>Soft.</b> An absolute path still reaches any binary on the host.
-            On srt this is convenience and the docs say so. On msb there is no host binary to
+            On <code>srt</code> this is convenience and the docs say so. On <code>msb</code> there is no host binary
             reach.</p>
           </dd>
         </div>
@@ -512,7 +568,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
             <p>A domain allowlist, by group or by name. Everything else is refused by the OS.
             Tick nothing and only the chosen agent's own API stays open; pick the shell agent
             and the sandbox is fully offline.</p>
-            <p class="catch"><b>Hard, with one hole.</b> On msb, DNS is all or nothing. The
+            <p class="catch"><b>Hard, with one hole.</b> On <code>msb</code>, DNS is all or nothing. The
             gateway resolver answers for every name, not only the allowed ones, and the
             connection is then refused. Names are a low bandwidth channel out.</p>
           </dd>
@@ -546,7 +602,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
         </div>
       </dl>
 
-      <p class="sub" style="margin-top:2rem">Two backends enforce that policy, and they differ
+      <p class="sub sub--after">Two backends enforce that policy, and they differ
       in kind rather than in spelling. The chooser refuses an answer the backend cannot express
       rather than quietly narrowing it.</p>
 
@@ -571,13 +627,13 @@ pre.snip i { color: var(--faint); font-style: normal; }
     </section>
 
     <!-- ============================================================ 03 ==== -->
-    <section aria-labelledby="h3-local">
+    <section id="local" aria-labelledby="h3-local">
       <div class="head">
         <span class="no">&sect;&nbsp;03</span>
         <h2 id="h3-local">The agent in the VM, the model on your GPU, one port between them</h2>
       </div>
 
-      <p class="sub">On the msb backend, naming a local port writes exactly one network rule:
+      <p class="sub">On the <code>msb</code> backend, naming a local port writes exactly one network rule:
       reach this machine, on that port. <b>Not another port on this machine, not the internet,
       not even DNS.</b> No API key leaves, no prompt leaves, and the sandbox's entire network
       policy is a single line.</p>
@@ -610,7 +666,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
         </div>
       </div>
 
-      <p class="sub" style="margin-top:1.8rem">The mechanism is an HTTP server on a host port,
+      <p class="sub sub--after">The mechanism is an HTTP server on a host port,
       so every runtime is the same shape. paddock ships no default port and has no favourite
       runtime: you name the port once, in an agent file or in the chooser's network field, and
       the guest boots knowing where the server is in every tab.</p>
@@ -622,7 +678,7 @@ pre.snip i { color: var(--faint); font-style: normal; }
 OPENAI_BASE_URL=http://host.microsandbox.internal:11434/v1
 OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
 
-      <p class="sub" style="margin-top:1.6rem"><b>Leave your server on loopback</b>, which is
+      <p class="sub sub--after"><b>Leave your server on loopback</b>, which is
       where all of them start. The microVM's gateway connects onward from the host, so
       <code>127.0.0.1</code> is the address the request arrives at, and your server is never
       published to your network to make this work. If you once switched on serving to the local
@@ -635,14 +691,14 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
         inside the guest, with the host's /Users absent and example.com not resolving.</cite>
       </blockquote>
 
-      <p class="sub" style="margin-top:1.6rem">On srt the same agent file still works, but the
+      <p class="sub sub--after">On <code>srt</code> the same agent file still works, but the
       grant is not scoped. Seatbelt's loopback rule takes no port, so it opens every service
       listening on this machine, and the confirm screen says so in as many words. For the
-      narrow version, use msb.</p>
+      narrow version, use <code>msb</code>.</p>
     </section>
 
     <!-- ============================================================ 04 ==== -->
-    <section aria-labelledby="h4-not">
+    <section id="beta" aria-labelledby="h4-not">
       <div class="head">
         <span class="no">&sect;&nbsp;04</span>
         <h2 id="h4-not">What it is not, yet</h2>
@@ -670,17 +726,26 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
           holding memory. <code>paddock gc</code> forces it.</span></div></li>
       </ul>
 
-      <p class="sub" style="margin-top:1.8rem"><a href="https://github.com/desquaredp/paddock#trust-model">Read
+      <p class="sub sub--after"><a href="https://github.com/desquaredp/paddock#trust-model">Read
       the trust model</a>. It covers what each layer does and does not stop, the known bypasses
       included.</p>
     </section>
   </main>
+
+  <aside class="index" aria-label="Sections">
+    <ol>
+      <li><a href="#run"><span class="n">01</span>The run</a></li>
+      <li><a href="#grants"><span class="n">02</span>The grants</a></li>
+      <li><a href="#local"><span class="n">03</span>Local models</a></li>
+      <li><a href="#beta"><span class="n">04</span>What it is not</a></li>
+    </ol>
+  </aside>
 </div>
 
 <footer class="colophon">
   <div class="hold">
     <div class="colophon__grid">
-      <img src="logo.webp" width="1000" height="1000" alt="">
+      <img src="logo.webp" width="1000" height="1000" alt="" loading="lazy" decoding="async">
       <div>
         <h3>Source</h3>
         <ul>
@@ -722,6 +787,26 @@ OLLAMA_HOST=http://host.microsandbox.internal:11434</pre>
       b.setAttribute('data-on', '');
       window.setTimeout(function () { b.textContent = 'Copy'; b.removeAttribute('data-on'); }, 1800);
     });
+  });
+})();
+
+/* Mark the section the reader is in, on the margin index. */
+(function () {
+  var links = document.querySelectorAll('.index a');
+  if (!links.length || !window.IntersectionObserver) { return; }
+  var by = {};
+  links.forEach(function (a) { by[a.getAttribute('href').slice(1)] = a; });
+  var seen = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      var a = by[e.target.id];
+      if (!a) { return; }
+      if (e.isIntersecting) { a.setAttribute('aria-current', 'location'); }
+      else { a.removeAttribute('aria-current'); }
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  Object.keys(by).forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) { seen.observe(el); }
   });
 })();
 </script>
