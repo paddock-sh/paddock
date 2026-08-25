@@ -27,8 +27,8 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/desquaredp/paddock"
-Issues = "https://github.com/desquaredp/paddock/issues"
+Repository = "https://github.com/paddock-sh/paddock"
+Issues = "https://github.com/paddock-sh/paddock/issues"
 
 [project.scripts]
 paddock = "paddock.cli:main"

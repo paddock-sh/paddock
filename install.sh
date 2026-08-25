@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install paddock. Run it as often as you like: it replaces what is there.
 #
-#   curl -LsSf https://raw.githubusercontent.com/desquaredp/paddock/main/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/paddock-sh/paddock/main/install.sh | sh
 #
 # Environment:
 #   PADDOCK_REF=<branch|tag>  install that ref instead of the default branch
@@ -9,7 +9,7 @@
 
 set -eu
 
-REPO="https://github.com/desquaredp/paddock"
+REPO="https://github.com/paddock-sh/paddock"
 UV_INSTALLER="https://astral.sh/uv/install.sh"
 
 say() {

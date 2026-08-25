@@ -5,11 +5,11 @@ One tag cuts one release. The tag is the trigger: everything else is automatic.
 ## How people install it
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/desquaredp/paddock/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/paddock-sh/paddock/main/install.sh | sh
 ```
 
 `install.sh` at the repo root installs uv if it is missing, then runs
-`uv tool install --force git+https://github.com/desquaredp/paddock`. It is safe
+`uv tool install --force git+https://github.com/paddock-sh/paddock`. It is safe
 to run twice. `PADDOCK_REF=<branch|tag>` installs a different ref, and
 `PADDOCK_YES=1` answers the prompts for unattended installs.
 
@@ -89,7 +89,7 @@ the release still succeeds.
 
    | Field | Value |
    | --- | --- |
-   | Owner | `desquaredp` |
+   | Owner | `paddock-sh` |
    | Repository | `paddock` |
    | Workflow | `release.yml` |
    | Environment | leave empty |
@@ -115,10 +115,10 @@ and point the publish step at `https://test.pypi.org/legacy/` with the action's
   1280x640 image. Without it, links to the repo show a grey placeholder.
 - **README on PyPI.** The README is the PyPI project page. Its logo and its links
   into `docs/` (GUIDE, SPEC, ROADMAP) are relative, so they break there. Make
-  them absolute `https://github.com/desquaredp/paddock/blob/main/...` URLs before
+  them absolute `https://github.com/paddock-sh/paddock/blob/main/...` URLs before
   the first publish.
 - **README install line.** Done: the README leads with the install one-liner and
-  keeps `uv tool install git+https://github.com/desquaredp/paddock` as the
+  keeps `uv tool install git+https://github.com/paddock-sh/paddock` as the
   alternative for people who already have uv. Once paddock is on PyPI, that
   second line becomes `uv tool install paddock`.
 - **Herdr version.** `docs/GUIDE.md` and SPEC name the herdr version paddock is

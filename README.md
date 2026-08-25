@@ -18,9 +18,9 @@ Needs Python 3.11+, [uv](https://docs.astral.sh/uv/) and Node.js, plus
 ([details](docs/GUIDE.md#install)).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/desquaredp/paddock/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/paddock-sh/paddock/main/install.sh | sh
 # or, if you already have uv:
-uv tool install git+https://github.com/desquaredp/paddock
+uv tool install git+https://github.com/paddock-sh/paddock
 ```
 
 Then start a sandbox, right where you are:
